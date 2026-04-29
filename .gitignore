@@ -1,0 +1,188 @@
+# =========================================================
+# Java / JVM build output
+# =========================================================
+build/
+target/
+out/
+bin/
+
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+
+# Keep wrapper JARs if artifact JARs are ignored
+!gradle/wrapper/gradle-wrapper.jar
+!.mvn/wrapper/maven-wrapper.jar
+
+
+# =========================================================
+# Gradle
+# =========================================================
+.gradle/
+.gradle-cache/
+gradle-app.setting
+
+
+# =========================================================
+# Maven
+# =========================================================
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar.sha256
+dependency-reduced-pom.xml
+release.properties
+pom.xml.versionsBackup
+
+
+# =========================================================
+# Logs and crash dumps
+# =========================================================
+*.log
+*.log.*
+logs/
+
+hs_err_pid*
+replay_pid*
+*.hprof
+*.heapdump
+*.dump
+
+
+# =========================================================
+# IDE and editor files
+# =========================================================
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Eclipse / STS
+.settings/
+.project
+.classpath
+.factorypath
+.apt_generated/
+.apt_generated_test/
+
+# VS Code
+.vscode/
+
+# NetBeans
+nbproject/private/
+nbbuild/
+dist/
+nbdist/
+.nb-gradle/
+
+# Launch/debug configs
+*.launch
+
+
+# =========================================================
+# Frontend / Node.js
+# =========================================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+.npm/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/build-state.yml
+.yarn/install-state.gz
+
+coverage/
+.nyc_output/
+
+dist/
+.next/
+.nuxt/
+.svelte-kit/
+.vite/
+.cache/
+
+# Project frontend output
+/frontend/node_modules/
+/frontend/dist/
+
+
+# =========================================================
+# Generated frontend assets
+# =========================================================
+src/main/resources/static/**
+!src/main/resources/static/.gitkeep
+
+
+# =========================================================
+# Archives and packaged artifacts
+# =========================================================
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+*.gz
+
+
+# =========================================================
+# Environment and secrets
+# =========================================================
+.env
+.env.*
+!.env.example
+!.env.template
+
+*.local
+application-local.properties
+application-local.yml
+application-dev-local.properties
+application-dev-local.yml
+
+
+# =========================================================
+# Database and runtime files
+# =========================================================
+/db/
+*.db
+*.sqlite
+*.sqlite3
+
+/debug/
+tmp/
+temp/
+
+
+# =========================================================
+# BlueJ
+# =========================================================
+*.ctxt
+
+
+# =========================================================
+# MTJ - Mobile Tools for Java
+# =========================================================
+.mtj.tmp/
+
+
+# =========================================================
+# OS-specific files
+# =========================================================
+.DS_Store
+.AppleDouble
+.LSOverride
+
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+
+$RECYCLE.BIN/
+.Spotlight-V100/
+.Trashes/

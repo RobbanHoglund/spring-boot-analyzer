@@ -1,0 +1,432 @@
+package com.robbanhoglund.springbootanalyzer.analyzer.model;
+
+public final class FindingRules {
+
+    public static final FindingRule SPRING_SECRET_LITERAL = rule(
+            "SPRING_SECRET_LITERAL",
+            "Sensitive property uses a literal value",
+            FindingSeverity.WARNING,
+            FindingCategory.SECURITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT = rule(
+            "SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT",
+            "Secret placeholder has a weak default value",
+            FindingSeverity.WARNING,
+            FindingCategory.SECURITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_SECRET_MULTI_PROFILE = rule(
+            "SPRING_SECRET_MULTI_PROFILE",
+            "Sensitive property is configured in multiple profiles",
+            FindingSeverity.INFO,
+            FindingCategory.PROFILE_DRIFT,
+            FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT
+    );
+    public static final FindingRule SPRING_RISKY_PROD_CONFIG = rule(
+            "SPRING_RISKY_PROD_CONFIG",
+            "Risky production configuration detected",
+            FindingSeverity.WARNING,
+            FindingCategory.CONFIGURATION,
+            FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT
+    );
+    public static final FindingRule SPRING_PROFILE_DRIFT = rule(
+            "SPRING_PROFILE_DRIFT",
+            "Configuration differs across profiles",
+            FindingSeverity.INFO,
+            FindingCategory.PROFILE_DRIFT,
+            FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT
+    );
+    public static final FindingRule SPRING_STARTUP_SIDE_EFFECT = rule(
+            "SPRING_STARTUP_SIDE_EFFECT",
+            "Startup hook performs side effects",
+            FindingSeverity.WARNING,
+            FindingCategory.STARTUP,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_SCHEDULED_SIDE_EFFECT = rule(
+            "SPRING_SCHEDULED_SIDE_EFFECT",
+            "Scheduled job performs side effects",
+            FindingSeverity.WARNING,
+            FindingCategory.SCHEDULING,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_SCHEDULED_SHORT_INTERVAL = rule(
+            "SPRING_SCHEDULED_SHORT_INTERVAL",
+            "Scheduled job runs on a short interval",
+            FindingSeverity.INFO,
+            FindingCategory.SCHEDULING,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_SCHEDULED_CRON_NO_ZONE = rule(
+            "SPRING_SCHEDULED_CRON_NO_ZONE",
+            "Scheduled cron has no explicit time zone",
+            FindingSeverity.INFO,
+            FindingCategory.SCHEDULING,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_HTTP_CLIENT_NO_TIMEOUT = rule(
+            "SPRING_HTTP_CLIENT_NO_TIMEOUT",
+            "HTTP client has no visible timeout configuration",
+            FindingSeverity.WARNING,
+            FindingCategory.HTTP,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_HTTP_PLAIN_URL = rule(
+            "SPRING_HTTP_PLAIN_URL",
+            "External service URL uses plain HTTP",
+            FindingSeverity.WARNING,
+            FindingCategory.HTTP,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_HTTP_CLIENT_NO_RESILIENCE = rule(
+            "SPRING_HTTP_CLIENT_NO_RESILIENCE",
+            "HTTP client has no visible retry or circuit-breaker handling",
+            FindingSeverity.INFO,
+            FindingCategory.HTTP,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_CONDITIONAL_VALUE_MISMATCH = rule(
+            "SPRING_CONDITIONAL_VALUE_MISMATCH",
+            "Configured provider value does not match any conditional bean",
+            FindingSeverity.WARNING,
+            FindingCategory.CONDITIONAL_BEAN,
+            FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT
+    );
+    public static final FindingRule SPRING_CONDITIONAL_MATCH_IF_MISSING_OVERLAP = rule(
+            "SPRING_CONDITIONAL_MATCH_IF_MISSING_OVERLAP",
+            "Multiple conditional beans default to matchIfMissing",
+            FindingSeverity.WARNING,
+            FindingCategory.CONDITIONAL_BEAN,
+            FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT
+    );
+    public static final FindingRule SPRING_FLYWAY_DDL_AUTO_MIX = rule(
+            "SPRING_FLYWAY_DDL_AUTO_MIX",
+            "Flyway is combined with schema-mutating Hibernate DDL",
+            FindingSeverity.WARNING,
+            FindingCategory.PERSISTENCE,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_FLYWAY_MISSING_MIGRATIONS = rule(
+            "SPRING_FLYWAY_MISSING_MIGRATIONS",
+            "Flyway is enabled but migration files were not found",
+            FindingSeverity.WARNING,
+            FindingCategory.PERSISTENCE,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_TRANSACTION_SELF_INVOCATION = rule(
+            "SPRING_TRANSACTION_SELF_INVOCATION",
+            "@Transactional method is called through self-invocation",
+            FindingSeverity.INFO,
+            FindingCategory.TRANSACTION,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_TRANSACTION_PRIVATE_METHOD = rule(
+            "SPRING_TRANSACTION_PRIVATE_METHOD",
+            "@Transactional method may not be proxied",
+            FindingSeverity.INFO,
+            FindingCategory.TRANSACTION,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_TRANSACTION_MISSING_BOUNDARY = rule(
+            "SPRING_TRANSACTION_MISSING_BOUNDARY",
+            "Write-heavy service method has no visible transaction boundary",
+            FindingSeverity.INFO,
+            FindingCategory.TRANSACTION,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_SIDE_EFFECT_ORCHESTRATION_NO_BOUNDARY = rule(
+            "SPRING_SIDE_EFFECT_ORCHESTRATION_NO_BOUNDARY",
+            "Potential side-effect orchestration without explicit consistency boundary",
+            FindingSeverity.INFO,
+            FindingCategory.MAINTAINABILITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule JAVA_EMPTY_CATCH_BLOCK = rule(
+            "JAVA_EMPTY_CATCH_BLOCK",
+            "Empty catch block",
+            FindingSeverity.WARNING,
+            FindingCategory.EXCEPTION_HANDLING,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_SWALLOWED_EXCEPTION_FALLBACK = rule(
+            "SPRING_SWALLOWED_EXCEPTION_FALLBACK",
+            "Exception is swallowed and replaced with fallback",
+            FindingSeverity.INFO,
+            FindingCategory.EXCEPTION_HANDLING,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_REPEATED_FALLBACK_PARSING_PATTERN = rule(
+            "SPRING_REPEATED_FALLBACK_PARSING_PATTERN",
+            "Repeated fallback parsing pattern",
+            FindingSeverity.INFO,
+            FindingCategory.MAINTAINABILITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_INTERRUPTED_EXCEPTION_SWALLOWED = rule(
+            "SPRING_INTERRUPTED_EXCEPTION_SWALLOWED",
+            "InterruptedException is swallowed",
+            FindingSeverity.WARNING,
+            FindingCategory.EXCEPTION_HANDLING,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_BROAD_FATAL_ERROR_CATCH = rule(
+            "SPRING_BROAD_FATAL_ERROR_CATCH",
+            "Broad fatal error catch",
+            FindingSeverity.WARNING,
+            FindingCategory.EXCEPTION_HANDLING,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_BROAD_EXCEPTION_SPRING_BOUNDARY = rule(
+            "SPRING_BROAD_EXCEPTION_SPRING_BOUNDARY",
+            "Broad exception catch in Spring boundary",
+            FindingSeverity.INFO,
+            FindingCategory.EXCEPTION_HANDLING,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_PRINT_STACK_TRACE = rule(
+            "SPRING_PRINT_STACK_TRACE",
+            "printStackTrace used instead of application logging",
+            FindingSeverity.INFO,
+            FindingCategory.EXCEPTION_HANDLING,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_RAW_EXCEPTION_MESSAGE_HTTP = rule(
+            "SPRING_RAW_EXCEPTION_MESSAGE_HTTP",
+            "Raw exception message exposed through HTTP response",
+            FindingSeverity.WARNING,
+            FindingCategory.SECURITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_BROAD_EXCEPTION_HANDLER = rule(
+            "SPRING_BROAD_EXCEPTION_HANDLER",
+            "Broad Spring exception handler",
+            FindingSeverity.INFO,
+            FindingCategory.EXCEPTION_HANDLING,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_REQUEST_BODY_NO_VALID = rule(
+            "SPRING_REQUEST_BODY_NO_VALID",
+            "@RequestBody is missing @Valid",
+            FindingSeverity.INFO,
+            FindingCategory.VALIDATION,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_ASYNC_PROXY_BYPASS = rule(
+            "SPRING_ASYNC_PROXY_BYPASS",
+            "@Async on private method will not be intercepted by proxy",
+            FindingSeverity.WARNING,
+            FindingCategory.MAINTAINABILITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_ASYNC_VOID_SWALLOWED_EXCEPTION = rule(
+            "SPRING_ASYNC_VOID_SWALLOWED_EXCEPTION",
+            "@Async void method has no exception handling",
+            FindingSeverity.INFO,
+            FindingCategory.EXCEPTION_HANDLING,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_MESSAGING_LISTENER_NO_ERROR_HANDLER = rule(
+            "SPRING_MESSAGING_LISTENER_NO_ERROR_HANDLER",
+            "Messaging listener has no visible exception handling",
+            FindingSeverity.INFO,
+            FindingCategory.EXCEPTION_HANDLING,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_SECURITY_STARTER_MISSING = rule(
+            "SPRING_SECURITY_STARTER_MISSING",
+            "Web application has no Spring Security dependency",
+            FindingSeverity.INFO,
+            FindingCategory.SECURITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_JPA_MANYTOONE_EAGER_DEFAULT = rule(
+            "SPRING_JPA_MANYTOONE_EAGER_DEFAULT",
+            "@ManyToOne or @OneToOne uses eager loading by default",
+            FindingSeverity.INFO,
+            FindingCategory.PERSISTENCE,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_JPA_ONETOMANY_MISSING_MAPPED_BY = rule(
+            "SPRING_JPA_ONETOMANY_MISSING_MAPPED_BY",
+            "@OneToMany or @ManyToMany has no mappedBy attribute",
+            FindingSeverity.WARNING,
+            FindingCategory.PERSISTENCE,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_BEAN_ON_NON_CONFIGURATION = rule(
+            "SPRING_BEAN_ON_NON_CONFIGURATION",
+            "@Bean method in class without @Configuration uses lite mode",
+            FindingSeverity.WARNING,
+            FindingCategory.MAINTAINABILITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_MODIFYING_NO_TRANSACTION = rule(
+            "SPRING_MODIFYING_NO_TRANSACTION",
+            "@Modifying query has no transaction boundary",
+            FindingSeverity.ERROR,
+            FindingCategory.PERSISTENCE,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_DDL_AUTO_DESTRUCTIVE_PROD = rule(
+            "SPRING_DDL_AUTO_DESTRUCTIVE_PROD",
+            "Destructive Hibernate DDL-auto setting in production-oriented profile",
+            FindingSeverity.ERROR,
+            FindingCategory.PERSISTENCE,
+            FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT
+    );
+    public static final FindingRule SPRING_JPA_SHOW_SQL_PROD = rule(
+            "SPRING_JPA_SHOW_SQL_PROD",
+            "spring.jpa.show-sql=true in production-oriented profile",
+            FindingSeverity.WARNING,
+            FindingCategory.CONFIGURATION,
+            FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT
+    );
+    public static final FindingRule SPRING_JPA_OPEN_IN_VIEW = rule(
+            "SPRING_JPA_OPEN_IN_VIEW",
+            "Open-session-in-view is not explicitly disabled",
+            FindingSeverity.WARNING,
+            FindingCategory.PERSISTENCE,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_TRANSACTIONAL_ON_SCHEDULED = rule(
+            "SPRING_TRANSACTIONAL_ON_SCHEDULED",
+            "@Transactional and @Scheduled on the same method",
+            FindingSeverity.WARNING,
+            FindingCategory.TRANSACTION,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_CSRF_DISABLED = rule(
+            "SPRING_CSRF_DISABLED",
+            "CSRF protection is disabled",
+            FindingSeverity.WARNING,
+            FindingCategory.SECURITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_CORS_ALLOW_ALL = rule(
+            "SPRING_CORS_ALLOW_ALL",
+            "CORS configuration allows all origins",
+            FindingSeverity.WARNING,
+            FindingCategory.SECURITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_REQUEST_PARAM_SENSITIVE_NAME = rule(
+            "SPRING_REQUEST_PARAM_SENSITIVE_NAME",
+            "Sensitive value passed as URL parameter or path variable",
+            FindingSeverity.WARNING,
+            FindingCategory.SECURITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_VALUE_NO_DEFAULT = rule(
+            "SPRING_VALUE_NO_DEFAULT",
+            "@Value property reference has no default value",
+            FindingSeverity.WARNING,
+            FindingCategory.CONFIGURATION,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_FIELD_INJECTION = rule(
+            "SPRING_FIELD_INJECTION",
+            "@Autowired field injection used instead of constructor injection",
+            FindingSeverity.INFO,
+            FindingCategory.MAINTAINABILITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_REQUEST_MAPPING_NO_METHOD = rule(
+            "SPRING_REQUEST_MAPPING_NO_METHOD",
+            "@RequestMapping method has no HTTP method constraint",
+            FindingSeverity.INFO,
+            FindingCategory.API_SURFACE,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_CONFIGURATION_PROPERTIES_NOT_VALIDATED = rule(
+            "SPRING_CONFIGURATION_PROPERTIES_NOT_VALIDATED",
+            "@ConfigurationProperties class has no @Validated annotation",
+            FindingSeverity.INFO,
+            FindingCategory.VALIDATION,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+
+    public static final FindingRule SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD = rule(
+            "SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD",
+            "Sensitive actuator endpoints are exposed",
+            FindingSeverity.WARNING,
+            FindingCategory.ACTUATOR,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_SQL_INJECTION_QUERY_CONCATENATION = rule(
+            "SPRING_SQL_INJECTION_QUERY_CONCATENATION",
+            "Native SQL query built with string concatenation",
+            FindingSeverity.WARNING,
+            FindingCategory.SECURITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_LOGGING_PII_EXPOSURE = rule(
+            "SPRING_LOGGING_PII_EXPOSURE",
+            "Sensitive value may be written to logs",
+            FindingSeverity.WARNING,
+            FindingCategory.SECURITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_JPA_LAZY_LOADING_OUTSIDE_TRANSACTION = rule(
+            "SPRING_JPA_LAZY_LOADING_OUTSIDE_TRANSACTION",
+            "Service method may trigger lazy loading outside a transaction",
+            FindingSeverity.WARNING,
+            FindingCategory.PERSISTENCE,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_CONNECTION_POOL_MISCONFIGURED = rule(
+            "SPRING_CONNECTION_POOL_MISCONFIGURED",
+            "HikariCP connection pool configuration looks misconfigured",
+            FindingSeverity.WARNING,
+            FindingCategory.CONFIGURATION,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_ASYNC_EXECUTOR_NOT_CONFIGURED = rule(
+            "SPRING_ASYNC_EXECUTOR_NOT_CONFIGURED",
+            "@Async used without a custom executor configured",
+            FindingSeverity.WARNING,
+            FindingCategory.SCHEDULING,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_SCHEDULED_EXECUTOR_SERVICE_NOT_CONFIGURED = rule(
+            "SPRING_SCHEDULED_EXECUTOR_SERVICE_NOT_CONFIGURED",
+            "Multiple @Scheduled methods without a dedicated TaskScheduler",
+            FindingSeverity.WARNING,
+            FindingCategory.SCHEDULING,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_FEIGN_NO_FALLBACK_OR_TIMEOUT = rule(
+            "SPRING_FEIGN_NO_FALLBACK_OR_TIMEOUT",
+            "@FeignClient has no fallback or timeout configuration",
+            FindingSeverity.WARNING,
+            FindingCategory.HTTP,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER = rule(
+            "SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER",
+            "RestTemplate used without HTTP status error handling",
+            FindingSeverity.WARNING,
+            FindingCategory.HTTP,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_TRANSACTION_ISOLATION_READ_UNCOMMITTED = rule(
+            "SPRING_TRANSACTION_ISOLATION_READ_UNCOMMITTED",
+            "@Transactional uses READ_UNCOMMITTED isolation",
+            FindingSeverity.WARNING,
+            FindingCategory.TRANSACTION,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+
+    private FindingRules() {
+    }
+
+    private static FindingRule rule(
+            String ruleId,
+            String title,
+            FindingSeverity severity,
+            FindingCategory category,
+            FindingRuntimeDetection runtimeDetection
+    ) {
+        return new FindingRule(ruleId, title, severity, category, runtimeDetection);
+    }
+}
