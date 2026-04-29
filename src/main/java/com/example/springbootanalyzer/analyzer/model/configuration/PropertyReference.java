@@ -1,0 +1,13 @@
+package com.example.springbootanalyzer.analyzer.model.configuration;
+
+public record PropertyReference(
+        String propertyName,
+        String referenceType,
+        String sourceFile,
+        String className,
+        String defaultValue,
+        boolean required,
+        String expectedValue,
+        Boolean matchIfMissing
+) {
+}

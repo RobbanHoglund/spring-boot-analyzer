@@ -1,0 +1,20 @@
+package com.example.springbootanalyzer.analyzer.model;
+
+import com.example.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
+import com.example.springbootanalyzer.analyzer.model.http.HttpSurfaceAnalysis;
+import com.example.springbootanalyzer.analyzer.model.runtime.RuntimeStackAnalysis;
+import java.util.List;
+
+public record AnalysisResult(
+        String repositoryUrl,
+        String branch,
+        String workspaceId,
+        BuildInfo buildInfo,
+        List<String> mainApplicationClasses,
+        List<DetectedClass> detectedComponents,
+        List<Finding> findings,
+        ConfigurationAnalysis configurationAnalysis,
+        RuntimeStackAnalysis runtimeStackAnalysis,
+        HttpSurfaceAnalysis httpSurfaceAnalysis
+) {
+}

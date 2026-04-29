@@ -1,0 +1,173 @@
+package com.example.springbootanalyzer.api;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.then;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import com.example.springbootanalyzer.analyzer.model.AnalysisResult;
+import com.example.springbootanalyzer.analyzer.model.BuildInfo;
+import com.example.springbootanalyzer.analyzer.model.BuildTool;
+import com.example.springbootanalyzer.analyzer.model.DetectedClass;
+import com.example.springbootanalyzer.analyzer.model.Finding;
+import com.example.springbootanalyzer.analyzer.model.FindingSeverity;
+import com.example.springbootanalyzer.analyzer.model.SpringComponentType;
+import com.example.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
+import com.example.springbootanalyzer.analyzer.model.http.HttpSurfaceAnalysis;
+import com.example.springbootanalyzer.analyzer.model.runtime.RuntimeStackAnalysis;
+import com.example.springbootanalyzer.analyzer.model.runtime.VirtualThreadAnalysis;
+import com.example.springbootanalyzer.analyzer.model.runtime.WebStack;
+import com.example.springbootanalyzer.application.RepositoryAnalysisService;
+import com.example.springbootanalyzer.error.GlobalExceptionHandler;
+import com.example.springbootanalyzer.git.GitRepositoryReference;
+import java.util.List;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.web.servlet.MockMvc;
+
+@WebMvcTest(AnalysisController.class)
+@Import(GlobalExceptionHandler.class)
+class AnalysisControllerTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @MockitoBean
+    private RepositoryAnalysisService repositoryAnalysisService;
+
+    @Test
+    void acceptsValidAnalyzeRequest() throws Exception {
+        AnalysisResult analysisResult = new AnalysisResult(
+                "https://github.com/example/demo.git",
+                "main",
+                "workspace-123",
+                buildInfo("25"),
+                List.of("com.example.demo.DemoApplication"),
+                List.of(new DetectedClass(
+                        "com.example.demo.DemoApplication",
+                        "DemoApplication",
+                        "com.example.demo",
+                        "src/main/java/com/example/demo/DemoApplication.java",
+                        SpringComponentType.MAIN_APPLICATION,
+                        List.of("SpringBootApplication")
+                )),
+                List.of(new Finding(FindingSeverity.INFO, "Looks good", null)),
+                ConfigurationAnalysis.empty(),
+                runtimeStack("25", "com.example.demo.DemoApplication"),
+                HttpSurfaceAnalysis.empty()
+        );
+
+        given(repositoryAnalysisService.analyze(any())).willReturn(analysisResult);
+
+        mockMvc.perform(post("/api/analyze")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "repositoryUrl": "https://github.com/example/demo.git",
+                                  "branch": "main"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.repositoryUrl").value("https://github.com/example/demo.git"))
+                .andExpect(jsonPath("$.branch").value("main"))
+                .andExpect(jsonPath("$.workspaceId").value("workspace-123"))
+                .andExpect(jsonPath("$.buildTool").value("GRADLE"))
+                .andExpect(jsonPath("$.javaVersionHint").value("25"))
+                .andExpect(jsonPath("$.springBootDetected").value(true))
+                .andExpect(jsonPath("$.mainApplicationClasses[0]").value("com.example.demo.DemoApplication"))
+                .andExpect(jsonPath("$.runtimeStackAnalysis.springBootVersion").value("3.5.13"))
+                .andExpect(jsonPath("$.dependencies[0]").value("org.springframework.boot:spring-boot-starter-web"))
+                .andExpect(jsonPath("$.findings[0].severity").value("INFO"))
+                .andExpect(jsonPath("$.credentials").doesNotExist());
+    }
+
+    @Test
+    void mapsCredentialsIntoRepositoryReferenceWithoutReturningThem() throws Exception {
+        AnalysisResult analysisResult = new AnalysisResult(
+                "https://github.com/example/private-demo.git",
+                "main",
+                "workspace-credentials",
+                buildInfo("21"),
+                List.of(),
+                List.of(),
+                List.of(),
+                ConfigurationAnalysis.empty(),
+                runtimeStack("21", null),
+                HttpSurfaceAnalysis.empty()
+        );
+
+        given(repositoryAnalysisService.analyze(any())).willReturn(analysisResult);
+
+        mockMvc.perform(post("/api/analyze")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "repositoryUrl": "https://github.com/example/private-demo.git",
+                                  "branch": "main",
+                                  "credentials": {
+                                    "username": "octocat",
+                                    "token": "ghp_example"
+                                  }
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.repositoryUrl").value("https://github.com/example/private-demo.git"))
+                .andExpect(jsonPath("$.credentials").doesNotExist());
+
+        ArgumentCaptor<GitRepositoryReference> referenceCaptor = ArgumentCaptor.forClass(GitRepositoryReference.class);
+        then(repositoryAnalysisService).should().analyze(referenceCaptor.capture());
+
+        GitRepositoryReference repositoryReference = referenceCaptor.getValue();
+        org.assertj.core.api.Assertions.assertThat(repositoryReference.repositoryUrl())
+                .isEqualTo("https://github.com/example/private-demo.git");
+        org.assertj.core.api.Assertions.assertThat(repositoryReference.branch()).isEqualTo("main");
+        org.assertj.core.api.Assertions.assertThat(repositoryReference.hasCredentials()).isTrue();
+        org.assertj.core.api.Assertions.assertThat(repositoryReference.credentials().username()).isEqualTo("octocat");
+        org.assertj.core.api.Assertions.assertThat(repositoryReference.credentials().token()).isEqualTo("ghp_example");
+    }
+
+    @Test
+    void rejectsBlankRepositoryUrl() throws Exception {
+        mockMvc.perform(post("/api/analyze")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "repositoryUrl": ""
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.title").value("Validation failed"))
+                .andExpect(jsonPath("$.errors.repositoryUrl").value("repositoryUrl is required"));
+    }
+
+    private BuildInfo buildInfo(String javaVersion) {
+        return new BuildInfo(
+                BuildTool.GRADLE,
+                true,
+                javaVersion,
+                List.of("org.springframework.boot:spring-boot-starter-web"),
+                "3.5.13",
+                "build.gradle plugin",
+                "HIGH"
+        );
+    }
+
+    private RuntimeStackAnalysis runtimeStack(String javaVersion, String mainClass) {
+        return new RuntimeStackAnalysis(
+                "3.5.13",
+                "build.gradle plugin",
+                javaVersion,
+                WebStack.SERVLET_MVC,
+                "Servlet web dependencies were detected in the build.",
+                new VirtualThreadAnalysis(false, true, false, false, false, "Disabled", List.of()),
+                mainClass
+        );
+    }
+}
