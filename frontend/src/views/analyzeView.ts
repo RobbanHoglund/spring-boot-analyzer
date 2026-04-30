@@ -1,5 +1,5 @@
 import { element } from '../dom';
-import type { AnalyzeRepositoryResponse, RepositoryProfile, TokenProfile } from '../types';
+import type { AnalysisMode, AnalyzeRepositoryResponse, RepositoryProfile, TokenProfile } from '../types';
 import type { ResultsViewActions, ResultsViewState } from './resultsView';
 import { renderResultsView } from './resultsView';
 
@@ -11,10 +11,12 @@ export interface AnalyzeViewModel {
   oneTimeRepositoryUrl: string;
   oneTimeBranch: string;
   oneTimeTokenProfileId: string;
+  analysisMode: AnalysisMode;
   statusMessage: string;
   errorMessage: string;
   warningMessage: string;
   isAnalyzing: boolean;
+  analysisProgressIndex: number;
   result: AnalyzeRepositoryResponse | null;
   resultsViewState: ResultsViewState;
   sidebarCollapsed: boolean;
@@ -29,6 +31,7 @@ export interface AnalyzeViewActions extends ResultsViewActions {
   onUpdateOneTimeTokenProfileId: (value: string) => void;
   onAnalyzeOneTimeRepository: () => void;
   onToggleSidebarCollapsed: () => void;
+  onAnalysisModeChange: (value: AnalysisMode) => void;
 }
 
 export function renderAnalyzeView(model: AnalyzeViewModel, actions: AnalyzeViewActions): HTMLElement {
@@ -47,7 +50,88 @@ export function renderAnalyzeView(model: AnalyzeViewModel, actions: AnalyzeViewA
   );
 
   page.append(sidebar, main);
-  return page;
+  const wrapper = element('div', { className: 'analyze-view-shell' }, page);
+  if (model.isAnalyzing) {
+    wrapper.appendChild(renderAnalysisProgressModal(model));
+  }
+  return wrapper;
+}
+
+function renderAnalysisProgressModal(model: AnalyzeViewModel): HTMLElement {
+  const steps = [
+    {
+      title: 'Preparing workspace',
+      detail: 'Create a temporary workspace and validate your request.'
+    },
+    {
+      title: 'Cloning repository',
+      detail: 'Clone the selected repository into the isolated workspace.'
+    },
+    {
+      title: 'Inspecting project',
+      detail: 'Read build files, detect Spring Boot signals, and inspect structure.'
+    },
+    {
+      title: 'Analyzing code',
+      detail: 'Scan source, configuration, components, and HTTP surface.'
+    },
+    {
+      title: 'Building results',
+      detail: 'Assemble sections, findings, and summaries for the results view.'
+    }
+  ];
+
+  const progressList = element('div', { className: 'analysis-progress-steps' });
+  for (const [index, step] of steps.entries()) {
+    const stateClass =
+      index < model.analysisProgressIndex
+        ? 'completed'
+        : index === model.analysisProgressIndex
+          ? 'active'
+          : 'pending';
+    progressList.appendChild(
+      element(
+        'div',
+        { className: `analysis-progress-step ${stateClass}` },
+        element('div', { className: 'analysis-progress-step-marker', text: index < model.analysisProgressIndex ? '✓' : String(index + 1) }),
+        element(
+          'div',
+          { className: 'analysis-progress-step-body' },
+          element('div', { className: 'analysis-progress-step-title', text: step.title }),
+          element('div', { className: 'analysis-progress-step-detail', text: step.detail })
+        )
+      )
+    );
+  }
+
+  return element(
+    'div',
+    { className: 'analysis-progress-overlay', attributes: { role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Analysis in progress' } },
+    element(
+      'div',
+      { className: 'analysis-progress-modal' },
+      element(
+        'div',
+        { className: 'analysis-progress-header' },
+        element('div', { className: 'analysis-progress-eyebrow', text: 'Analysis running' }),
+        element('h3', { text: 'Working through the repository' }),
+        element('p', {
+          className: 'analysis-progress-message',
+          text: model.statusMessage || 'Running analysis...'
+        })
+      ),
+      element(
+        'div',
+        { className: 'analysis-progress-bar' },
+        element('div', { className: 'analysis-progress-bar-fill' })
+      ),
+      progressList,
+      element('p', {
+        className: 'analysis-progress-note',
+        text: 'This window stays open until the analysis finishes. Large repositories or Gradle model analysis can take a little while.'
+      })
+    )
+  );
 }
 
 function renderRepositoryPanel(model: AnalyzeViewModel, actions: AnalyzeViewActions): HTMLElement {
@@ -74,6 +158,7 @@ function renderRepositoryPanel(model: AnalyzeViewModel, actions: AnalyzeViewActi
       text: 'Run analysis from a saved profile or a one-time repository URL.'
     })
   );
+  panel.appendChild(renderAnalysisModeSelector(model, actions));
 
   const switcher = element('div', { className: 'mode-switcher' });
   for (const mode of [
@@ -97,6 +182,31 @@ function renderRepositoryPanel(model: AnalyzeViewModel, actions: AnalyzeViewActi
   );
 
   return panel;
+}
+
+function renderAnalysisModeSelector(model: AnalyzeViewModel, actions: AnalyzeViewActions): HTMLElement {
+  const select = element('select', { className: 'select-input' }) as HTMLSelectElement;
+  select.appendChild(new Option('Static only', 'STATIC_ONLY', false, model.analysisMode === 'STATIC_ONLY'));
+  select.appendChild(
+    new Option(
+      'Static + Gradle model',
+      'STATIC_PLUS_GRADLE_MODEL',
+      false,
+      model.analysisMode === 'STATIC_PLUS_GRADLE_MODEL'
+    )
+  );
+  select.value = model.analysisMode;
+  select.addEventListener('change', () => actions.onAnalysisModeChange(select.value as AnalysisMode));
+  return element(
+    'div',
+    { className: 'field' },
+    element('span', { text: 'Analysis mode' }),
+    select,
+    element('p', {
+      className: 'helper-text',
+      text: 'Static + Gradle model runs Gradle build logic in an isolated workspace to resolve dependencies. It does not start the target Spring Boot application.'
+    })
+  );
 }
 
 function renderCollapsedSidebar(model: AnalyzeViewModel, actions: AnalyzeViewActions): HTMLElement {

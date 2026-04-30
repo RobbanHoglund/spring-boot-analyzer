@@ -2,7 +2,10 @@ export interface AnalyzeRepositoryRequest {
   repositoryUrl: string;
   branch?: string | null;
   credentials?: AnalyzeRepositoryCredentials;
+  analysisMode?: AnalysisMode;
 }
+
+export type AnalysisMode = 'STATIC_ONLY' | 'STATIC_PLUS_GRADLE_MODEL';
 
 export interface AnalyzeRepositoryCredentials {
   username?: string | null;
@@ -24,6 +27,7 @@ export interface AnalyzeRepositoryResponse {
   configurationAnalysis?: ConfigurationAnalysis;
   runtimeStackAnalysis?: RuntimeStackAnalysis;
   httpSurfaceAnalysis?: HttpSurfaceAnalysis;
+  gradleModelAnalysis?: GradleModelAnalysis;
   [key: string]: unknown;
 }
 
@@ -257,4 +261,193 @@ export interface ActuatorEndpointExposure {
   line?: number | null;
   profile?: string | null;
   exposedEndpoints?: string[];
+}
+
+export interface GradleModelAnalysis {
+  status?: string | null;
+  gradleVersion?: string | null;
+  javaVersion?: string | null;
+  executionMode?: string | null;
+  reportFile?: string | null;
+  failureType?: string | null;
+  errorMessage?: string | null;
+  sanitizedBuildModel?: boolean;
+  sanitizedBuildReason?: string | null;
+  appliedWorkarounds?: GradleSettingsPluginWorkaround[];
+  settingsPlugins?: GradleSettingsPluginModel[];
+  pluginResolutionFailures?: GradlePluginResolutionFailure[];
+  pluginDeclarations?: GradlePluginDeclaration[];
+  pluginResolutionBridge?: GradlePluginResolutionBridgeResult | null;
+  pluginBridgeUsed?: boolean;
+  pluginBridgeStatus?: string | null;
+  projects?: GradleProjectModel[];
+  plugins?: GradlePluginModel[];
+  repositories?: GradleRepositoryModel[];
+  configurations?: GradleConfigurationModel[];
+  declaredDependencies?: GradleDependencyModel[];
+  resolvedDependencies?: GradleResolvedDependencyModel[];
+  resolutionResults?: GradleResolutionResult[];
+  dependencyConflicts?: GradleDependencyConflict[];
+  sourceSets?: GradleSourceSetModel[];
+  tasks?: GradleTaskModel[];
+  javaToolchains?: GradleJavaToolchainModel[];
+  findings?: Finding[];
+}
+
+export interface GradleSettingsPluginWorkaround {
+  pluginId?: string | null;
+  version?: string | null;
+  sourceFile?: string | null;
+  line?: number | null;
+  action?: string | null;
+  reason?: string | null;
+}
+
+export interface GradleSettingsPluginModel {
+  pluginId?: string | null;
+  version?: string | null;
+  sourceFile?: string | null;
+  line?: number | null;
+}
+
+export interface GradlePluginResolutionFailure {
+  pluginId?: string | null;
+  version?: string | null;
+  artifact?: string | null;
+  settingsFile?: string | null;
+  line?: number | null;
+  searchedRepositories?: string[];
+  message?: string | null;
+}
+
+export interface GradlePluginDeclaration {
+  pluginId?: string | null;
+  version?: string | null;
+  sourceFile?: string | null;
+  line?: number | null;
+  source?: string | null;
+  applyFalse?: boolean;
+}
+
+export interface GradlePluginResolutionBridgeResult {
+  successful?: boolean;
+  localMavenRepository?: string | null;
+  resolvedPlugins?: ResolvedGradlePlugin[];
+  failures?: GradlePluginBridgeFailure[];
+  findings?: Finding[];
+}
+
+export interface ResolvedGradlePlugin {
+  pluginId?: string | null;
+  version?: string | null;
+  markerCoordinates?: string | null;
+  implementationCoordinates?: string | null;
+  sourceFile?: string | null;
+  line?: number | null;
+  markerDownloaded?: boolean;
+  implementationDownloaded?: boolean;
+  transitiveArtifactCount?: number;
+}
+
+export interface GradlePluginBridgeFailure {
+  pluginId?: string | null;
+  version?: string | null;
+  markerCoordinates?: string | null;
+  sourceFile?: string | null;
+  line?: number | null;
+  failureType?: string | null;
+  message?: string | null;
+  markerPresentLocally?: boolean;
+  implementationPresentLocally?: boolean;
+  implementationCoordinates?: string | null;
+}
+
+export interface GradleProjectModel {
+  path?: string | null;
+  name?: string | null;
+  projectDir?: string | null;
+}
+
+export interface GradlePluginModel {
+  projectPath?: string | null;
+  pluginId?: string | null;
+  implementationClass?: string | null;
+}
+
+export interface GradleRepositoryModel {
+  projectPath?: string | null;
+  name?: string | null;
+  type?: string | null;
+  url?: string | null;
+}
+
+export interface GradleConfigurationModel {
+  projectPath?: string | null;
+  name?: string | null;
+  resolvable?: boolean;
+  consumable?: boolean;
+  dependencyCount?: number;
+  declaredDependencyCount?: number;
+  allDependencyCount?: number;
+  extendsFrom?: string[];
+}
+
+export interface GradleDependencyModel {
+  projectPath?: string | null;
+  configuration?: string | null;
+  notation?: string | null;
+  group?: string | null;
+  artifact?: string | null;
+  version?: string | null;
+}
+
+export interface GradleResolvedDependencyModel {
+  projectPath?: string | null;
+  configuration?: string | null;
+  group?: string | null;
+  artifact?: string | null;
+  version?: string | null;
+  direct?: boolean;
+  selectedReason?: string | null;
+}
+
+export interface GradleResolutionResult {
+  projectPath?: string | null;
+  configuration?: string | null;
+  attempted?: boolean;
+  successful?: boolean;
+  fallbackUsed?: boolean;
+  errorType?: string | null;
+  errorMessage?: string | null;
+  resolvedDependencyCount?: number;
+}
+
+export interface GradleDependencyConflict {
+  projectPath?: string | null;
+  configuration?: string | null;
+  group?: string | null;
+  artifact?: string | null;
+  requestedVersions?: string | null;
+  selectedVersion?: string | null;
+}
+
+export interface GradleSourceSetModel {
+  projectPath?: string | null;
+  name?: string | null;
+  javaDirs?: string[];
+  resourceDirs?: string[];
+}
+
+export interface GradleTaskModel {
+  projectPath?: string | null;
+  name?: string | null;
+  group?: string | null;
+  description?: string | null;
+}
+
+export interface GradleJavaToolchainModel {
+  projectPath?: string | null;
+  languageVersion?: string | null;
+  vendor?: string | null;
+  implementation?: string | null;
 }

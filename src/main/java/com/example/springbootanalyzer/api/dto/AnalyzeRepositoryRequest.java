@@ -13,6 +13,8 @@ public record AnalyzeRepositoryRequest(
         String branch,
 
         @Valid
-        AnalyzeRepositoryCredentials credentials
+        AnalyzeRepositoryCredentials credentials,
+
+        AnalysisMode analysisMode
 ) {
 }

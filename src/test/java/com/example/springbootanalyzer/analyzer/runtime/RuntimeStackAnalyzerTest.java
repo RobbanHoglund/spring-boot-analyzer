@@ -7,8 +7,12 @@ import com.example.springbootanalyzer.analyzer.model.BuildTool;
 import com.example.springbootanalyzer.analyzer.model.configuration.ApplicationProperty;
 import com.example.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
 import com.example.springbootanalyzer.analyzer.model.configuration.ConfigurationSummary;
+import com.example.springbootanalyzer.analyzer.model.gradle.GradleModelAnalysis;
+import com.example.springbootanalyzer.analyzer.model.gradle.GradleAnalysisStatus;
 import com.example.springbootanalyzer.analyzer.model.configuration.PropertyDocumentation;
 import com.example.springbootanalyzer.analyzer.model.configuration.PropertyKind;
+import com.example.springbootanalyzer.analyzer.model.DetectedClass;
+import com.example.springbootanalyzer.analyzer.model.SpringComponentType;
 import com.example.springbootanalyzer.analyzer.model.runtime.WebStack;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -72,7 +76,14 @@ class RuntimeStackAnalyzerTest {
                 "HIGH"
         );
 
-        var result = analyzer.analyze(tempDir, buildInfo, configurationAnalysis, List.of(), List.of("com.example.demo.DemoApplication"));
+        var result = analyzer.analyze(
+                tempDir,
+                buildInfo,
+                GradleModelAnalysis.empty(GradleAnalysisStatus.NOT_REQUESTED, "SYSTEM_GRADLE", List.of()),
+                configurationAnalysis,
+                List.of(),
+                List.of("com.example.demo.DemoApplication")
+        );
 
         assertThat(result.runtimeStackAnalysis().webStack()).isEqualTo(WebStack.REACTIVE_WEBFLUX);
         assertThat(result.runtimeStackAnalysis().virtualThreads().enabledByProperty()).isTrue();
@@ -80,6 +91,58 @@ class RuntimeStackAnalyzerTest {
         assertThat(result.runtimeStackAnalysis().virtualThreads().explicitVirtualThreadApiUsage()).isTrue();
         assertThat(result.findings()).extracting(finding -> finding.message())
                 .anyMatch(message -> message.contains("spring.main.keep-alive=true was not found"));
+    }
+
+    @Test
+    void keepsSpringMvcReasonWhenControllersExistAndGradleModelIsPartial() throws IOException {
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("DemoController.java"), """
+                package com.example.demo;
+
+                import org.springframework.web.bind.annotation.GetMapping;
+                import org.springframework.web.bind.annotation.RestController;
+
+                @RestController
+                class DemoController {
+
+                    @GetMapping("/ping")
+                    String ping() {
+                        return "pong";
+                    }
+                }
+                """);
+
+        BuildInfo buildInfo = new BuildInfo(
+                BuildTool.GRADLE,
+                true,
+                "25",
+                List.of("org.springframework.boot:spring-boot-starter-web"),
+                "3.5.13",
+                "Gradle plugins",
+                "HIGH"
+        );
+
+        var result = analyzer.analyze(
+                tempDir,
+                buildInfo,
+                GradleModelAnalysis.empty(GradleAnalysisStatus.PARTIAL, "TOOLING_API", List.of()),
+                new ConfigurationAnalysis(List.of(), List.of(), List.of(), List.of(), new ConfigurationSummary(0, 0, 0, 0, 0, 0, List.of("default"))),
+                List.of(new DetectedClass(
+                        "com.example.demo.DemoController",
+                        "DemoController",
+                        "com.example.demo",
+                        "src/main/java/com/example/demo/DemoController.java",
+                        SpringComponentType.REST_CONTROLLER,
+                        List.of("@RestController")
+                )),
+                List.of("com.example.demo.DemoApplication")
+        );
+
+        assertThat(result.runtimeStackAnalysis().webStack()).isEqualTo(WebStack.SERVLET_MVC);
+        assertThat(result.runtimeStackAnalysis().webStackReason())
+                .isEqualTo("Spring MVC annotations and servlet web dependency declarations were detected.");
+        assertThat(result.runtimeStackAnalysis().webStackReason())
+                .doesNotContain("No strong runtime stack signal");
     }
 
     private ApplicationProperty property(String name, String value) {

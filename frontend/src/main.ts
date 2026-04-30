@@ -21,6 +21,7 @@ import {
   maskToken
 } from './tokenStore';
 import type {
+  AnalysisMode,
   AnalyzeRepositoryRequest,
   AnalyzeRepositoryResponse,
   RepositoryProfile,
@@ -41,10 +42,12 @@ interface AppState {
   oneTimeRepositoryUrl: string;
   oneTimeBranch: string;
   oneTimeTokenProfileId: string;
+  analysisMode: AnalysisMode;
   statusMessage: string;
   errorMessage: string;
   warningMessage: string;
   isAnalyzing: boolean;
+  analysisProgressIndex: number;
   result: AnalyzeRepositoryResponse | null;
   sidebarCollapsed: boolean;
   repositoryForm: RepositoryFormModel;
@@ -61,6 +64,7 @@ interface FocusSnapshot {
 const root = requiredElement<HTMLDivElement>('app');
 
 let state: AppState = createInitialState();
+let analysisProgressTimer: number | null = null;
 render();
 
 function createInitialState(): AppState {
@@ -77,10 +81,12 @@ function createInitialState(): AppState {
     oneTimeRepositoryUrl: DEFAULT_REPOSITORY_URL,
     oneTimeBranch: '',
     oneTimeTokenProfileId: defaultOneTimeTokenProfile?.id ?? '',
+    analysisMode: 'STATIC_ONLY',
     statusMessage: '',
     errorMessage: '',
     warningMessage: '',
     isAnalyzing: false,
+    analysisProgressIndex: 0,
     result: null,
     sidebarCollapsed: false,
     repositoryForm: createEmptyRepositoryForm(),
@@ -89,7 +95,7 @@ function createInitialState(): AppState {
       findingsSeverity: 'ALL',
       findingsText: '',
       findingsExpanded: false,
-      findingsGrouped: false,
+      findingsGrouped: true,
       configurationSearch: '',
       configurationProfile: 'ALL',
       configurationSource: 'ALL',
@@ -110,6 +116,8 @@ function createInitialState(): AppState {
       componentText: '',
       componentsExpanded: false,
       dependencyText: '',
+      resolvedDependencyConfiguration: 'ALL',
+      resolvedDependencyDirectOnly: false,
       rawJsonExpanded: false,
       httpInboundExpanded: false,
       httpOutboundExpanded: false,
@@ -132,7 +140,7 @@ function render(): void {
       element(
         'p',
         {
-          text: 'Clone and statically analyze Spring Boot repositories without running their code.'
+          text: 'Clone and analyze Spring Boot repositories without starting the application.'
         }
       )
     )
@@ -156,10 +164,12 @@ function render(): void {
           oneTimeRepositoryUrl: state.oneTimeRepositoryUrl,
           oneTimeBranch: state.oneTimeBranch,
           oneTimeTokenProfileId: state.oneTimeTokenProfileId,
+          analysisMode: state.analysisMode,
           statusMessage: state.statusMessage,
           errorMessage: state.errorMessage,
           warningMessage: state.warningMessage,
           isAnalyzing: state.isAnalyzing,
+          analysisProgressIndex: state.analysisProgressIndex,
           result: state.result,
           resultsViewState: state.resultsViewState,
           sidebarCollapsed: state.sidebarCollapsed
@@ -202,6 +212,10 @@ function render(): void {
           },
           onAnalyzeOneTimeRepository: () => {
             void analyzeOneTimeRepository();
+          },
+          onAnalysisModeChange: (value) => {
+            state.analysisMode = value;
+            render();
           },
           onFindingsSeverityChange: (value) => {
             state.resultsViewState.findingsSeverity = value;
@@ -298,6 +312,14 @@ function render(): void {
           },
           onDependencyTextChange: (value) => {
             state.resultsViewState.dependencyText = value;
+            render();
+          },
+          onResolvedDependencyConfigurationChange: (value) => {
+            state.resultsViewState.resolvedDependencyConfiguration = value;
+            render();
+          },
+          onResolvedDependencyDirectOnlyChange: (value) => {
+            state.resultsViewState.resolvedDependencyDirectOnly = value;
             render();
           },
           onRawJsonExpandedChange: (value) => {
@@ -404,7 +426,8 @@ async function analyzeSavedRepository(): Promise<void> {
   }
 
   const request: AnalyzeRepositoryRequest = {
-    repositoryUrl: repository.repositoryUrl
+    repositoryUrl: repository.repositoryUrl,
+    analysisMode: state.analysisMode
   };
 
   if (repository.branch?.trim()) {
@@ -453,7 +476,8 @@ async function analyzeOneTimeRepository(): Promise<void> {
   }
 
   const request: AnalyzeRepositoryRequest = {
-    repositoryUrl
+    repositoryUrl,
+    analysisMode: state.analysisMode
   };
 
   if (state.oneTimeBranch.trim()) {
@@ -489,8 +513,10 @@ async function analyzeOneTimeRepository(): Promise<void> {
 
 async function runAnalysis(request: AnalyzeRepositoryRequest): Promise<void> {
   state.isAnalyzing = true;
-  state.statusMessage = 'Cloning and analyzing repository...';
+  state.analysisProgressIndex = 0;
+  state.statusMessage = 'Preparing analysis workspace...';
   state.errorMessage = '';
+  startAnalysisProgressTimer();
   render();
 
   try {
@@ -501,8 +527,32 @@ async function runAnalysis(request: AnalyzeRepositoryRequest): Promise<void> {
     state.statusMessage = '';
     state.errorMessage = error instanceof ApiError ? error.message : 'Analysis request failed.';
   } finally {
+    stopAnalysisProgressTimer();
     state.isAnalyzing = false;
+    state.analysisProgressIndex = 0;
     render();
+  }
+}
+
+function startAnalysisProgressTimer(): void {
+  stopAnalysisProgressTimer();
+  analysisProgressTimer = window.setInterval(() => {
+    if (!state.isAnalyzing) {
+      stopAnalysisProgressTimer();
+      return;
+    }
+
+    const nextIndex = Math.min(state.analysisProgressIndex + 1, ANALYSIS_PROGRESS_STEPS.length - 1);
+    state.analysisProgressIndex = nextIndex;
+    state.statusMessage = ANALYSIS_PROGRESS_STEPS[nextIndex].description;
+    render();
+  }, 1600);
+}
+
+function stopAnalysisProgressTimer(): void {
+  if (analysisProgressTimer !== null) {
+    window.clearInterval(analysisProgressTimer);
+    analysisProgressTimer = null;
   }
 }
 
@@ -801,6 +851,8 @@ function resetResultsViewState(): void {
     componentText: '',
     componentsExpanded: false,
     dependencyText: '',
+    resolvedDependencyConfiguration: 'ALL',
+    resolvedDependencyDirectOnly: false,
     rawJsonExpanded: false,
     httpInboundExpanded: false,
     httpOutboundExpanded: false,
@@ -867,3 +919,26 @@ function restoreFocusSnapshot(snapshot: FocusSnapshot | null): void {
     nextElement.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
   }
 }
+
+const ANALYSIS_PROGRESS_STEPS = [
+  {
+    title: 'Preparing workspace',
+    description: 'Preparing analysis workspace...'
+  },
+  {
+    title: 'Cloning repository',
+    description: 'Cloning repository into an isolated workspace...'
+  },
+  {
+    title: 'Inspecting project',
+    description: 'Inspecting build files and Spring Boot signals...'
+  },
+  {
+    title: 'Analyzing code',
+    description: 'Analyzing source, configuration, and HTTP surface...'
+  },
+  {
+    title: 'Building results',
+    description: 'Preparing results for display...'
+  }
+] as const;

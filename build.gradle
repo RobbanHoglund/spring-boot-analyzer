@@ -9,6 +9,7 @@ version = '0.0.1-SNAPSHOT'
 description = 'spring-boot-analyzer'
 
 repositories {
+    maven { url = 'https://repo.gradle.org/gradle/libs-releases' }
     mavenCentral()
 }
 
@@ -32,6 +33,7 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
     implementation 'org.eclipse.jgit:org.eclipse.jgit:7.6.0.202603022253-r'
     implementation 'org.eclipse.jgit:org.eclipse.jgit.ssh.apache:7.6.0.202603022253-r'
+    implementation 'org.gradle:gradle-tooling-api:9.5.0'
     implementation 'com.github.javaparser:javaparser-core:3.28.0'
     implementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml'
 

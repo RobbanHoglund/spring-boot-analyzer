@@ -6,6 +6,8 @@ import com.example.springbootanalyzer.analyzer.model.Finding;
 import com.example.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.example.springbootanalyzer.analyzer.model.configuration.ApplicationProperty;
 import com.example.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
+import com.example.springbootanalyzer.analyzer.model.gradle.GradleModelAnalysis;
+import com.example.springbootanalyzer.analyzer.model.gradle.GradleResolvedDependencyModel;
 import com.example.springbootanalyzer.analyzer.model.runtime.RuntimeStackAnalysis;
 import com.example.springbootanalyzer.analyzer.model.runtime.VirtualThreadAnalysis;
 import com.example.springbootanalyzer.analyzer.model.runtime.WebStack;
@@ -28,23 +30,25 @@ public class RuntimeStackAnalyzer {
     public Result analyze(
             Path repositoryRoot,
             BuildInfo buildInfo,
+            GradleModelAnalysis gradleModelAnalysis,
             ConfigurationAnalysis configurationAnalysis,
             List<DetectedClass> detectedComponents,
             List<String> mainApplicationClasses
     ) {
         RuntimeEvidence evidence = collectRuntimeEvidence(repositoryRoot, detectedComponents);
+        List<String> dependencyCoordinates = runtimeDependencies(buildInfo, gradleModelAnalysis);
         String configuredWebApplicationType = configuredPropertyValue(
                 configurationAnalysis,
                 "spring.main.web-application-type"
         );
 
-        WebStack webStack = determineWebStack(buildInfo, configuredWebApplicationType, evidence, detectedComponents);
-        String webStackReason = determineWebStackReason(buildInfo, configuredWebApplicationType, evidence, webStack);
+        WebStack webStack = determineWebStack(dependencyCoordinates, buildInfo, configuredWebApplicationType, evidence, detectedComponents);
+        String webStackReason = determineWebStackReason(dependencyCoordinates, buildInfo, configuredWebApplicationType, evidence, webStack);
         VirtualThreadAnalysis virtualThreads = analyzeVirtualThreads(buildInfo, configurationAnalysis, evidence);
 
         List<Finding> findings = new ArrayList<>();
         addVirtualThreadFindings(buildInfo, virtualThreads, findings);
-        addWebStackFindings(buildInfo, webStack, evidence, findings);
+        addWebStackFindings(dependencyCoordinates, buildInfo, webStack, evidence, findings);
 
         String mainClass = mainApplicationClasses.isEmpty() ? null : mainApplicationClasses.get(0);
         RuntimeStackAnalysis analysis = new RuntimeStackAnalysis(
@@ -128,6 +132,7 @@ public class RuntimeStackAnalyzer {
     }
 
     private WebStack determineWebStack(
+            List<String> dependencyCoordinates,
             BuildInfo buildInfo,
             String configuredWebApplicationType,
             RuntimeEvidence evidence,
@@ -142,8 +147,8 @@ public class RuntimeStackAnalyzer {
             };
         }
 
-        boolean servletDependency = buildInfo.dependencies().stream().anyMatch(this::isServletDependency);
-        boolean reactiveDependency = buildInfo.dependencies().stream().anyMatch(this::isReactiveDependency);
+        boolean servletDependency = dependencyCoordinates.stream().anyMatch(this::isServletDependency);
+        boolean reactiveDependency = dependencyCoordinates.stream().anyMatch(this::isReactiveDependency);
 
         if (servletDependency && reactiveDependency) {
             return WebStack.MIXED_MVC_AND_WEBFLUX;
@@ -165,6 +170,7 @@ public class RuntimeStackAnalyzer {
     }
 
     private String determineWebStackReason(
+            List<String> dependencyCoordinates,
             BuildInfo buildInfo,
             String configuredWebApplicationType,
             RuntimeEvidence evidence,
@@ -174,17 +180,23 @@ public class RuntimeStackAnalyzer {
             return "Configured via spring.main.web-application-type=" + configuredWebApplicationType;
         }
 
-        boolean servletDependency = buildInfo.dependencies().stream().anyMatch(this::isServletDependency);
-        boolean reactiveDependency = buildInfo.dependencies().stream().anyMatch(this::isReactiveDependency);
+        boolean servletDependency = dependencyCoordinates.stream().anyMatch(this::isServletDependency);
+        boolean reactiveDependency = dependencyCoordinates.stream().anyMatch(this::isReactiveDependency);
 
         if (servletDependency && reactiveDependency) {
             return "Both Spring MVC/Servlet and WebFlux dependencies were detected. Spring MVC typically wins auto-configuration precedence.";
+        }
+        if (servletDependency && evidence.webSignalDetected()) {
+            return "Spring MVC annotations and servlet web dependency declarations were detected.";
         }
         if (servletDependency) {
             return "Servlet web dependencies were detected in the build.";
         }
         if (reactiveDependency) {
             return "Reactive WebFlux dependencies were detected in the build.";
+        }
+        if (webStack == WebStack.SERVLET_MVC && evidence.webSignalDetected()) {
+            return "Detected from Spring MVC annotations in source files.";
         }
         if (evidence.reactiveSignalDetected()) {
             return "Reactive code patterns were detected in source files.";
@@ -269,6 +281,7 @@ public class RuntimeStackAnalyzer {
     }
 
     private void addWebStackFindings(
+            List<String> dependencyCoordinates,
             BuildInfo buildInfo,
             WebStack webStack,
             RuntimeEvidence evidence,
@@ -288,7 +301,7 @@ public class RuntimeStackAnalyzer {
                     null
             ));
         }
-        if (webStack == WebStack.NON_WEB && buildInfo.dependencies().stream().anyMatch(this::isServletDependency)) {
+        if (webStack == WebStack.NON_WEB && dependencyCoordinates.stream().anyMatch(this::isServletDependency)) {
             findings.add(new Finding(
                     FindingSeverity.INFO,
                     "Web dependencies were detected, but configuration indicates a non-web application type.",
@@ -334,6 +347,22 @@ public class RuntimeStackAnalyzer {
         return normalized.contains("spring-boot-starter-webflux")
                 || normalized.contains("spring-webflux")
                 || normalized.contains("reactor-netty");
+    }
+
+    private List<String> runtimeDependencies(BuildInfo buildInfo, GradleModelAnalysis gradleModelAnalysis) {
+        if (gradleModelAnalysis != null
+                && gradleModelAnalysis.resolvedDependencies() != null
+                && !gradleModelAnalysis.resolvedDependencies().isEmpty()) {
+            return gradleModelAnalysis.resolvedDependencies().stream()
+                    .map(this::coordinate)
+                    .distinct()
+                    .toList();
+        }
+        return buildInfo.dependencies();
+    }
+
+    private String coordinate(GradleResolvedDependencyModel dependency) {
+        return (dependency.group() == null ? "" : dependency.group()) + ":" + (dependency.artifact() == null ? "" : dependency.artifact());
     }
 
     public record Result(

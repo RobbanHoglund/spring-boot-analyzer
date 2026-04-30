@@ -7,6 +7,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.example.springbootanalyzer.api.dto.AnalysisMode;
 import com.example.springbootanalyzer.analyzer.model.AnalysisResult;
 import com.example.springbootanalyzer.analyzer.model.BuildInfo;
 import com.example.springbootanalyzer.analyzer.model.BuildTool;
@@ -15,6 +16,8 @@ import com.example.springbootanalyzer.analyzer.model.Finding;
 import com.example.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.example.springbootanalyzer.analyzer.model.SpringComponentType;
 import com.example.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
+import com.example.springbootanalyzer.analyzer.model.gradle.GradleAnalysisStatus;
+import com.example.springbootanalyzer.analyzer.model.gradle.GradleModelAnalysis;
 import com.example.springbootanalyzer.analyzer.model.http.HttpSurfaceAnalysis;
 import com.example.springbootanalyzer.analyzer.model.runtime.RuntimeStackAnalysis;
 import com.example.springbootanalyzer.analyzer.model.runtime.VirtualThreadAnalysis;
@@ -61,7 +64,8 @@ class AnalysisControllerTest {
                 List.of(new Finding(FindingSeverity.INFO, "Looks good", null)),
                 ConfigurationAnalysis.empty(),
                 runtimeStack("25", "com.example.demo.DemoApplication"),
-                HttpSurfaceAnalysis.empty()
+                HttpSurfaceAnalysis.empty(),
+                GradleModelAnalysis.empty(GradleAnalysisStatus.NOT_REQUESTED, "SYSTEM_GRADLE", List.of())
         );
 
         given(repositoryAnalysisService.analyze(any())).willReturn(analysisResult);
@@ -85,7 +89,8 @@ class AnalysisControllerTest {
                 .andExpect(jsonPath("$.runtimeStackAnalysis.springBootVersion").value("3.5.13"))
                 .andExpect(jsonPath("$.dependencies[0]").value("org.springframework.boot:spring-boot-starter-web"))
                 .andExpect(jsonPath("$.findings[0].severity").value("INFO"))
-                .andExpect(jsonPath("$.credentials").doesNotExist());
+                .andExpect(jsonPath("$.credentials").doesNotExist())
+                .andExpect(jsonPath("$.gradleModelAnalysis.status").value("NOT_REQUESTED"));
     }
 
     @Test
@@ -100,7 +105,8 @@ class AnalysisControllerTest {
                 List.of(),
                 ConfigurationAnalysis.empty(),
                 runtimeStack("21", null),
-                HttpSurfaceAnalysis.empty()
+                HttpSurfaceAnalysis.empty(),
+                GradleModelAnalysis.empty(GradleAnalysisStatus.NOT_REQUESTED, "SYSTEM_GRADLE", List.of())
         );
 
         given(repositoryAnalysisService.analyze(any())).willReturn(analysisResult);
@@ -131,6 +137,41 @@ class AnalysisControllerTest {
         org.assertj.core.api.Assertions.assertThat(repositoryReference.hasCredentials()).isTrue();
         org.assertj.core.api.Assertions.assertThat(repositoryReference.credentials().username()).isEqualTo("octocat");
         org.assertj.core.api.Assertions.assertThat(repositoryReference.credentials().token()).isEqualTo("ghp_example");
+        org.assertj.core.api.Assertions.assertThat(repositoryReference.analysisMode()).isEqualTo(AnalysisMode.STATIC_ONLY);
+    }
+
+    @Test
+    void mapsAnalysisModeIntoRepositoryReference() throws Exception {
+        AnalysisResult analysisResult = new AnalysisResult(
+                "https://github.com/example/private-demo.git",
+                "main",
+                "workspace-credentials",
+                buildInfo("21"),
+                List.of(),
+                List.of(),
+                List.of(),
+                ConfigurationAnalysis.empty(),
+                runtimeStack("21", null),
+                HttpSurfaceAnalysis.empty(),
+                GradleModelAnalysis.empty(GradleAnalysisStatus.NOT_REQUESTED, "SYSTEM_GRADLE", List.of())
+        );
+
+        given(repositoryAnalysisService.analyze(any())).willReturn(analysisResult);
+
+        mockMvc.perform(post("/api/analyze")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "repositoryUrl": "https://github.com/example/private-demo.git",
+                                  "analysisMode": "STATIC_PLUS_GRADLE_MODEL"
+                                }
+                                """))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<GitRepositoryReference> referenceCaptor = ArgumentCaptor.forClass(GitRepositoryReference.class);
+        then(repositoryAnalysisService).should().analyze(referenceCaptor.capture());
+        org.assertj.core.api.Assertions.assertThat(referenceCaptor.getValue().analysisMode())
+                .isEqualTo(AnalysisMode.STATIC_PLUS_GRADLE_MODEL);
     }
 
     @Test

@@ -32,6 +32,10 @@ button {
   min-height: 100vh;
 }
 
+.analyze-view-shell {
+  position: relative;
+}
+
 .page-shell {
   width: min(2200px, calc(100vw - 16px));
   max-width: none;
@@ -565,6 +569,11 @@ button {
   background: #ffffff;
 }
 
+.warning-note {
+  border-color: #facc15;
+  background: #fffbea;
+}
+
 .success-note {
   border-color: #b7ebc6;
   background: #f3fff7;
@@ -621,6 +630,48 @@ button {
   gap: 12px;
 }
 
+.runtime-pillars {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.runtime-pillar {
+  border: 1px solid #dbe3f0;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  padding: 9px 10px;
+  min-width: 0;
+}
+
+.runtime-pillar-label {
+  color: #5a6980;
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.runtime-pillar-value {
+  margin-top: 4px;
+  color: #172033;
+  font-size: 1rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-pillar-meta {
+  margin-top: 2px;
+  color: #5a6980;
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .runtime-stack-panel,
 .runtime-metrics-panel {
   border: 1px solid #dbe3f0;
@@ -628,6 +679,21 @@ button {
   background: #ffffff;
   padding: 12px;
   min-width: 0;
+}
+
+.runtime-panel-section + .runtime-panel-section {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #edf2f8;
+}
+
+.runtime-panel-caption {
+  margin-bottom: 8px;
+  color: #5a6980;
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
 }
 
 .subsection-title {
@@ -766,6 +832,12 @@ button {
   margin-top: 12px;
 }
 
+.subsection-block summary {
+  cursor: pointer;
+  color: #204066;
+  font-weight: 600;
+}
+
 .subsection-block h4 {
   margin: 0 0 8px;
   font-size: 0.95rem;
@@ -852,6 +924,24 @@ button {
   -webkit-box-orient: vertical;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.cell-grouped-message {
+  white-space: normal;
+}
+
+.grouped-finding-details {
+  margin-top: 6px;
+}
+
+.grouped-finding-details summary {
+  cursor: pointer;
+  color: #5a6980;
+  font-size: 0.8rem;
+}
+
+.compact-list {
+  margin-top: 6px;
 }
 
 .table-expand-button {
@@ -985,6 +1075,15 @@ button {
   color: #b42318;
 }
 
+.badge-success {
+  background: #ecfdf3;
+  color: #067647;
+}
+
+.subsection-block-inner {
+  margin-top: 8px;
+}
+
 .sidebar-header {
   display: flex;
   align-items: center;
@@ -1093,6 +1192,136 @@ button {
   white-space: nowrap;
 }
 
+.analysis-progress-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 23, 42, 0.46);
+  backdrop-filter: blur(4px);
+  padding: 24px;
+}
+
+.analysis-progress-modal {
+  width: min(720px, calc(100vw - 32px));
+  border: 1px solid #dbe3f0;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 22px 60px rgba(15, 23, 42, 0.24);
+  padding: 20px 22px;
+}
+
+.analysis-progress-header h3 {
+  margin: 0 0 6px;
+  font-size: 1.3rem;
+}
+
+.analysis-progress-eyebrow {
+  color: #175cd3;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.analysis-progress-message,
+.analysis-progress-note {
+  margin: 0;
+  color: #5a6980;
+}
+
+.analysis-progress-bar {
+  margin: 16px 0 18px;
+  height: 12px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #e7eef8;
+  position: relative;
+}
+
+.analysis-progress-bar-fill {
+  width: 42%;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #175cd3 0%, #60a5fa 100%);
+  animation: analysis-progress-slide 1.4s ease-in-out infinite;
+}
+
+.analysis-progress-steps {
+  display: grid;
+  gap: 10px;
+}
+
+.analysis-progress-step {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid #dbe3f0;
+  border-radius: 10px;
+  background: #f8fbff;
+}
+
+.analysis-progress-step-marker {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  font-size: 0.86rem;
+  font-weight: 700;
+  border: 1px solid #c7d5e7;
+  color: #5a6980;
+  background: #ffffff;
+}
+
+.analysis-progress-step.active {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.analysis-progress-step.active .analysis-progress-step-marker {
+  border-color: #175cd3;
+  color: #ffffff;
+  background: #175cd3;
+  box-shadow: 0 0 0 4px rgba(23, 92, 211, 0.12);
+}
+
+.analysis-progress-step.completed .analysis-progress-step-marker {
+  border-color: #16a34a;
+  color: #ffffff;
+  background: #16a34a;
+}
+
+.analysis-progress-step-title {
+  font-weight: 700;
+  color: #172033;
+}
+
+.analysis-progress-step-detail {
+  margin-top: 2px;
+  color: #5a6980;
+  font-size: 0.9rem;
+}
+
+.analysis-progress-note {
+  margin-top: 16px;
+  font-size: 0.88rem;
+}
+
+@keyframes analysis-progress-slide {
+  0% {
+    transform: translateX(-65%);
+  }
+
+  100% {
+    transform: translateX(210%);
+  }
+}
+
 @media (max-width: 1080px) {
   .analyze-layout,
   .analyze-layout-collapsed,
@@ -1147,6 +1376,10 @@ button {
     grid-template-columns: 1fr;
   }
 
+  .runtime-pillars {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .runtime-kv-row {
     grid-template-columns: 1fr;
     gap: 2px;
@@ -1181,6 +1414,11 @@ button {
   .results-header {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .analysis-progress-modal {
+    width: min(100%, calc(100vw - 24px));
+    padding: 18px;
   }
 
   .project-summary-main {

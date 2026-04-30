@@ -6,6 +6,24 @@ import type {
   ConfiguredUrl,
   DetectedClass,
   Finding,
+  GradleConfigurationModel,
+  GradleDependencyConflict,
+  GradleDependencyModel,
+  GradleJavaToolchainModel,
+  GradleModelAnalysis,
+  GradlePluginBridgeFailure,
+  GradlePluginDeclaration,
+  GradlePluginResolutionFailure,
+  GradlePluginResolutionBridgeResult,
+  GradlePluginModel,
+  GradleRepositoryModel,
+  GradleResolvedDependencyModel,
+  GradleResolutionResult,
+  ResolvedGradlePlugin,
+  GradleSettingsPluginModel,
+  GradleSettingsPluginWorkaround,
+  GradleSourceSetModel,
+  GradleTaskModel,
   HttpSurfaceAnalysis,
   InboundEndpoint,
   OutboundEndpoint,
@@ -47,6 +65,11 @@ type PresentedFinding = {
   message: string;
 };
 
+type GroupedPresentedFinding = PresentedFinding & {
+  occurrences: number;
+  items: PresentedFinding[];
+};
+
 export interface TableSortState {
   key: string;
   direction: SortDirection;
@@ -77,6 +100,8 @@ export interface ResultsViewState {
   componentText: string;
   componentsExpanded: boolean;
   dependencyText: string;
+  resolvedDependencyConfiguration: string;
+  resolvedDependencyDirectOnly: boolean;
   rawJsonExpanded: boolean;
   httpInboundExpanded: boolean;
   httpOutboundExpanded: boolean;
@@ -109,6 +134,8 @@ export interface ResultsViewActions {
   onComponentTextChange: (value: string) => void;
   onToggleComponentsExpanded: () => void;
   onDependencyTextChange: (value: string) => void;
+  onResolvedDependencyConfigurationChange: (value: string) => void;
+  onResolvedDependencyDirectOnlyChange: (value: boolean) => void;
   onRawJsonExpandedChange: (value: boolean) => void;
   onToggleHttpInboundExpanded: () => void;
   onToggleHttpOutboundExpanded: () => void;
@@ -134,7 +161,7 @@ export function renderResultsView(
           text: 'Enter a repository URL, optionally choose a branch and HTTPS token, then click "Clone and analyze".'
         }),
         element('p', {
-          text: 'The backend clones the repository into a temporary workspace and performs static analysis only.'
+          text: 'The backend clones the repository into a temporary workspace and analyzes source, configuration, and framework usage without starting the application.'
         })
       )
     );
@@ -149,7 +176,8 @@ export function renderResultsView(
   panel.appendChild(renderConfigurationSection(result, state, actions));
   panel.appendChild(renderSpringApiUsageSection(result));
   panel.appendChild(renderComponentsSection(result.detectedComponents ?? [], state, actions));
-  panel.appendChild(renderDependenciesSection(result.dependencies ?? [], state, actions));
+  panel.appendChild(renderDependenciesSection(result, state, actions));
+  panel.appendChild(renderBuildModelSection(result.gradleModelAnalysis));
   panel.appendChild(renderRawJsonSection(result, state, actions));
   return panel;
 }
@@ -168,32 +196,77 @@ function renderProjectSection(result: AnalyzeRepositoryResponse): HTMLElement {
 
 function renderRuntimeStackSection(result: AnalyzeRepositoryResponse): HTMLElement {
   const runtime = result.runtimeStackAnalysis ?? {};
+  const gradleModel = result.gradleModelAnalysis;
   const httpSummary = result.httpSurfaceAnalysis?.summary ?? {};
   const configSummary = result.configurationAnalysis?.summary ?? {};
   const findings = result.findings ?? [];
+  const detectedComponents = result.detectedComponents ?? [];
   const section = resultsSection('Runtime and stack', 'results-runtime');
+  section.appendChild(
+    renderRuntimePillars([
+      {
+        label: 'Spring Boot',
+        value: runtime.springBootVersion ?? 'Unknown',
+        meta: runtime.springBootVersionSource ?? undefined
+      },
+      {
+        label: 'Java',
+        value: runtime.javaVersion ?? result.javaVersionHint ?? 'Unknown'
+      },
+      {
+        label: 'Web stack',
+        value: webStackLabel(runtime.webStack),
+        meta: runtime.webStackReason ?? undefined
+      },
+      {
+        label: 'Dependency model',
+        value: dependencyModelLabel(gradleModel),
+        meta: dependencyModelMeta(gradleModel)
+      }
+    ])
+  );
   const overview = element('div', { className: 'runtime-overview' });
   const stackPanel = element(
     'div',
     { className: 'runtime-stack-panel' },
     element('div', { className: 'subsection-title', text: 'Stack overview' })
   );
-  const stackList = element('div', { className: 'runtime-kv-list' });
   const mainClass = runtime.mainClass ?? normalizeMainApplicationClasses(result.mainApplicationClasses)[0]?.name ?? 'Unknown';
+  const foundationList = element('div', { className: 'runtime-kv-list' });
+  const capabilitiesList = element('div', { className: 'runtime-kv-list' });
 
-  const rows: Array<{ label: string; value: string; meta?: string | null; wide?: boolean }> = [
-    { label: 'Spring Boot', value: runtime.springBootVersion ?? 'Unknown', meta: runtime.springBootVersionSource },
-    { label: 'Java', value: runtime.javaVersion ?? result.javaVersionHint ?? 'Unknown' },
+  const foundationRows: Array<{ label: string; value: string; meta?: string | null; wide?: boolean }> = [
+    { label: 'Spring framework', value: springFrameworkVersionLabel(result), meta: springFrameworkVersionMeta(result) },
     { label: 'Build tool', value: result.buildTool ?? 'Unknown' },
-    { label: 'Web stack', value: webStackLabel(runtime.webStack), meta: runtime.webStackReason },
-    { label: 'Virtual threads', value: virtualThreadLabel(runtime), meta: runtimeVirtualThreadsCompactMeta(runtime) },
+    { label: 'Dependency model', value: dependencyModelLabel(gradleModel), meta: dependencyModelMeta(gradleModel) },
     { label: 'Main class', value: mainClass, wide: true }
   ];
+  const capabilityRows: Array<{ label: string; value: string; meta?: string | null; wide?: boolean }> = [
+    { label: 'Virtual threads', value: virtualThreadLabel(runtime), meta: runtimeVirtualThreadsCompactMeta(runtime) },
+    { label: 'Scheduling', value: schedulingLabel(runtime), meta: schedulingMeta(runtime) },
+    { label: 'Actuator', value: actuatorLabel(result), meta: actuatorMeta(result) }
+  ];
 
-  for (const row of rows) {
-    stackList.appendChild(renderRuntimeKeyValueRow(row.label, row.value, row.meta, row.wide));
+  for (const row of foundationRows) {
+    foundationList.appendChild(renderRuntimeKeyValueRow(row.label, row.value, row.meta, row.wide));
   }
-  stackPanel.appendChild(stackList);
+  for (const row of capabilityRows) {
+    capabilitiesList.appendChild(renderRuntimeKeyValueRow(row.label, row.value, row.meta, row.wide));
+  }
+  stackPanel.append(
+    element(
+      'div',
+      { className: 'runtime-panel-section' },
+      element('div', { className: 'runtime-panel-caption', text: 'Foundation' }),
+      foundationList
+    ),
+    element(
+      'div',
+      { className: 'runtime-panel-section' },
+      element('div', { className: 'runtime-panel-caption', text: 'Capabilities' }),
+      capabilitiesList
+    )
+  );
 
   const metricsPanel = element(
     'div',
@@ -205,10 +278,12 @@ function renderRuntimeStackSection(result: AnalyzeRepositoryResponse): HTMLEleme
   const metrics: Array<{ label: string; value: string; meta?: string | null; warning?: boolean }> = [
     { label: 'Inbound endpoints', value: String(httpSummary.inboundEndpointCount ?? 0) },
     { label: 'Outbound endpoints', value: String(httpSummary.outboundEndpointCount ?? 0) },
+    { label: 'Components', value: String(detectedComponents.length) },
     {
       label: 'Configured properties',
       value: String(configSummary.configuredPropertyCount ?? (result.configurationAnalysis?.properties ?? []).length)
     },
+    { label: 'External hosts', value: String((httpSummary.externalHosts ?? []).length) },
     {
       label: 'Findings',
       value: String(findings.length),
@@ -225,6 +300,34 @@ function renderRuntimeStackSection(result: AnalyzeRepositoryResponse): HTMLEleme
   overview.append(stackPanel, metricsPanel);
   section.appendChild(overview);
   return section;
+}
+
+function renderRuntimePillars(
+  pillars: Array<{ label: string; value: string; meta?: string }>
+): HTMLElement {
+  const grid = element('div', { className: 'runtime-pillars' });
+  for (const pillar of pillars) {
+    grid.appendChild(
+      element(
+        'div',
+        { className: 'runtime-pillar' },
+        element('div', { className: 'runtime-pillar-label', text: pillar.label }),
+        element('div', {
+          className: 'runtime-pillar-value',
+          text: pillar.value,
+          attributes: { title: pillar.value }
+        }),
+        pillar.meta
+          ? element('div', {
+              className: 'runtime-pillar-meta',
+              text: pillar.meta,
+              attributes: { title: pillar.meta }
+            })
+          : null
+      )
+    );
+  }
+  return grid;
 }
 
 function renderFindingsSection(
@@ -288,9 +391,10 @@ function renderFindingsSection(
     return section;
   }
 
-  const grouped = state.findingsGrouped ? groupFindings(filtered) : null;
+  const grouped = state.findingsGrouped ? groupFindings(filtered) : [];
+  const sortedGroups = state.findingsGrouped ? sortFindingGroups(grouped, state.findingsSort) : [];
   const sortedFindings: PresentedFinding[] = state.findingsGrouped
-    ? sortFindingGroups(grouped ?? [], state.findingsSort)
+    ? sortedGroups
     : sortFindings(filtered, state.findingsSort).map(deriveFindingPresentation);
   const visible = state.findingsExpanded ? sortedFindings : sortedFindings.slice(0, 25);
   const table = createTable([
@@ -304,12 +408,13 @@ function renderFindingsSection(
   for (const derived of visible) {
     const row = tbody.insertRow();
     row.className = 'data-row';
+    const groupedFinding = state.findingsGrouped ? (derived as GroupedPresentedFinding) : null;
     appendCells(row, [
       badgeCell(derived.severity, `badge badge-${derived.severity.toLowerCase()}`),
       truncateCell(derived.ruleType),
       truncateCell(derived.target),
-      truncateCell(derived.location),
-      truncateCell(derived.message, 'cell-wrap-two')
+      truncateCell(groupedFinding ? groupedFindingLocation(groupedFinding) : derived.location),
+      groupedFinding ? groupedFindingMessageCell(groupedFinding) : truncateCell(derived.message, 'cell-wrap-two')
     ]);
   }
   section.appendChild(wrapTable(table));
@@ -864,40 +969,233 @@ function renderComponentsSection(
 }
 
 function renderDependenciesSection(
-  dependencies: string[],
+  result: AnalyzeRepositoryResponse,
   state: ResultsViewState,
   actions: ResultsViewActions
 ): HTMLElement {
-  const section = resultsSection(`Dependencies (${dependencies.length})`, 'results-dependencies');
-  section.appendChild(textInput(state.dependencyText, 'Filter dependencies', actions.onDependencyTextChange));
-  const filtered = dependencies.filter((dependency) =>
-    dependency.toLowerCase().includes(state.dependencyText.trim().toLowerCase())
+  const dependencies = result.dependencies ?? [];
+  const gradleModel = result.gradleModelAnalysis;
+  const successfulResolvedDependencies = successfulResolvedGradleDependencies(gradleModel);
+  const resolutionResults = gradleModel?.resolutionResults ?? [];
+  const dependencyBearingResults = dependencyBearingGradleResolutionResults(gradleModel);
+  const configurationOptions = uniqueValues(successfulResolvedDependencies.map((dependency) => dependency.configuration));
+  const section = resultsSection('Dependencies', 'results-dependencies');
+  const successfulResolutionResults = dependencyBearingResults.filter(
+    (item) => item.attempted && item.successful && (item.resolvedDependencyCount ?? 0) > 0
   );
-  if (filtered.length === 0) {
+  const failedResolutionResults = dependencyBearingResults.filter((item) => item.attempted && !item.successful);
+  const summary = element('div', { className: 'summary-grid runtime-grid' });
+  for (const [label, value] of [
+    ['Declared dependencies', String((gradleModel?.declaredDependencies ?? []).length)],
+    ['Resolved entries', String(successfulResolvedDependencies.length)],
+    ['Unique resolved modules', String(uniqueResolvedModuleCount(gradleModel))],
+    ['Resolved configurations', `${successfulResolutionResults.length}/${dependencyBearingResults.length || 0}`],
+    ['Dependency conflicts', String((gradleModel?.dependencyConflicts ?? []).length)]
+  ] as Array<[string, string]>) {
+    summary.appendChild(
+      element(
+        'div',
+        {
+          className:
+            label === 'Resolved configurations' && failedResolutionResults.length > 0
+              ? 'summary-card compact-summary-card warning-note'
+              : 'summary-card compact-summary-card'
+        },
+        element('div', { className: 'summary-label', text: label }),
+        element('div', { className: 'summary-value', text: value })
+      )
+    );
+  }
+  section.appendChild(summary);
+
+  const managedStackEntries = resolvedStackEntries(gradleModel);
+  if (managedStackEntries.length > 0) {
+    const managedStack = element(
+      'div',
+      { className: 'empty-note' },
+      element('div', { className: 'subsection-title', text: 'Managed stack' })
+    );
+    const stackGrid = element('div', { className: 'property-detail-grid' });
+    for (const entry of managedStackEntries) {
+      stackGrid.appendChild(propertyDetailItem(entry.label, entry.version));
+    }
+    managedStack.appendChild(stackGrid);
+    section.appendChild(managedStack);
+  }
+
+  const controls = element('div', { className: 'filter-row compact-filter-row' });
+  controls.append(
+    labeledInlineField('Search', textInput(state.dependencyText, 'Filter dependencies', actions.onDependencyTextChange)),
+    labeledInlineField(
+      'Configuration',
+      selectInput(
+        [{ value: 'ALL', label: 'All configurations' }, ...configurationOptions.map((value) => ({ value, label: value }))],
+        state.resolvedDependencyConfiguration,
+        actions.onResolvedDependencyConfigurationChange
+      )
+    ),
+    labeledInlineField(
+      'Direct only',
+      checkboxField('Only direct dependencies', state.resolvedDependencyDirectOnly, actions.onResolvedDependencyDirectOnlyChange)
+    )
+  );
+  section.appendChild(controls);
+  const needle = state.dependencyText.trim().toLowerCase();
+  const resolved = successfulResolvedDependencies.filter((dependency) =>
+    (state.resolvedDependencyConfiguration === 'ALL' || (dependency.configuration ?? '') === state.resolvedDependencyConfiguration)
+      && (!state.resolvedDependencyDirectOnly || Boolean(dependency.direct))
+      && (!needle || [dependency.projectPath, dependency.configuration, dependency.group, dependency.artifact, dependency.version, dependency.selectedReason, selectedReasonSummary(dependency)]
+      .filter((value): value is string => Boolean(value))
+      .join(' ')
+      .toLowerCase()
+      .includes(needle))
+  );
+  const declared = (gradleModel?.declaredDependencies ?? []).filter((dependency) =>
+    !needle || [dependency.projectPath, dependency.configuration, dependency.notation]
+      .filter((value): value is string => Boolean(value))
+      .join(' ')
+      .toLowerCase()
+      .includes(needle)
+  );
+  const filtered = dependencies.filter((dependency) => dependency.toLowerCase().includes(needle));
+  if (filtered.length === 0 && resolved.length === 0 && declared.length === 0) {
     section.appendChild(element('p', { className: 'muted-text', text: 'No dependencies match the current filter.' }));
     return section;
   }
 
-  const sorted = sortDependencies(filtered, state.dependenciesSort);
-  const table = createTable([
-    'Dependency',
-    sortableHeader('Group', 'group', state.dependenciesSort, actions.onSetDependenciesSort),
-    sortableHeader('Artifact', 'artifact', state.dependenciesSort, actions.onSetDependenciesSort),
-    sortableHeader('Version', 'version', state.dependenciesSort, actions.onSetDependenciesSort)
-  ], 'dependencies-table');
-  const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
-  for (const dependency of sorted) {
-    const parsed = parseDependency(dependency);
-    const row = tbody.insertRow();
-    row.className = 'data-row';
-    appendCells(row, [
-      truncateCell(dependency),
-      truncateCell(parsed.group),
-      truncateCell(parsed.artifact),
-      truncateCell(parsed.version)
-    ]);
+  if (successfulResolvedDependencies.length === 0 && failedResolutionResults.length > 0) {
+    const failedConfigurations = failedResolutionResults
+      .map((item) => `${item.projectPath ?? ':'}:${item.configuration ?? 'unknown'}`)
+      .join(', ');
+    section.appendChild(
+      element(
+        'div',
+        { className: 'empty-note warning-note' },
+        element('div', { className: 'subsection-title', text: 'Dependency graph resolution did not succeed' }),
+        element('p', {
+          className: 'muted-text',
+          text:
+            'Gradle ran successfully, but dependency graph resolution failed for dependency-bearing configurations.'
+        }),
+        element('p', {
+          className: 'muted-text',
+          text: failedConfigurations ? `Failed configurations: ${failedConfigurations}` : 'Failed configurations were captured in the build model.'
+        })
+      )
+    );
   }
-  section.appendChild(wrapTable(table));
+
+  if (resolved.length > 0) {
+    section.appendChild(element('h4', { text: 'Resolved dependencies' }));
+    const table = createTable([
+      'Project',
+      'Configuration',
+      sortableHeader('Group', 'group', state.dependenciesSort, actions.onSetDependenciesSort),
+      sortableHeader('Artifact', 'artifact', state.dependenciesSort, actions.onSetDependenciesSort),
+      sortableHeader('Version', 'version', state.dependenciesSort, actions.onSetDependenciesSort),
+      'Direct / transitive',
+      'Selected reason'
+    ], 'dependencies-table');
+    const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
+    for (const dependency of sortResolvedDependencies(resolved, state.dependenciesSort).slice(0, 50)) {
+      const row = tbody.insertRow();
+      row.className = 'data-row';
+      appendCells(row, [
+        truncateCell(dependency.projectPath ?? '—'),
+        truncateCell(dependency.configuration ?? '—'),
+        truncateCell(dependency.group ?? ''),
+        truncateCell(dependency.artifact ?? ''),
+        truncateCell(dependency.version ?? ''),
+        truncateCell(dependency.direct ? 'Direct' : 'Transitive'),
+        truncateCellWithTitle(
+          selectedReasonSummary(dependency),
+          dependency.selectedReason ?? selectedReasonSummary(dependency),
+          'cell-wrap-two'
+        )
+      ]);
+    }
+    section.appendChild(wrapTable(table));
+  }
+
+  if (declared.length > 0) {
+    section.appendChild(element('h4', { text: 'Declared dependencies' }));
+    const table = createTable(['Project', 'Configuration', 'Notation', 'Source'], 'dependencies-table');
+    const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
+    for (const dependency of declared.slice(0, 50)) {
+      const row = tbody.insertRow();
+      row.className = 'data-row';
+      appendCells(row, [
+        truncateCell(dependency.projectPath ?? '—'),
+        truncateCell(dependency.configuration ?? '—'),
+        truncateCell(dependency.notation ?? '—'),
+        truncateCell('Gradle model')
+      ]);
+    }
+    section.appendChild(wrapTable(table));
+  }
+
+  if (resolutionResults.length > 0) {
+    section.appendChild(element('h4', { text: 'Resolution results' }));
+    const table = createTable(
+      ['Project', 'Configuration', 'Status', 'Fallback', 'Resolved count', 'Error'],
+      'dependencies-table'
+    );
+    const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
+    for (const resultItem of resolutionResults.slice(0, 50)) {
+      const row = tbody.insertRow();
+      row.className = 'data-row';
+      appendCells(row, [
+        truncateCell(resultItem.projectPath ?? '—'),
+        truncateCell(resultItem.configuration ?? '—'),
+        badgeCell(resultItem.successful ? 'Resolved' : 'Failed', resultItem.successful ? 'badge badge-success' : 'badge badge-warning'),
+        truncateCell(resultItem.fallbackUsed ? 'Lenient fallback' : 'Primary'),
+        truncateCell(String(resultItem.resolvedDependencyCount ?? 0)),
+        truncateCell(resultItem.errorMessage ?? '—', 'cell-wrap-two')
+      ]);
+    }
+    section.appendChild(wrapTable(table));
+  }
+
+  if ((gradleModel?.dependencyConflicts ?? []).length > 0) {
+    section.appendChild(element('h4', { text: 'Dependency conflicts' }));
+    const table = createTable(['Project', 'Configuration', 'Module', 'Requested', 'Selected'], 'dependencies-table');
+    const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
+    for (const conflict of (gradleModel?.dependencyConflicts ?? []).slice(0, 50)) {
+      const row = tbody.insertRow();
+      row.className = 'data-row';
+      appendCells(row, [
+        truncateCell(conflict.projectPath ?? '—'),
+        truncateCell(conflict.configuration ?? '—'),
+        truncateCell(`${conflict.group ?? ''}:${conflict.artifact ?? ''}`),
+        truncateCell(conflict.requestedVersions ?? '—'),
+        truncateCell(conflict.selectedVersion ?? '—')
+      ]);
+    }
+    section.appendChild(wrapTable(table));
+  }
+
+  if (resolved.length === 0 && declared.length === 0 && filtered.length > 0) {
+    const sorted = sortDependencies(filtered, state.dependenciesSort);
+    const table = createTable([
+      'Dependency',
+      sortableHeader('Group', 'group', state.dependenciesSort, actions.onSetDependenciesSort),
+      sortableHeader('Artifact', 'artifact', state.dependenciesSort, actions.onSetDependenciesSort),
+      sortableHeader('Version', 'version', state.dependenciesSort, actions.onSetDependenciesSort)
+    ], 'dependencies-table');
+    const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
+    for (const dependency of sorted) {
+      const parsed = parseDependency(dependency);
+      const row = tbody.insertRow();
+      row.className = 'data-row';
+      appendCells(row, [
+        truncateCell(dependency),
+        truncateCell(parsed.group),
+        truncateCell(parsed.artifact),
+        truncateCell(parsed.version)
+      ]);
+    }
+    section.appendChild(wrapTable(table));
+  }
   return section;
 }
 
@@ -916,6 +1214,372 @@ function renderRawJsonSection(
     details.appendChild(element('pre', { text: JSON.stringify(redactSensitiveValues(result), null, 2) }));
   }
   return details;
+}
+
+function renderBuildModelSection(gradleModel: GradleModelAnalysis | undefined): HTMLElement {
+  const section = resultsSection('Build model', 'results-build-model');
+  if (!gradleModel || gradleModel.status === 'NOT_REQUESTED') {
+    section.appendChild(element('div', { className: 'empty-note', text: 'Gradle model analysis was not requested.' }));
+    return section;
+  }
+
+  const bridge = gradleModel.pluginResolutionBridge;
+  const resolvedPlugins = bridge?.resolvedPlugins ?? [];
+  const bridgeFailures = bridge?.failures ?? [];
+  const successfulResolvedDependencies = successfulResolvedGradleDependencies(gradleModel);
+  const resolutionResults = gradleModel.resolutionResults ?? [];
+  const dependencyBearingResults = dependencyBearingGradleResolutionResults(gradleModel);
+  const successfulResolutionResults = dependencyBearingResults.filter(
+    (item) => item.attempted && item.successful && (item.resolvedDependencyCount ?? 0) > 0
+  );
+  const failedResolutionResults = dependencyBearingResults.filter((item) => item.attempted && !item.successful);
+  const repositories = dedupeGradleRepositories(gradleModel.repositories ?? []);
+
+  const summary = element('div', { className: 'summary-grid runtime-grid' });
+  for (const [label, value] of [
+    ['Status', gradleModel.status ?? 'Unknown'],
+    ['Gradle version', gradleModel.gradleVersion ?? 'Unknown'],
+    ['Projects', String((gradleModel.projects ?? []).length)],
+    ['Declared dependencies', String((gradleModel.declaredDependencies ?? []).length)],
+    ['Resolved entries', String(successfulResolvedDependencies.length)],
+    ['Unique resolved modules', String(uniqueResolvedModuleCount(gradleModel))],
+    ['Resolved configurations', `${successfulResolutionResults.length}/${dependencyBearingResults.length || 0}`],
+    ['Failed configurations', String(failedResolutionResults.length)],
+    ['Repositories', String(repositories.length)],
+    ['Declared plugins', String((gradleModel.pluginDeclarations ?? []).length)],
+    ['Plugins prefetched', String(resolvedPlugins.length)],
+    ['Bridge status', bridgeStatusLabel(gradleModel.pluginBridgeStatus)],
+    ['Failed plugins', String(bridgeFailures.length)],
+    ['Source sets', String((gradleModel.sourceSets ?? []).length)],
+    ['Tasks', String((gradleModel.tasks ?? []).length)]
+  ] as Array<[string, string]>) {
+    summary.appendChild(
+      element(
+        'div',
+        {
+          className:
+            ((label === 'Status') && (gradleModel.status === 'PARTIAL' || gradleModel.status === 'FAILED' || gradleModel.status === 'TIMED_OUT'))
+              || (label === 'Failed configurations' && failedResolutionResults.length > 0)
+              ? 'summary-card compact-summary-card warning-note'
+              : 'summary-card compact-summary-card'
+        },
+        element('div', { className: 'summary-label', text: label }),
+        element('div', { className: 'summary-value', text: value })
+      )
+    );
+  }
+  section.appendChild(summary);
+
+  if (gradleModel.status && (gradleModel.status === 'PARTIAL' || gradleModel.status === 'FAILED' || gradleModel.status === 'TIMED_OUT')) {
+    section.appendChild(renderGradleFailurePanel(gradleModel));
+  } else if ((gradleModel.status === 'SUCCESS' || gradleModel.status === 'SUCCESS_WITH_WORKAROUND') && !gradleModel.failureType && !gradleModel.errorMessage) {
+    section.appendChild(
+      element(
+        'div',
+        {
+          className:
+            successfulResolvedDependencies.length === 0 && failedResolutionResults.length > 0
+              ? 'empty-note warning-note'
+              : 'empty-note'
+        },
+        element('div', { className: 'subsection-title', text: 'Gradle model collected successfully.' }),
+        element('p', {
+          className: 'muted-text',
+          text:
+            successfulResolvedDependencies.length === 0 && failedResolutionResults.length > 0
+              ? 'Gradle executed successfully, but no resolved dependencies were collected because dependency graph resolution failed for dependency-bearing configurations.'
+              : 'Declared dependencies, repositories, configurations, and Gradle metadata were collected successfully.'
+        })
+      )
+    );
+  } else if (gradleModel.errorMessage || gradleModel.failureType) {
+    section.appendChild(
+      element(
+        'div',
+        { className: 'empty-note warning-note' },
+        element('div', {
+          className: 'subsection-title',
+          text: `Reason${gradleModel.failureType ? ` (${gradleModel.failureType.replace(/_/g, ' ')})` : ''}`
+        }),
+        element('p', {
+          className: 'muted-text',
+          text: gradleModel.errorMessage ?? 'Gradle model analysis did not complete.'
+        })
+      )
+    );
+  }
+
+  section.appendChild(
+    element(
+      'div',
+      { className: 'compact-card-list' },
+      element('p', {
+        className: 'muted-text',
+        text: `Execution mode: ${gradleModel.executionMode ?? 'Unknown'}`
+      }),
+      element('p', {
+        className: 'muted-text',
+        text: `Gradle version: ${gradleModel.gradleVersion ?? 'Unknown'} | Java: ${gradleModel.javaVersion ?? 'Unknown'}`
+      })
+    )
+  );
+
+  if (failedResolutionResults.length > 0) {
+    section.appendChild(
+      element(
+        'div',
+        { className: 'empty-note warning-note' },
+        element('div', { className: 'subsection-title', text: 'Dependency resolution health' }),
+        element('p', {
+          className: 'muted-text',
+          text: `Resolved dependency-bearing configurations: ${successfulResolutionResults.length}/${dependencyBearingResults.length || 0}. Failed configurations: ${failedResolutionResults.map((item) => `${item.projectPath ?? ':'}:${item.configuration ?? 'unknown'}`).join(', ')}`
+        })
+      )
+    );
+  }
+
+  if (gradleModel.pluginBridgeUsed) {
+    section.appendChild(
+      element(
+        'div',
+        { className: 'empty-note' },
+        element('div', { className: 'subsection-title', text: 'Plugin resolution used local analyzer cache' }),
+        element('p', {
+          className: 'muted-text',
+          text:
+            'Declared Gradle plugins were prefetched into a local analyzer cache before plugin resolution. Static source analysis still used the original cloned repository.'
+        })
+      )
+    );
+  }
+
+  if (repositories.length > 0) {
+    appendBuildModelDetailsTable(
+      section,
+      'Repositories',
+      ['Project', 'Name', 'Type', 'URL'],
+      repositories.slice(0, 50),
+      (item: GradleRepositoryModel) => [
+        truncateCell(item.projectPath ?? '—'),
+        truncateCellWithTitle(normalizedRepositoryName(item), item.url ?? item.name ?? '—'),
+        truncateCell(item.type ?? '—'),
+        truncateCellWithTitle(normalizedRepositoryUrlLabel(item), item.url ?? normalizedRepositoryUrlLabel(item))
+      ]
+    );
+  }
+
+  if ((gradleModel.pluginDeclarations ?? []).length > 0) {
+    appendBuildModelTable(
+      section,
+      'Declared plugins',
+      ['Plugin ID', 'Version', 'Source', 'Prefetched', 'Implementation'],
+      (gradleModel.pluginDeclarations ?? []).slice(0, 50),
+      (item: GradlePluginDeclaration) => {
+        const resolved = resolvedPlugins.find(
+          (plugin) => plugin.pluginId === item.pluginId && plugin.version === item.version
+        );
+        return [
+          truncateCell(item.pluginId ?? '—'),
+          truncateCell(item.version ?? '—'),
+          truncateCell(sourceLabel(item.sourceFile, item.line)),
+          truncateCell(resolved ? 'yes' : 'no'),
+          truncateCell(resolved?.implementationCoordinates ?? '—')
+        ];
+      }
+    );
+  }
+
+  if (resolutionResults.length > 0) {
+    appendBuildModelTable(
+      section,
+      'Configuration resolution results',
+      ['Project', 'Configuration', 'Status', 'Fallback', 'Resolved count', 'Error'],
+      resolutionResults.slice(0, 50),
+      (item: GradleResolutionResult) => [
+        truncateCell(item.projectPath ?? '—'),
+        truncateCell(item.configuration ?? '—'),
+        badgeCell(item.successful ? 'Resolved' : 'Failed', item.successful ? 'badge badge-success' : 'badge badge-warning'),
+        truncateCell(item.fallbackUsed ? 'Lenient fallback' : 'Primary'),
+        truncateCell(String(item.resolvedDependencyCount ?? 0)),
+        truncateCell(item.errorMessage ?? '—', 'cell-wrap-two')
+      ]
+    );
+  }
+
+  if ((bridgeFailures ?? []).length > 0) {
+    appendBuildModelTable(
+      section,
+      'Plugin bridge failures',
+      ['Plugin ID', 'Version', 'Source', 'Marker', 'Implementation', 'Message'],
+      bridgeFailures.slice(0, 25),
+      (item: GradlePluginBridgeFailure) => [
+        truncateCell(item.pluginId ?? '—'),
+        truncateCell(item.version ?? '—'),
+        truncateCell(sourceLabel(item.sourceFile, item.line)),
+        truncateCell(item.markerPresentLocally ? 'cached' : 'missing'),
+        truncateCell(item.implementationPresentLocally ? item.implementationCoordinates ?? 'cached' : 'missing'),
+        truncateCell(item.message ?? 'Resolution failed', 'cell-wrap-two')
+      ]
+    );
+  }
+
+  const visibleAppliedPlugins = filterVisibleAppliedPlugins(gradleModel.plugins ?? []);
+  if (visibleAppliedPlugins.length > 0) {
+    appendBuildModelDetailsTable(section, 'Applied plugins', ['Project', 'Plugin', 'Implementation'], visibleAppliedPlugins.slice(0, 25), (item: GradlePluginModel) => [
+      truncateCell(item.projectPath ?? '—'),
+      truncateCell(item.pluginId ?? '—'),
+      truncateCell(item.implementationClass ?? '—')
+    ]);
+  }
+  const hiddenAppliedPlugins = (gradleModel.plugins ?? []).filter((item) => !visibleAppliedPlugins.includes(item));
+  if (hiddenAppliedPlugins.length > 0) {
+    const details = element('details', { className: 'subsection-block build-model-details' });
+    details.appendChild(element('summary', { text: `Show all applied plugins (${(gradleModel.plugins ?? []).length})` }));
+    const inner = element('div', { className: 'subsection-block-inner' });
+    appendBuildModelTable(inner, 'All applied plugins', ['Project', 'Plugin', 'Implementation'], (gradleModel.plugins ?? []).slice(0, 50), (item: GradlePluginModel) => [
+      truncateCell(item.projectPath ?? '—'),
+      truncateCell(item.pluginId ?? '—'),
+      truncateCell(item.implementationClass ?? '—')
+    ]);
+    details.appendChild(inner);
+    section.appendChild(details);
+  }
+
+  if ((gradleModel.settingsPlugins ?? []).length > 0) {
+    appendBuildModelDetailsTable(
+      section,
+      'Settings plugins',
+      ['Plugin ID', 'Version', 'Source'],
+      (gradleModel.settingsPlugins ?? []).slice(0, 25),
+      (item: GradleSettingsPluginModel) => [
+        truncateCell(item.pluginId ?? '—'),
+        truncateCell(item.version ?? '—'),
+        truncateCell(sourceLabel(item.sourceFile, item.line))
+      ]
+    );
+  }
+  if ((gradleModel.findings ?? []).length > 0) {
+    const list = element('ul', { className: 'simple-list' });
+    for (const finding of gradleModel.findings ?? []) {
+      list.appendChild(element('li', { className: 'muted-text', text: finding.message ?? 'Gradle model finding' }));
+    }
+    section.appendChild(list);
+  }
+
+  appendBuildModelDetailsTable(section, 'Configurations', ['Project', 'Configuration', 'Resolvable', 'Consumable', 'Declared', 'All', 'Extends from'], (gradleModel.configurations ?? []).slice(0, 25), (item: GradleConfigurationModel) => [
+    truncateCell(item.projectPath ?? '—'),
+    truncateCell(item.name ?? '—'),
+    truncateCell(String(item.resolvable ?? false)),
+    truncateCell(String(item.consumable ?? false)),
+    truncateCell(String(item.declaredDependencyCount ?? item.dependencyCount ?? 0)),
+    truncateCell(String(item.allDependencyCount ?? item.dependencyCount ?? 0)),
+    truncateCell((item.extendsFrom ?? []).join(', ') || '—')
+  ]);
+  appendBuildModelDetailsTable(section, 'Source sets', ['Project', 'Source set', 'Java dirs', 'Resource dirs'], (gradleModel.sourceSets ?? []).slice(0, 25), (item: GradleSourceSetModel) => [
+    truncateCell(item.projectPath ?? '—'),
+    truncateCell(item.name ?? '—'),
+    truncateCell((item.javaDirs ?? []).join(', ') || '—'),
+    truncateCell((item.resourceDirs ?? []).join(', ') || '—')
+  ]);
+  appendBuildModelDetailsTable(section, 'Java toolchains', ['Project', 'Language', 'Vendor', 'Implementation'], (gradleModel.javaToolchains ?? []).slice(0, 25), (item: GradleJavaToolchainModel) => [
+    truncateCell(item.projectPath ?? '—'),
+    truncateCell(item.languageVersion ?? '—'),
+    truncateCell(item.vendor ?? '—'),
+    truncateCell(item.implementation ?? '—')
+  ]);
+  appendBuildModelTable(section, 'Dependency conflicts', ['Project', 'Configuration', 'Module', 'Requested', 'Selected'], (gradleModel.dependencyConflicts ?? []).slice(0, 25), (item: GradleDependencyConflict) => [
+    truncateCell(item.projectPath ?? '—'),
+    truncateCell(item.configuration ?? '—'),
+    truncateCell(`${item.group ?? ''}:${item.artifact ?? ''}`),
+    truncateCell(item.requestedVersions ?? '—'),
+    truncateCell(item.selectedVersion ?? '—')
+  ]);
+  appendBuildModelDetailsTable(section, 'Tasks', ['Project', 'Task', 'Group', 'Description'], (gradleModel.tasks ?? []).slice(0, 25), (item: GradleTaskModel) => [
+    truncateCell(item.projectPath ?? '—'),
+    truncateCell(item.name ?? '—'),
+    truncateCell(item.group ?? '—'),
+    truncateCell(item.description ?? '—')
+  ]);
+  return section;
+}
+
+function renderGradleFailurePanel(gradleModel: GradleModelAnalysis): HTMLElement {
+  const failure = (gradleModel.pluginResolutionFailures ?? [])[0];
+  const bridge = gradleModel.pluginResolutionBridge;
+  const bridgeFailure = (bridge?.failures ?? []).find(
+    (item) => item.pluginId === failure?.pluginId && item.version === failure?.version
+  );
+  if ((gradleModel.failureType === 'SETTINGS_PLUGIN_RESOLUTION_FAILED' || gradleModel.failureType === 'PLUGIN_RESOLUTION_FAILED') && failure) {
+    const panel = element('div', { className: 'empty-note warning-note' });
+    panel.append(
+      element('div', { className: 'subsection-title', text: 'Gradle model analysis partial' }),
+      detailParagraph(
+        'Reason',
+        'Gradle plugin resolution failed before the analyzer diagnostic task could complete. The analyzer tried to bridge declared plugins through a local analyzer plugin cache.'
+      ),
+      detailParagraph('Plugin', `${failure.pluginId ?? 'Unknown'}${failure.version ? `:${failure.version}` : ''}`),
+      detailParagraph('Location', sourceLabel(failure.settingsFile, failure.line)),
+      detailParagraph('Marker artifact', failure.artifact ?? 'Not captured'),
+      detailParagraph(
+        'Searched repositories',
+        (failure.searchedRepositories ?? []).join(', ') || 'No repository details were captured.'
+      ),
+      detailParagraph(
+        'Explanation',
+        bridge?.successful
+          ? 'The static analyzer still completed. The local plugin cache was populated, but Gradle still could not configure the target build.'
+          : 'The static analyzer still completed. Build-aware dependency resolution is unavailable because Gradle could not configure the target build.'
+      ),
+      detailParagraph(
+        'Suggested fixes',
+        'Check analyzer proxy or certificate settings, confirm plugin repositories in analyzer.gradle.plugin-resolution-bridge.repositories, or run Static only mode if Gradle-resolved dependencies are not needed.'
+      )
+    );
+    if (bridgeFailure) {
+      panel.appendChild(
+        detailParagraph(
+          'Local cache state',
+          `Marker ${bridgeFailure.markerPresentLocally ? 'present' : 'missing'}, implementation ${bridgeFailure.implementationPresentLocally ? 'present' : 'missing'}`
+        )
+      );
+    }
+    return panel;
+  }
+
+  return element(
+    'div',
+    { className: 'empty-note warning-note' },
+    element('div', {
+      className: 'subsection-title',
+      text: `Reason${gradleModel.failureType ? ` (${gradleModel.failureType.replace(/_/g, ' ')})` : ''}`
+    }),
+    element('p', {
+      className: 'muted-text',
+      text: gradleModel.errorMessage ?? 'Gradle model analysis did not complete.'
+    })
+  );
+}
+
+function detailParagraph(label: string, text: string): HTMLElement {
+  return element(
+    'p',
+    { className: 'muted-text' },
+    element('strong', { text: `${label}: ` }),
+    document.createTextNode(text)
+  );
+}
+
+function bridgeStatusLabel(value: string | null | undefined): string {
+  switch (value) {
+    case 'LOCAL_PLUGIN_CACHE_USED':
+      return 'Local cache used';
+    case 'LOCAL_PLUGIN_CACHE_PARTIAL':
+      return 'Local cache partial';
+    case 'LOCAL_PLUGIN_CACHE_FAILED':
+      return 'Local cache failed';
+    default:
+      return 'Not used';
+  }
 }
 
 function renderConfigurationTable(
@@ -1080,6 +1744,52 @@ function wrapTable(table: HTMLTableElement): HTMLElement {
   return element('div', { className: 'data-table-wrapper' }, table);
 }
 
+function appendBuildModelTable<T>(
+  section: HTMLElement,
+  title: string,
+  headers: Array<string | HTMLElement>,
+  items: T[],
+  cells: (item: T) => HTMLTableCellElement[]
+): void {
+  if (items.length === 0) {
+    return;
+  }
+  section.appendChild(element('h4', { text: title }));
+  const table = createTable(headers, 'dependencies-table');
+  const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
+  for (const item of items) {
+    const row = tbody.insertRow();
+    row.className = 'data-row';
+    appendCells(row, cells(item));
+  }
+  section.appendChild(wrapTable(table));
+}
+
+function appendBuildModelDetailsTable<T>(
+  section: HTMLElement,
+  title: string,
+  headers: Array<string | HTMLElement>,
+  items: T[],
+  cells: (item: T) => HTMLTableCellElement[]
+): void {
+  if (items.length === 0) {
+    return;
+  }
+  const details = element('details', { className: 'subsection-block build-model-details' });
+  details.appendChild(element('summary', { text: `${title} (${items.length})` }));
+  const inner = element('div', { className: 'subsection-block-inner' });
+  const table = createTable(headers, 'dependencies-table');
+  const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
+  for (const item of items) {
+    const row = tbody.insertRow();
+    row.className = 'data-row';
+    appendCells(row, cells(item));
+  }
+  inner.appendChild(wrapTable(table));
+  details.appendChild(inner);
+  section.appendChild(details);
+}
+
 function createTable(headers: Array<string | HTMLElement>, className: string): HTMLTableElement {
   const table = element('table', { className: `data-table ${className}` }) as HTMLTableElement;
   const thead = table.createTHead();
@@ -1119,6 +1829,43 @@ function truncateCell(text: string, extraClassName?: string): HTMLTableCellEleme
   cell.className = extraClassName ? `cell-truncate ${extraClassName}` : 'cell-truncate';
   cell.textContent = value;
   cell.title = value;
+  return cell;
+}
+
+function truncateCellWithTitle(text: string, title: string, extraClassName?: string): HTMLTableCellElement {
+  const cell = document.createElement('td');
+  const value = text || '—';
+  cell.className = extraClassName ? `cell-truncate ${extraClassName}` : 'cell-truncate';
+  cell.textContent = value;
+  cell.title = title || value;
+  return cell;
+}
+
+function groupedFindingLocation(group: GroupedPresentedFinding): string {
+  const locations = [...new Set(group.items.map((item) => item.location).filter(Boolean))];
+  if (locations.length <= 1) {
+    return locations[0] ?? '—';
+  }
+  return `${locations[0]} (+${locations.length - 1} more)`;
+}
+
+function groupedFindingMessageCell(group: GroupedPresentedFinding): HTMLTableCellElement {
+  const cell = document.createElement('td');
+  cell.className = 'cell-grouped-message';
+  const summaryText =
+    group.occurrences > 1 ? `${group.message} (${group.occurrences} occurrences)` : group.message;
+  cell.appendChild(element('div', { text: summaryText }));
+  cell.title = group.items.map((item) => `${item.location} — ${item.message}`).join('\n');
+  if (group.occurrences > 1) {
+    const details = element('details', { className: 'grouped-finding-details' });
+    details.appendChild(element('summary', { text: `Show ${group.occurrences} occurrences` }));
+    const list = element('ul', { className: 'simple-list compact-list' });
+    for (const item of group.items) {
+      list.appendChild(element('li', { className: 'muted-text', text: `${item.location} — ${item.message}` }));
+    }
+    details.appendChild(list);
+    cell.appendChild(details);
+  }
   return cell;
 }
 
@@ -1398,6 +2145,7 @@ function renderSectionJumpNav(): HTMLElement {
     ['Spring API', '#results-spring-api'],
     ['Components', '#results-components'],
     ['Dependencies', '#results-dependencies']
+    ,['Build model', '#results-build-model']
   ] as Array<[string, string]>) {
     nav.appendChild(element('a', { className: 'results-jump-link', text: label, attributes: { href } }));
   }
@@ -1522,6 +2270,313 @@ function runtimeVirtualThreadsCompactMeta(runtime: RuntimeStackAnalysis): string
   return 'Compatibility unknown';
 }
 
+function dependencyModelLabel(gradleModel: GradleModelAnalysis | undefined): string {
+  const status = gradleModel?.status ?? null;
+  if (hasResolvedGradleDependencies(gradleModel) && status === 'SUCCESS_WITH_WORKAROUND') {
+    return 'Gradle resolved';
+  }
+  if (hasResolvedGradleDependencies(gradleModel) && status === 'SUCCESS') {
+    return 'Gradle resolved';
+  }
+  if ((status === 'SUCCESS' || status === 'SUCCESS_WITH_WORKAROUND') && (gradleModel?.declaredDependencies?.length ?? 0) > 0) {
+    return 'Gradle declared only';
+  }
+  if (status === 'PARTIAL') {
+    return 'Gradle partial';
+  }
+  if (status === 'FAILED' || status === 'TIMED_OUT') {
+    return 'Static inference';
+  }
+  return 'Static inference';
+}
+
+function dependencyModelMeta(gradleModel: GradleModelAnalysis | undefined): string {
+  const status = gradleModel?.status ?? null;
+  const successfulResolutions = successfulGradleResolutionResults(gradleModel);
+  const failedResolutions = failedGradleResolutionResults(gradleModel);
+  const dependencyBearingResults = dependencyBearingGradleResolutionResults(gradleModel);
+  if (hasResolvedGradleDependencies(gradleModel) && status === 'SUCCESS_WITH_WORKAROUND') {
+    return `Collected from sanitized Gradle analysis copy (${successfulResolutions.length}/${dependencyBearingResults.length || 0} dependency-bearing configurations resolved)`;
+  }
+  if (hasResolvedGradleDependencies(gradleModel) && status === 'SUCCESS') {
+    return `Collected from Gradle model analysis (${successfulResolutions.length}/${dependencyBearingResults.length || 0} dependency-bearing configurations resolved)`;
+  }
+  if ((status === 'SUCCESS' || status === 'SUCCESS_WITH_WORKAROUND') && failedResolutions.length > 0) {
+    return 'Gradle executed, but selected configurations failed during dependency graph resolution';
+  }
+  if ((status === 'SUCCESS' || status === 'SUCCESS_WITH_WORKAROUND') && (gradleModel?.declaredDependencies?.length ?? 0) > 0) {
+    return 'Gradle metadata was collected without a resolved dependency graph';
+  }
+  if (status === 'PARTIAL') {
+    return 'Gradle metadata was collected, but dependency graph resolution was incomplete';
+  }
+  if (status === 'DISABLED' || status === 'NOT_REQUESTED') {
+    return 'Gradle model analysis was not used';
+  }
+  return 'Dependency versions inferred statically';
+}
+
+function hasResolvedGradleDependencies(gradleModel: GradleModelAnalysis | undefined): boolean {
+  return successfulResolvedGradleDependencies(gradleModel).length > 0 && successfulGradleResolutionResults(gradleModel).length > 0;
+}
+
+function successfulResolvedGradleDependencies(
+  gradleModel: GradleModelAnalysis | undefined
+): GradleResolvedDependencyModel[] {
+  const successfulConfigurations = new Set(
+    successfulGradleResolutionResults(gradleModel).map(
+      (item) => `${item.projectPath ?? ''}|${item.configuration ?? ''}`
+    )
+  );
+  return (gradleModel?.resolvedDependencies ?? []).filter((dependency) =>
+    successfulConfigurations.has(`${dependency.projectPath ?? ''}|${dependency.configuration ?? ''}`)
+  );
+}
+
+function successfulGradleResolutionResults(gradleModel: GradleModelAnalysis | undefined): GradleResolutionResult[] {
+  return dependencyBearingGradleResolutionResults(gradleModel).filter(
+    (item) => item.attempted && item.successful && (item.resolvedDependencyCount ?? 0) > 0
+  );
+}
+
+function failedGradleResolutionResults(gradleModel: GradleModelAnalysis | undefined): GradleResolutionResult[] {
+  return dependencyBearingGradleResolutionResults(gradleModel).filter((item) => item.attempted && !item.successful);
+}
+
+function dependencyBearingGradleResolutionResults(
+  gradleModel: GradleModelAnalysis | undefined
+): GradleResolutionResult[] {
+  const dependencyBearingConfigurations = new Set(
+    (gradleModel?.configurations ?? [])
+      .filter((configuration) => (configuration.allDependencyCount ?? configuration.dependencyCount ?? 0) > 0)
+      .map((configuration) => `${configuration.projectPath ?? ''}|${configuration.name ?? ''}`)
+  );
+  return (gradleModel?.resolutionResults ?? []).filter((item) =>
+    dependencyBearingConfigurations.has(`${item.projectPath ?? ''}|${item.configuration ?? ''}`)
+  );
+}
+
+function uniqueResolvedModuleCount(gradleModel: GradleModelAnalysis | undefined): number {
+  return new Set(
+    successfulResolvedGradleDependencies(gradleModel)
+      .map((dependency) => `${dependency.group ?? ''}:${dependency.artifact ?? ''}:${dependency.version ?? ''}`)
+      .filter((value) => value !== '::')
+  ).size;
+}
+
+function resolvedStackEntries(
+  gradleModel: GradleModelAnalysis | undefined
+): Array<{ label: string; version: string }> {
+  const entries = [
+    ['Spring Boot', findResolvedDependencyVersionFromModel(gradleModel, 'org.springframework.boot', ['spring-boot'])],
+    ['Spring Framework', findResolvedDependencyVersionFromModel(gradleModel, 'org.springframework', ['spring-core', 'spring-context'])],
+    ['Tomcat', findResolvedDependencyVersionFromModel(gradleModel, 'org.apache.tomcat.embed', ['tomcat-embed-core'])],
+    ['Jackson', findResolvedDependencyVersionFromModel(gradleModel, 'com.fasterxml.jackson.core', ['jackson-databind', 'jackson-core'])],
+    ['Micrometer', findResolvedDependencyVersionFromModel(gradleModel, 'io.micrometer', ['micrometer-core'])],
+    ['Logback', findResolvedDependencyVersionFromModel(gradleModel, 'ch.qos.logback', ['logback-classic'])],
+    ['PostgreSQL driver', findResolvedDependencyVersionFromModel(gradleModel, 'org.postgresql', ['postgresql'])],
+    ['Flyway', findResolvedDependencyVersionFromModel(gradleModel, 'org.flywaydb', ['flyway-core'])],
+    ['Hibernate Validator', findResolvedDependencyVersionFromModel(gradleModel, 'org.hibernate.validator', ['hibernate-validator'])]
+  ] as Array<[string, string | null]>;
+  return entries
+    .filter((entry): entry is [string, string] => Boolean(entry[1]))
+    .map(([label, version]) => ({ label, version }));
+}
+
+function findResolvedDependencyVersionFromModel(
+  gradleModel: GradleModelAnalysis | undefined,
+  group: string,
+  artifacts: string[]
+): string | null {
+  for (const dependency of successfulResolvedGradleDependencies(gradleModel)) {
+    if (dependency.group === group && artifacts.includes(dependency.artifact ?? '') && dependency.version?.trim()) {
+      return dependency.version;
+    }
+  }
+  return null;
+}
+
+function selectedReasonSummary(dependency: GradleResolvedDependencyModel): string {
+  const raw = dependency.selectedReason?.toLowerCase() ?? '';
+  const labels: string[] = [];
+  if (dependency.direct && raw.includes('requested')) {
+    labels.push('Direct dependency');
+  }
+  if (raw.includes('by ancestor')) {
+    labels.push('Transitive dependency');
+  }
+  if (raw.includes('constraint')) {
+    labels.push('Version constraint');
+  }
+  if (raw.includes('selected by rule')) {
+    labels.push('Managed by rule/BOM');
+  }
+  if (raw.includes('consistent resolution')) {
+    labels.push('Consistent resolution');
+  }
+  if (!dependency.direct && raw) {
+    labels.unshift('Transitive dependency');
+  }
+  if (!dependency.direct && labels.length === 0) {
+    labels.push('Transitive dependency');
+  }
+  if (labels.length === 0) {
+    return dependency.direct ? 'Direct dependency' : 'Transitive dependency';
+  }
+  return [...new Set(labels)].join(', ');
+}
+
+function springFrameworkVersionLabel(result: AnalyzeRepositoryResponse): string {
+  const resolved = findResolvedDependencyVersion(result, 'org.springframework', [
+    'spring-core',
+    'spring-context',
+    'spring-web',
+    'spring-webmvc',
+    'spring-webflux'
+  ]);
+  if (resolved) {
+    return resolved;
+  }
+  return result.springBootDetected ? 'Managed by Spring Boot' : 'Unknown';
+}
+
+function springFrameworkVersionMeta(result: AnalyzeRepositoryResponse): string | null {
+  const resolved = findResolvedDependencyVersion(result, 'org.springframework', [
+    'spring-core',
+    'spring-context',
+    'spring-web',
+    'spring-webmvc',
+    'spring-webflux'
+  ]);
+  if (resolved) {
+    return 'Resolved from Gradle dependency model';
+  }
+  if (result.springBootDetected) {
+    return 'Exact version not confirmed from resolved dependencies';
+  }
+  return null;
+}
+
+function findResolvedDependencyVersion(
+  result: AnalyzeRepositoryResponse,
+  group: string,
+  artifacts: string[]
+): string | null {
+  for (const dependency of successfulResolvedGradleDependencies(result.gradleModelAnalysis)) {
+    if (dependency.group === group && artifacts.includes(dependency.artifact ?? '') && dependency.version?.trim()) {
+      return dependency.version;
+    }
+  }
+  return null;
+}
+
+function dedupeGradleRepositories(repositories: GradleRepositoryModel[]): GradleRepositoryModel[] {
+  const unique = new Map<string, GradleRepositoryModel>();
+  for (const repository of repositories) {
+    const key = canonicalRepositoryKey(repository);
+    const existing = unique.get(key);
+    if (!existing) {
+      unique.set(key, repository);
+      continue;
+    }
+    const mergedProjectPath = uniqueValues([existing.projectPath, repository.projectPath]).join(', ');
+    unique.set(key, {
+      ...existing,
+      projectPath: mergedProjectPath || existing.projectPath
+    });
+  }
+  return [...unique.values()];
+}
+
+function canonicalRepositoryKey(repository: GradleRepositoryModel): string {
+  const url = canonicalRepositoryUrl(repository.url);
+  if (url) {
+    return url;
+  }
+  return `${repository.name ?? ''}|${repository.type ?? ''}`;
+}
+
+function canonicalRepositoryUrl(url: string | null | undefined): string | null {
+  if (!url) {
+    return null;
+  }
+  const trimmed = url.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (trimmed.startsWith('file:')) {
+    return trimmed.replace(/\\/g, '/').replace(/\/+$/, '/');
+  }
+  return trimmed.replace(/\/+$/, '/').toLowerCase();
+}
+
+function normalizedRepositoryName(repository: GradleRepositoryModel): string {
+  const canonicalUrl = canonicalRepositoryUrl(repository.url);
+  if (!canonicalUrl) {
+    return repository.name ?? 'Repository';
+  }
+  if (canonicalUrl.includes('/gradle-plugin-cache/m2/')) {
+    return 'Analyzer plugin cache';
+  }
+  if (canonicalUrl === 'https://plugins.gradle.org/m2/') {
+    return 'Gradle Plugin Portal';
+  }
+  if (canonicalUrl === 'https://repo.maven.apache.org/maven2/') {
+    return 'Maven Central';
+  }
+  return repository.name ?? canonicalUrl;
+}
+
+function normalizedRepositoryUrlLabel(repository: GradleRepositoryModel): string {
+  const canonicalUrl = canonicalRepositoryUrl(repository.url);
+  if (!canonicalUrl) {
+    return '—';
+  }
+  if (canonicalUrl.includes('/gradle-plugin-cache/m2/')) {
+    return 'Analyzer plugin cache';
+  }
+  return repository.url ?? canonicalUrl;
+}
+
+function filterVisibleAppliedPlugins(plugins: GradlePluginModel[]): GradlePluginModel[] {
+  return plugins.filter((plugin) => {
+    const identity = `${plugin.pluginId ?? ''} ${plugin.implementationClass ?? ''}`;
+    if (!identity.trim()) {
+      return false;
+    }
+    return /SpringBootPlugin|DependencyManagementPlugin|FlywayPlugin|JavaPlugin|Kotlin|NodePlugin|CheckstylePlugin|JacocoPlugin/.test(identity)
+      || !/org\.gradle\.api\.plugins\..*_Decorated/.test(identity);
+  });
+}
+
+function schedulingLabel(runtime: RuntimeStackAnalysis): string {
+  return runtime.virtualThreads?.scheduledWorkDetected ? 'Detected' : 'Not detected';
+}
+
+function schedulingMeta(runtime: RuntimeStackAnalysis): string | null {
+  const evidence = runtime.virtualThreads?.evidence ?? [];
+  const schedulingEvidence = evidence.filter((item) => item.includes('@Scheduled') || item.includes('@EnableScheduling'));
+  if (schedulingEvidence.length > 0) {
+    return schedulingEvidence[0];
+  }
+  return runtime.virtualThreads?.scheduledWorkDetected ? 'Scheduled work signals were detected' : 'No scheduling signal was detected';
+}
+
+function actuatorLabel(result: AnalyzeRepositoryResponse): string {
+  const hasExposure = (result.httpSurfaceAnalysis?.actuatorExposures ?? []).length > 0;
+  const hasDependency = (result.dependencies ?? []).some((dependency) => dependency.includes('spring-boot-starter-actuator'));
+  return hasExposure || hasDependency ? 'Present' : 'Not detected';
+}
+
+function actuatorMeta(result: AnalyzeRepositoryResponse): string | null {
+  const exposures = result.httpSurfaceAnalysis?.actuatorExposures ?? [];
+  if (exposures.length > 0) {
+    return `${exposures.length} actuator exposure signal${exposures.length === 1 ? '' : 's'} detected`;
+  }
+  const hasDependency = (result.dependencies ?? []).some((dependency) => dependency.includes('spring-boot-starter-actuator'));
+  return hasDependency ? 'Actuator dependency found' : 'No actuator signal was detected';
+}
+
 function summarizeFindings(findings: Finding[]): string | null {
   if (findings.length === 0) {
     return null;
@@ -1558,6 +2613,20 @@ function deriveFindingPresentation(finding: Finding): PresentedFinding {
     ruleType = 'Orphan configuration prefix';
     const prefixMatch = message.match(/prefix\s+"([^"]+)"/i);
     target = prefixMatch?.[1] ?? target;
+  } else if (normalized.includes('management.endpoint.health.show-details=always')) {
+    ruleType = 'Health details exposure';
+    target = 'management.endpoint.health.show-details';
+  } else if (normalized.includes('management.endpoints.web.exposure.include=*')
+    || normalized.includes("actuator web exposure includes '*'")) {
+    ruleType = 'Actuator exposure';
+    target = 'management.endpoints.web.exposure.include';
+  } else if (normalized.startsWith('gradle executed successfully, but no dependency-bearing configuration resolved a dependency graph')) {
+    ruleType = 'Gradle model incomplete';
+    target = 'dependency graph';
+  } else if (normalized.startsWith('dependency resolution failed for ')) {
+    ruleType = 'Gradle dependency resolution';
+    const configurationMatch = message.match(/^Dependency resolution failed for\s+([^:.]+)(?:[:.].*)?$/i);
+    target = configurationMatch?.[1]?.trim() ?? target;
   }
 
   return {
@@ -1569,7 +2638,7 @@ function deriveFindingPresentation(finding: Finding): PresentedFinding {
   };
 }
 
-function groupFindings(findings: Finding[]): PresentedFinding[] {
+function groupFindings(findings: Finding[]): GroupedPresentedFinding[] {
   const grouped = new Map<string, ReturnType<typeof deriveFindingPresentation>[]>();
   for (const finding of findings) {
     const derived = deriveFindingPresentation(finding);
@@ -1583,11 +2652,13 @@ function groupFindings(findings: Finding[]): PresentedFinding[] {
     ruleType: bucket[0].ruleType,
     target: bucket[0].target,
     message: bucket[0].message,
-    location: [...new Set(bucket.map((item) => item.location))].join('; ')
+    location: [...new Set(bucket.map((item) => item.location))].join('; '),
+    occurrences: bucket.length,
+    items: bucket
   }));
 }
 
-function sortFindingGroups(findings: PresentedFinding[], sort: TableSortState): PresentedFinding[] {
+function sortFindingGroups(findings: GroupedPresentedFinding[], sort: TableSortState): GroupedPresentedFinding[] {
   return [...findings].sort((left, right) =>
     compareValues(findingGroupSortValue(left, sort.key), findingGroupSortValue(right, sort.key), sort.direction)
   );
@@ -1756,6 +2827,29 @@ function sortDependencies(dependencies: string[], sort: TableSortState): string[
       dependencySortValue(right, rightParts, sort.key),
       sort.direction
     );
+  });
+}
+
+function sortResolvedDependencies(
+  dependencies: GradleResolvedDependencyModel[],
+  sort: TableSortState
+): GradleResolvedDependencyModel[] {
+  return [...dependencies].sort((left, right) => {
+    const leftValue = sort.key === 'group'
+      ? left.group ?? ''
+      : sort.key === 'artifact'
+        ? left.artifact ?? ''
+        : sort.key === 'version'
+          ? left.version ?? ''
+          : left.configuration ?? '';
+    const rightValue = sort.key === 'group'
+      ? right.group ?? ''
+      : sort.key === 'artifact'
+        ? right.artifact ?? ''
+        : sort.key === 'version'
+          ? right.version ?? ''
+          : right.configuration ?? '';
+    return compareValues(leftValue, rightValue, sort.direction);
   });
 }
 

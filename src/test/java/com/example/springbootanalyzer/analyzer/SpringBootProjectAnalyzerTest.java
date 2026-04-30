@@ -11,13 +11,31 @@ import com.example.springbootanalyzer.analyzer.configuration.PropertyReferenceAn
 import com.example.springbootanalyzer.analyzer.configuration.SensitivePropertyValueRedactor;
 import com.example.springbootanalyzer.analyzer.configuration.SpringConfigurationMetadataCatalog;
 import com.example.springbootanalyzer.analyzer.configuration.YamlConfigurationParser;
+import com.example.springbootanalyzer.analyzer.gradle.GradleCommandBuilder;
+import com.example.springbootanalyzer.analyzer.gradle.GradleExecutionService;
+import com.example.springbootanalyzer.analyzer.gradle.GradleExecutableLocator;
+import com.example.springbootanalyzer.analyzer.gradle.GradleFailureClassifier;
+import com.example.springbootanalyzer.analyzer.gradle.GradleJavaCompatibilityService;
+import com.example.springbootanalyzer.analyzer.gradle.GradleModelAnalyzer;
+import com.example.springbootanalyzer.analyzer.gradle.GradleModelReportParser;
+import com.example.springbootanalyzer.analyzer.gradle.GradlePluginResolutionFailureParser;
+import com.example.springbootanalyzer.analyzer.gradle.GradleSafetyPolicy;
+import com.example.springbootanalyzer.analyzer.gradle.GradleSettingsPluginScanner;
+import com.example.springbootanalyzer.analyzer.gradle.GradleToolingApiExecutionService;
+import com.example.springbootanalyzer.analyzer.gradle.plugin.GradleCorePluginDetector;
+import com.example.springbootanalyzer.analyzer.gradle.plugin.GradlePluginDeclarationScanner;
+import com.example.springbootanalyzer.analyzer.gradle.plugin.GradlePluginResolutionBridge;
+import com.example.springbootanalyzer.analyzer.gradle.plugin.GradleVersionCatalogPluginScanner;
+import com.example.springbootanalyzer.analyzer.model.gradle.GradleExecutionMode;
 import com.example.springbootanalyzer.analyzer.http.HttpSurfaceAnalyzer;
 import com.example.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.example.springbootanalyzer.analyzer.runtime.RuntimeStackAnalyzer;
+import com.example.springbootanalyzer.config.AnalyzerProperties;
 import com.example.springbootanalyzer.git.GitRepositoryReference;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -34,13 +52,76 @@ class SpringBootProjectAnalyzerTest {
             new SensitivePropertyValueRedactor(),
             propertyNameNormalizer
     );
+    private final GradleJavaCompatibilityService gradleJavaCompatibilityService = new GradleJavaCompatibilityService();
+    private final GradleFailureClassifier gradleFailureClassifier =
+            new GradleFailureClassifier(new GradlePluginResolutionFailureParser());
     private final SpringBootProjectAnalyzer analyzer =
             new SpringBootProjectAnalyzer(
                     new BuildFileAnalyzer(),
                     new JavaSourceAnalyzer(),
                     configurationAnalyzer,
+                    new GradleModelAnalyzer(
+                            new GradleSafetyPolicy(gradleJavaCompatibilityService),
+                            gradleJavaCompatibilityService,
+                            new GradleToolingApiExecutionService(gradleJavaCompatibilityService, gradleFailureClassifier),
+                            new GradleExecutionService(
+                                    new GradleCommandBuilder(),
+                                    new GradleExecutableLocator(),
+                                    gradleJavaCompatibilityService,
+                                    gradleFailureClassifier
+                            ),
+                            new GradleModelReportParser(),
+                            new GradleSettingsPluginScanner(),
+                            new GradlePluginDeclarationScanner(new GradleVersionCatalogPluginScanner()),
+                            new GradlePluginResolutionBridge(new GradleCorePluginDetector())
+                    ),
                     new RuntimeStackAnalyzer(),
-                    new HttpSurfaceAnalyzer()
+                    new HttpSurfaceAnalyzer(),
+                    new AnalyzerProperties(
+                            Path.of("."),
+                            true,
+                            false,
+                            new AnalyzerProperties.ScheduledWorkspaceCleanupProperties(true, Duration.ofDays(7), 4),
+                            new AnalyzerProperties.GradleProperties(
+                                    false,
+                                    null,
+                                    GradleExecutionMode.TOOLING_API,
+                                    "9.5.0",
+                                    Path.of(System.getProperty("java.io.tmpdir"), "spring-boot-analyzer-gradle-distributions"),
+                                    java.util.List.of(),
+                                    null,
+                                    null,
+                                    true,
+                                    java.util.List.of("https://plugins.gradle.org/m2/"),
+                                    true,
+                                    false,
+                                    true,
+                                    false,
+                                    true,
+                                    false,
+                                    false,
+                                    new AnalyzerProperties.SettingsPluginWorkaroundProperties(false, false, java.util.List.of(), 1),
+                                    new AnalyzerProperties.PluginResolutionBridgeProperties(
+                                            true,
+                                            true,
+                                            true,
+                                            "Spring Boot Analyzer plugin cache",
+                                            java.util.List.of("https://plugins.gradle.org/m2/", "https://repo.maven.apache.org/maven2/"),
+                                            Duration.ofSeconds(30),
+                                            50,
+                                            500,
+                                            false,
+                                            2
+                                    ),
+                                    false,
+                                    false,
+                                    true,
+                                    null,
+                                    null,
+                                    0,
+                                    0
+                            )
+                    )
             );
 
     @TempDir

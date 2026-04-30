@@ -8,7 +8,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Comparator;
 import java.util.UUID;
+import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -38,6 +42,50 @@ public class WorkspaceService {
         } catch (IOException exception) {
             throw new IllegalStateException("Failed to create analyzer workspace.", exception);
         }
+    }
+
+    public WorkspaceCleanupResult deleteWorkspacesOlderThan(Duration maxAge) {
+        return deleteWorkspacesOlderThan(maxAge, Instant.now());
+    }
+
+    WorkspaceCleanupResult deleteWorkspacesOlderThan(Duration maxAge, Instant now) {
+        Path workspaceRoot = analyzerProperties.workspaceRoot();
+        if (maxAge == null || maxAge.isNegative() || maxAge.isZero()) {
+            return new WorkspaceCleanupResult(0, 0, 0);
+        }
+        if (Files.notExists(workspaceRoot)) {
+            return new WorkspaceCleanupResult(0, 0, 0);
+        }
+
+        Instant cutoff = now.minus(maxAge);
+        int scannedCount = 0;
+        int deletedCount = 0;
+        int failedCount = 0;
+
+        try (Stream<Path> workspacePaths = Files.list(workspaceRoot).sorted(Comparator.naturalOrder())) {
+            for (Path workspacePath : workspacePaths.toList()) {
+                if (!Files.isDirectory(workspacePath)) {
+                    continue;
+                }
+
+                scannedCount++;
+                if (!isOlderThan(workspacePath, cutoff)) {
+                    continue;
+                }
+
+                try {
+                    deleteWorkspace(new Workspace(workspacePath.getFileName().toString(), workspacePath));
+                    deletedCount++;
+                } catch (IllegalStateException exception) {
+                    failedCount++;
+                    LOGGER.warn("Failed to delete stale workspace {}", workspacePath, exception);
+                }
+            }
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to scan analyzer workspace root: " + workspaceRoot, exception);
+        }
+
+        return new WorkspaceCleanupResult(scannedCount, deletedCount, failedCount);
     }
 
     public void deleteWorkspace(Workspace workspace) {
@@ -134,9 +182,25 @@ public class WorkspaceService {
         }
     }
 
+    private boolean isOlderThan(Path workspacePath, Instant cutoff) {
+        try {
+            return Files.getLastModifiedTime(workspacePath).toInstant().isBefore(cutoff);
+        } catch (IOException exception) {
+            LOGGER.warn("Failed to read last modified time for workspace {}", workspacePath, exception);
+            return false;
+        }
+    }
+
     public record Workspace(
             String id,
             Path path
+    ) {
+    }
+
+    public record WorkspaceCleanupResult(
+            int scannedCount,
+            int deletedCount,
+            int failedCount
     ) {
     }
 }

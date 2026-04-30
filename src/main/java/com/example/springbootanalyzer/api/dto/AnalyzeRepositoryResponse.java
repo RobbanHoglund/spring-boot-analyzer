@@ -4,6 +4,7 @@ import com.example.springbootanalyzer.analyzer.model.BuildTool;
 import com.example.springbootanalyzer.analyzer.model.DetectedClass;
 import com.example.springbootanalyzer.analyzer.model.Finding;
 import com.example.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
+import com.example.springbootanalyzer.analyzer.model.gradle.GradleModelAnalysis;
 import com.example.springbootanalyzer.analyzer.model.http.HttpSurfaceAnalysis;
 import com.example.springbootanalyzer.analyzer.model.runtime.RuntimeStackAnalysis;
 import java.util.List;
@@ -21,6 +22,7 @@ public record AnalyzeRepositoryResponse(
         List<Finding> findings,
         ConfigurationAnalysis configurationAnalysis,
         RuntimeStackAnalysis runtimeStackAnalysis,
-        HttpSurfaceAnalysis httpSurfaceAnalysis
+        HttpSurfaceAnalysis httpSurfaceAnalysis,
+        GradleModelAnalysis gradleModelAnalysis
 ) {
 }

@@ -2,6 +2,7 @@ package com.example.springbootanalyzer.analyzer;
 
 import com.example.springbootanalyzer.analyzer.JavaSourceAnalyzer.SourceAnalysis;
 import com.example.springbootanalyzer.analyzer.configuration.ConfigurationAnalyzer;
+import com.example.springbootanalyzer.analyzer.gradle.GradleModelAnalyzer;
 import com.example.springbootanalyzer.analyzer.http.HttpSurfaceAnalyzer;
 import com.example.springbootanalyzer.analyzer.model.AnalysisResult;
 import com.example.springbootanalyzer.analyzer.model.BuildInfo;
@@ -10,6 +11,7 @@ import com.example.springbootanalyzer.analyzer.model.Finding;
 import com.example.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.example.springbootanalyzer.analyzer.model.SpringComponentType;
 import com.example.springbootanalyzer.analyzer.runtime.RuntimeStackAnalyzer;
+import com.example.springbootanalyzer.config.AnalyzerProperties;
 import com.example.springbootanalyzer.git.GitRepositoryReference;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -24,21 +26,27 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
     private final BuildFileAnalyzer buildFileAnalyzer;
     private final JavaSourceAnalyzer javaSourceAnalyzer;
     private final ConfigurationAnalyzer configurationAnalyzer;
+    private final GradleModelAnalyzer gradleModelAnalyzer;
     private final RuntimeStackAnalyzer runtimeStackAnalyzer;
     private final HttpSurfaceAnalyzer httpSurfaceAnalyzer;
+    private final AnalyzerProperties analyzerProperties;
 
     public SpringBootProjectAnalyzer(
             BuildFileAnalyzer buildFileAnalyzer,
             JavaSourceAnalyzer javaSourceAnalyzer,
             ConfigurationAnalyzer configurationAnalyzer,
+            GradleModelAnalyzer gradleModelAnalyzer,
             RuntimeStackAnalyzer runtimeStackAnalyzer,
-            HttpSurfaceAnalyzer httpSurfaceAnalyzer
+            HttpSurfaceAnalyzer httpSurfaceAnalyzer,
+            AnalyzerProperties analyzerProperties
     ) {
         this.buildFileAnalyzer = buildFileAnalyzer;
         this.javaSourceAnalyzer = javaSourceAnalyzer;
         this.configurationAnalyzer = configurationAnalyzer;
+        this.gradleModelAnalyzer = gradleModelAnalyzer;
         this.runtimeStackAnalyzer = runtimeStackAnalyzer;
         this.httpSurfaceAnalyzer = httpSurfaceAnalyzer;
+        this.analyzerProperties = analyzerProperties;
     }
 
     @Override
@@ -46,10 +54,17 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
         BuildInfo buildInfo = buildFileAnalyzer.analyze(repositoryRoot);
         SourceAnalysis sourceAnalysis = javaSourceAnalyzer.analyze(repositoryRoot);
         ConfigurationAnalyzer.Result configurationResult = configurationAnalyzer.analyze(repositoryRoot, buildInfo);
+        GradleModelAnalyzer.Result gradleResult = gradleModelAnalyzer.analyze(
+                repositoryReference,
+                repositoryRoot,
+                buildInfo,
+                analyzerProperties
+        );
 
         List<DetectedClass> detectedClasses = sourceAnalysis.detectedClasses();
         List<Finding> findings = new ArrayList<>(sourceAnalysis.findings());
         findings.addAll(configurationResult.findings());
+        findings.addAll(gradleResult.findings());
 
         List<String> mainApplicationClasses = detectedClasses.stream()
                 .filter(detectedClass -> detectedClass.componentType() == SpringComponentType.MAIN_APPLICATION)
@@ -60,6 +75,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
         RuntimeStackAnalyzer.Result runtimeResult = runtimeStackAnalyzer.analyze(
                 repositoryRoot,
                 buildInfo,
+                gradleResult.gradleModelAnalysis(),
                 configurationResult.configurationAnalysis(),
                 detectedClasses,
                 mainApplicationClasses
@@ -84,7 +100,8 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
                 List.copyOf(findings),
                 configurationResult.configurationAnalysis(),
                 runtimeResult.runtimeStackAnalysis(),
-                httpResult.httpSurfaceAnalysis()
+                httpResult.httpSurfaceAnalysis(),
+                gradleResult.gradleModelAnalysis()
         );
     }
 
