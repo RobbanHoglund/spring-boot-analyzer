@@ -10,7 +10,7 @@ Purpose:
 - Support manual smoke testing, demos, and future analyzer regression checks
 
 Important:
-- They are not part of the main `com.example.springbootanalyzer` package tree
+- They are not part of the main `com.robbanhoglund.springbootanalyzer` package tree
 - They are intentionally outside the normal application component-scan path
 - `BadDesigned` contains deliberate flaws and should not be treated as production guidance
 - `GoodDesigned` is a contrast example, not shared application infrastructure

@@ -20,7 +20,7 @@ java {
 }
 
 springBoot {
-    mainClass = 'com.example.springbootanalyzer.SpringBootAnalyzerApplication'
+    mainClass = 'com.robbanhoglund.springbootanalyzer.SpringBootAnalyzerApplication'
 }
 
 bootJar {
