@@ -2,6 +2,9 @@ package com.example.springbootanalyzer.analyzer.http;
 
 import com.example.springbootanalyzer.analyzer.model.BuildInfo;
 import com.example.springbootanalyzer.analyzer.model.Finding;
+import com.example.springbootanalyzer.analyzer.model.FindingConfidence;
+import com.example.springbootanalyzer.analyzer.model.FindingFactory;
+import com.example.springbootanalyzer.analyzer.model.FindingRules;
 import com.example.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.example.springbootanalyzer.analyzer.model.configuration.ApplicationProperty;
 import com.example.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
@@ -20,6 +23,7 @@ import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
+import com.github.javaparser.ast.expr.BinaryExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.MemberValuePair;
 import com.github.javaparser.ast.expr.MethodCallExpr;
@@ -405,7 +409,8 @@ public class HttpSurfaceAnalyzer {
         String className = callExpr.findAncestor(ClassOrInterfaceDeclaration.class)
                 .map(ClassOrInterfaceDeclaration::getNameAsString)
                 .orElse(null);
-        BaseUrlMatch baseUrlMatch = resolveBaseUrl(rawValue, propertyName, className, relativePath, baseUrlCatalog);
+        String baseUrlHint = baseUrlHint(callExpr);
+        BaseUrlMatch baseUrlMatch = resolveBaseUrl(rawValue, propertyName, className, relativePath, baseUrlHint, baseUrlCatalog);
         String sanitizedValue = sanitizeUrlValue(rawValue);
         return new OutboundEndpoint(
                 method.toUpperCase(Locale.ROOT),
@@ -460,18 +465,27 @@ public class HttpSurfaceAnalyzer {
         }
 
         long insecureUrlCount = Stream.concat(
-                        configuredUrls.stream().map(ConfiguredUrl::value),
-                        outboundEndpoints.stream().map(OutboundEndpoint::urlOrTemplate)
+                        configuredUrls.stream()
+                                .filter(this::isReportablePlainHttpConfiguredUrl)
+                                .map(ConfiguredUrl::value),
+                        outboundEndpoints.stream()
+                                .filter(this::isReportablePlainHttpOutbound)
+                                .map(OutboundEndpoint::urlOrTemplate)
                 )
                 .filter(Objects::nonNull)
                 .filter(value -> value.startsWith("http://"))
                 .count();
         if (insecureUrlCount > 0) {
-            findings.add(new Finding(
-                    FindingSeverity.INFO,
-                    insecureUrlCount + " external HTTP endpoints use plain http:// instead of https://.",
-                    null
-            ));
+            findings.add(FindingFactory.builder(FindingRules.SPRING_HTTP_PLAIN_URL, FindingConfidence.HIGH)
+                    .shortMessage(insecureUrlCount + " external HTTP endpoints use plain http:// instead of https://.")
+                    .whyBadPractice("Plain HTTP can expose traffic to interception or modification outside trusted local environments.")
+                    .possibleImpact("Credentials, tokens, and business data can cross the network without transport security when these endpoints are used outside local or tightly controlled environments.")
+                    .recommendation("Use HTTPS for external service URLs unless the endpoint is intentionally local or behind a trusted internal network.")
+                    .evidence("Configured URLs and outbound endpoint templates included external plain HTTP addresses outside localhost and test-only configuration.")
+                    .limitations("Static analysis cannot prove the full network topology or whether an internal transport layer adds encryption outside the application configuration.")
+                    .target("external HTTP URLs")
+                    .location("HTTP surface")
+                    .build());
         }
 
         long querySecretCount = Stream.concat(
@@ -709,13 +723,67 @@ public class HttpSurfaceAnalyzer {
                 && "create".equals(argument.asMethodCallExpr().getNameAsString())
                 && argument.asMethodCallExpr().getScope().map(scope -> scope.toString().equals("URI")).orElse(false)
                 && !argument.asMethodCallExpr().getArguments().isEmpty()) {
-            return stringValue(argument.asMethodCallExpr().getArgument(0));
+            return urlLikeValue(argument.asMethodCallExpr().getArgument(0));
         }
         if (argument.isObjectCreationExpr() && argument.asObjectCreationExpr().getType().getNameAsString().equals("URI")
                 && !argument.asObjectCreationExpr().getArguments().isEmpty()) {
-            return stringValue(argument.asObjectCreationExpr().getArgument(0));
+            return urlLikeValue(argument.asObjectCreationExpr().getArgument(0));
         }
         return Optional.empty();
+    }
+
+    private Optional<String> urlLikeValue(Expression expression) {
+        Optional<String> literal = stringValue(expression);
+        if (literal.isPresent()) {
+            return literal;
+        }
+        if (expression.isBinaryExpr()) {
+            return relativePathFromBinaryExpression(expression.asBinaryExpr());
+        }
+        return Optional.empty();
+    }
+
+    private Optional<String> relativePathFromBinaryExpression(BinaryExpr expression) {
+        Optional<String> left = relativePathToken(expression.getLeft());
+        Optional<String> right = relativePathToken(expression.getRight());
+        if (left.isPresent() && right.isPresent()) {
+            return Optional.of(combineRelativeUrlParts(left.get(), right.get()));
+        }
+        return left.isPresent() ? left : right;
+    }
+
+    private Optional<String> relativePathToken(Expression expression) {
+        Optional<String> literal = stringValue(expression);
+        if (literal.isPresent()) {
+            String value = literal.get();
+            if (value.startsWith("/")) {
+                return Optional.of(value);
+            }
+            return Optional.empty();
+        }
+        if (expression.isBinaryExpr()) {
+            return relativePathFromBinaryExpression(expression.asBinaryExpr());
+        }
+        if (expression.isNameExpr() || expression.isMethodCallExpr() || expression.isFieldAccessExpr()) {
+            return Optional.of("");
+        }
+        return Optional.empty();
+    }
+
+    private String combineRelativeUrlParts(String left, String right) {
+        if (left.isBlank()) {
+            return right;
+        }
+        if (right.isBlank()) {
+            return left;
+        }
+        if (left.endsWith("/") && right.startsWith("/")) {
+            return left.substring(0, left.length() - 1) + right;
+        }
+        if (!left.endsWith("/") && !right.startsWith("/")) {
+            return left + "/" + right;
+        }
+        return left + right;
     }
 
     private String httpMethodFor(AnnotationExpr annotation) {
@@ -823,6 +891,37 @@ public class HttpSurfaceAnalyzer {
         return SENSITIVE_NAME_MARKERS.stream().anyMatch(normalizedName::contains);
     }
 
+    private boolean isReportablePlainHttpConfiguredUrl(ConfiguredUrl configuredUrl) {
+        if (configuredUrl == null || configuredUrl.value() == null || !configuredUrl.value().startsWith("http://")) {
+            return false;
+        }
+        if (isLocalHost(configuredUrl.host())) {
+            return false;
+        }
+        String profile = configuredUrl.profile() == null ? "" : configuredUrl.profile().toLowerCase(Locale.ROOT);
+        String sourceFile = configuredUrl.sourceFile() == null ? "" : configuredUrl.sourceFile().toLowerCase(Locale.ROOT);
+        return !profile.equals("test")
+                && !sourceFile.contains("src/test/resources")
+                && !configuredUrl.value().toLowerCase(Locale.ROOT).contains("localhost/mock");
+    }
+
+    private boolean isReportablePlainHttpOutbound(OutboundEndpoint endpoint) {
+        return endpoint != null
+                && endpoint.urlOrTemplate() != null
+                && endpoint.urlOrTemplate().startsWith("http://")
+                && !isLocalHost(endpoint.host());
+    }
+
+    private boolean isLocalHost(String host) {
+        if (host == null || host.isBlank()) {
+            return false;
+        }
+        String normalized = host.toLowerCase(Locale.ROOT);
+        return normalized.equals("localhost")
+                || normalized.equals("127.0.0.1")
+                || normalized.equals("::1");
+    }
+
     private boolean isSafeLiteralUrl(String value) {
         if (value == null) {
             return false;
@@ -840,6 +939,7 @@ public class HttpSurfaceAnalyzer {
             String propertyName,
             String className,
             String sourceFile,
+            String baseUrlHint,
             BaseUrlCatalog baseUrlCatalog
     ) {
         if (propertyName != null) {
@@ -851,11 +951,63 @@ public class HttpSurfaceAnalyzer {
         if (!rawValue.startsWith("/")) {
             return null;
         }
-        return baseUrlCatalog.bestMatchForClass(className, sourceFile);
+        return baseUrlCatalog.bestMatchForClass(className, sourceFile, baseUrlHint);
+    }
+
+    private String baseUrlHint(MethodCallExpr callExpr) {
+        for (Expression candidate = callExpr; candidate != null; ) {
+            if (candidate instanceof MethodCallExpr currentCall) {
+                if ("baseUrl".equals(currentCall.getNameAsString()) && !currentCall.getArguments().isEmpty()) {
+                    return currentCall.getArgument(0).toString();
+                }
+                if ("newBuilder".equals(currentCall.getNameAsString())
+                        && currentCall.toString().contains("HttpRequest.newBuilder")
+                        && !currentCall.getArguments().isEmpty()) {
+                    return extractBaseUrlHint(currentCall.getArgument(0));
+                }
+                candidate = currentCall.getScope().orElse(null);
+            } else {
+                candidate = null;
+            }
+        }
+        return callExpr.findAncestor(MethodDeclaration.class)
+                .map(MethodDeclaration::toString)
+                .map(this::bestBaseUrlHintFromMethodBody)
+                .orElse(null);
+    }
+
+    private String extractBaseUrlHint(Expression expression) {
+        if (expression.isMethodCallExpr()
+                && "create".equals(expression.asMethodCallExpr().getNameAsString())
+                && !expression.asMethodCallExpr().getArguments().isEmpty()) {
+            return extractBaseUrlHint(expression.asMethodCallExpr().getArgument(0));
+        }
+        if (expression.isObjectCreationExpr() && !expression.asObjectCreationExpr().getArguments().isEmpty()) {
+            return extractBaseUrlHint(expression.asObjectCreationExpr().getArgument(0));
+        }
+        if (expression.isBinaryExpr()) {
+            Expression left = expression.asBinaryExpr().getLeft();
+            String leftText = left.toString();
+            return leftText.startsWith("\"") ? null : leftText;
+        }
+        String rendered = expression.toString();
+        return rendered.startsWith("\"") ? null : rendered;
+    }
+
+    private String bestBaseUrlHintFromMethodBody(String methodBody) {
+        if (methodBody == null || methodBody.isBlank()) {
+            return null;
+        }
+        Pattern pattern = Pattern.compile("(\\w+(?:\\.\\w+)*)\\s*\\+\\s*\"/[^\"]*\"");
+        Matcher matcher = pattern.matcher(methodBody);
+        return matcher.find() ? matcher.group(1) : null;
     }
 
     private String buildFullUrlPreview(String rawValue, BaseUrlMatch baseUrlMatch) {
         if (baseUrlMatch == null) {
+            if (rawValue.startsWith("/")) {
+                return null;
+            }
             return sanitizeUrlValue(rawValue);
         }
         if (rawValue.startsWith("/")) {
@@ -936,21 +1088,33 @@ public class HttpSurfaceAnalyzer {
             return byProperty.get(propertyName);
         }
 
-        private BaseUrlMatch bestMatchForClass(String className, String sourceFile) {
+        private BaseUrlMatch bestMatchForClass(String className, String sourceFile, String hint) {
             if (ranked.isEmpty()) {
                 return null;
             }
-            String haystack = ((className == null ? "" : className) + " " + (sourceFile == null ? "" : sourceFile)).toLowerCase(Locale.ROOT);
+            String haystack = ((className == null ? "" : className)
+                    + " "
+                    + (sourceFile == null ? "" : sourceFile)
+                    + " "
+                    + (hint == null ? "" : hint))
+                    .toLowerCase(Locale.ROOT);
             int bestScore = 0;
+            int secondBestScore = 0;
             BaseUrlMatch bestMatch = null;
             for (Map.Entry<String, BaseUrlMatch> entry : ranked) {
                 int score = tokenScore(haystack, entry.getKey());
                 if (score > bestScore) {
+                    secondBestScore = bestScore;
                     bestScore = score;
                     bestMatch = entry.getValue();
+                } else if (score > secondBestScore) {
+                    secondBestScore = score;
                 }
             }
-            return bestScore >= 2 ? bestMatch : null;
+            if (bestScore == 0) {
+                return null;
+            }
+            return bestScore > secondBestScore ? bestMatch : null;
         }
 
         private static int tokenScore(String haystack, String propertyName) {

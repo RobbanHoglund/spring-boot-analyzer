@@ -49,7 +49,20 @@ export interface Finding {
   message?: string;
   location?: string;
   rule?: string;
+  ruleId?: string;
+  title?: string;
   category?: string;
+  runtimeDetection?: string;
+  confidence?: string;
+  shortMessage?: string;
+  whyBadPractice?: string;
+  possibleImpact?: string;
+  recommendation?: string;
+  evidence?: string;
+  limitations?: string;
+  sourceFile?: string;
+  line?: number | null;
+  target?: string;
   [key: string]: unknown;
 }
 
@@ -126,6 +139,7 @@ export interface ApplicationProperty {
   name?: string;
   value?: string | null;
   valueRedacted?: boolean;
+  placeholderValue?: boolean;
   sourceFile?: string;
   line?: number | null;
   profile?: string | null;

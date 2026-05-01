@@ -154,10 +154,198 @@ class HttpSurfaceAnalyzerTest {
                 .anyMatch(message -> message.contains("publishes every endpoint"));
     }
 
+    @Test
+    void correlatesRelativeOutboundPathsWithConfiguredBaseUrls() throws IOException {
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("OpenAiClient.java"), """
+                package com.example.demo;
+
+                import org.springframework.web.client.RestClient;
+
+                class OpenAiClient {
+                    void call() {
+                        RestClient.builder().baseUrl("https://api.openai.com/v1").build().post().uri("/responses");
+                    }
+                }
+                """);
+        Files.writeString(sourceRoot.resolve("ResendClient.java"), """
+                package com.example.demo;
+
+                import java.net.URI;
+                import java.net.http.HttpRequest;
+                import org.springframework.beans.factory.annotation.Value;
+
+                class ResendClient {
+
+                    @Value("${resend.base-url}")
+                    String resendBaseUrl;
+
+                    void send() {
+                        HttpRequest.newBuilder(URI.create(resendBaseUrl + "/emails")).POST(HttpRequest.BodyPublishers.noBody());
+                    }
+                }
+                """);
+
+        ConfigurationAnalysis configurationAnalysis = new ConfigurationAnalysis(
+                List.of(),
+                List.of(
+                        property("openai.base-url", "https://api.openai.com/v1"),
+                        property("resend.base-url", "https://api.resend.com")
+                ),
+                List.of(),
+                List.of(),
+                new ConfigurationSummary(2, 0, 0, 0, 0, 0, List.of("default"))
+        );
+
+        BuildInfo buildInfo = new BuildInfo(
+                BuildTool.GRADLE,
+                true,
+                "25",
+                List.of("org.springframework.boot:spring-boot-starter-web"),
+                "3.5.13",
+                "Gradle plugins",
+                "HIGH"
+        );
+
+        var result = analyzer.analyze(tempDir, configurationAnalysis, buildInfo, WebStack.SERVLET_MVC);
+
+        assertThat(result.httpSurfaceAnalysis().outboundEndpoints())
+                .anyMatch(endpoint ->
+                        "https://api.openai.com/v1/responses".equals(endpoint.fullUrlPreview())
+                                && "api.openai.com".equals(endpoint.host())
+                                && "openai.base-url".equals(endpoint.configurationPropertyName()))
+                .anyMatch(endpoint ->
+                        "https://api.resend.com/emails".equals(endpoint.fullUrlPreview())
+                                && "api.resend.com".equals(endpoint.host())
+                                && "resend.base-url".equals(endpoint.configurationPropertyName()));
+    }
+
+    @Test
+    void resolvesBaseUrlFromPropertiesObjectAndLeavesRelativePathWhenUnknown() throws IOException {
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("ResendProperties.java"), """
+                package com.example.demo;
+
+                import org.springframework.boot.context.properties.ConfigurationProperties;
+
+                @ConfigurationProperties(prefix = "resend")
+                public record ResendProperties(String baseUrl) {
+                }
+                """);
+        Files.writeString(sourceRoot.resolve("ResendGateway.java"), """
+                package com.example.demo;
+
+                import java.net.URI;
+                import java.net.http.HttpRequest;
+                import org.springframework.web.client.RestClient;
+
+                class ResendGateway {
+                    private final ResendProperties resendProperties;
+
+                    ResendGateway(ResendProperties resendProperties) {
+                        this.resendProperties = resendProperties;
+                    }
+
+                    void sendMail() {
+                        RestClient.builder().baseUrl(resendProperties.baseUrl()).build().post().uri("/emails");
+                        HttpRequest.newBuilder(URI.create(resendProperties.baseUrl() + "/emails")).POST(HttpRequest.BodyPublishers.noBody());
+                    }
+                }
+                """);
+        Files.writeString(sourceRoot.resolve("UnknownGateway.java"), """
+                package com.example.demo;
+
+                import org.springframework.web.client.RestClient;
+
+                class UnknownGateway {
+                    void sendMail() {
+                        RestClient.builder().post().uri("/emails");
+                    }
+                }
+                """);
+
+        ConfigurationAnalysis configurationAnalysis = new ConfigurationAnalysis(
+                List.of(),
+                List.of(property("resend.base-url", "https://api.resend.com")),
+                List.of(),
+                List.of(),
+                new ConfigurationSummary(1, 0, 0, 0, 0, 0, List.of("default"))
+        );
+
+        BuildInfo buildInfo = new BuildInfo(
+                BuildTool.GRADLE,
+                true,
+                "25",
+                List.of("org.springframework.boot:spring-boot-starter-web"),
+                "3.5.13",
+                "Gradle plugins",
+                "HIGH"
+        );
+
+        var result = analyzer.analyze(tempDir, configurationAnalysis, buildInfo, WebStack.SERVLET_MVC);
+
+        assertThat(result.httpSurfaceAnalysis().outboundEndpoints())
+                .anyMatch(endpoint ->
+                        "https://api.resend.com/emails".equals(endpoint.fullUrlPreview())
+                                && "api.resend.com".equals(endpoint.host())
+                                && "resend.base-url".equals(endpoint.configurationPropertyName()));
+        assertThat(result.httpSurfaceAnalysis().outboundEndpoints())
+                .anyMatch(endpoint ->
+                        "/emails".equals(endpoint.urlOrTemplate())
+                                && endpoint.fullUrlPreview() == null
+                                && endpoint.host() == null
+                                && endpoint.configurationPropertyName() == null);
+    }
+
+    @Test
+    void ignoresPlainHttpLocalhostUrlsInTestConfiguration() throws IOException {
+        ConfigurationAnalysis configurationAnalysis = new ConfigurationAnalysis(
+                List.of(),
+                List.of(
+                        new ApplicationProperty(
+                                "mfn.listing-url",
+                                "http://localhost/mock-listing",
+                                false,
+                                false,
+                                "src/test/resources/application-test.properties",
+                                1,
+                                "test",
+                                PropertyKind.UNKNOWN,
+                                PropertyDocumentation.unknown(),
+                                List.of()
+                        ),
+                        property("external.catalog-url", "http://example.com/api")
+                ),
+                List.of(),
+                List.of(),
+                new ConfigurationSummary(2, 0, 0, 1, 0, 0, List.of("default", "test"))
+        );
+
+        BuildInfo buildInfo = new BuildInfo(
+                BuildTool.GRADLE,
+                true,
+                "25",
+                List.of("org.springframework.boot:spring-boot-starter-web"),
+                "3.5.13",
+                "Gradle plugins",
+                "HIGH"
+        );
+
+        var result = analyzer.analyze(tempDir, configurationAnalysis, buildInfo, WebStack.SERVLET_MVC);
+
+        assertThat(result.findings())
+                .anyMatch(finding -> "SPRING_HTTP_PLAIN_URL".equals(finding.ruleId())
+                        && finding.message() != null
+                        && finding.message().contains("plain http://"));
+        assertThat(result.findings()).filteredOn(finding -> "SPRING_HTTP_PLAIN_URL".equals(finding.ruleId()))
+                .hasSize(1);
+    }
+
     private ApplicationProperty property(String name, String value) {
         return new ApplicationProperty(
                 name,
                 value,
+                false,
                 false,
                 "src/main/resources/application.properties",
                 1,

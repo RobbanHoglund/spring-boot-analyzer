@@ -6,6 +6,7 @@ public record ApplicationProperty(
         String name,
         String value,
         boolean valueRedacted,
+        boolean placeholderValue,
         String sourceFile,
         Integer line,
         String profile,

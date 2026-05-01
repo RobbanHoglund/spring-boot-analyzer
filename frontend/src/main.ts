@@ -32,9 +32,14 @@ import { type ResultsViewState } from './views/resultsView';
 import { renderSettingsView, type RepositoryFormModel, type TokenFormModel } from './views/settingsView';
 
 const DEFAULT_REPOSITORY_URL = 'https://github.com/RobbanHoglund/tradingbot.git';
+const THEME_STORAGE_KEY = 'spring-boot-analyzer-theme';
+const THEME_OPTIONS = ['system', 'light', 'dark'] as const;
+
+type ThemePreference = (typeof THEME_OPTIONS)[number];
 
 interface AppState {
   currentTab: AppTab;
+  themePreference: ThemePreference;
   analyzeMode: 'saved' | 'oneTime';
   tokenProfiles: TokenProfile[];
   repositoryProfiles: RepositoryProfile[];
@@ -62,9 +67,14 @@ interface FocusSnapshot {
 }
 
 const root = requiredElement<HTMLDivElement>('app');
+const systemThemeMedia = typeof window !== 'undefined'
+  ? window.matchMedia('(prefers-color-scheme: dark)')
+  : null;
 
 let state: AppState = createInitialState();
 let analysisProgressTimer: number | null = null;
+applyThemePreference(state.themePreference);
+systemThemeMedia?.addEventListener('change', handleSystemThemeChange);
 render();
 
 function createInitialState(): AppState {
@@ -74,6 +84,7 @@ function createInitialState(): AppState {
 
   return {
     currentTab: 'analyze',
+    themePreference: loadThemePreference(),
     analyzeMode: 'saved',
     tokenProfiles,
     repositoryProfiles,
@@ -93,6 +104,9 @@ function createInitialState(): AppState {
     tokenForm: createEmptyTokenForm(),
     resultsViewState: {
       findingsSeverity: 'ALL',
+      findingsCategory: 'ALL',
+      findingsRuntimeDetection: 'ALL',
+      findingsConfidence: 'ALL',
       findingsText: '',
       findingsExpanded: false,
       findingsGrouped: true,
@@ -136,12 +150,21 @@ function render(): void {
     element(
       'header',
       { className: 'page-header' },
-      element('h1', { text: 'Spring Boot Analyzer' }),
       element(
-        'p',
-        {
-          text: 'Clone and analyze Spring Boot repositories without starting the application.'
-        }
+        'div',
+        { className: 'page-header-bar' },
+        element(
+          'div',
+          { className: 'page-header-copy' },
+          element('h1', { text: 'Spring Boot Analyzer' }),
+          element(
+            'p',
+            {
+              text: 'Clone and analyze Spring Boot repositories without starting the application.'
+            }
+          )
+        ),
+        renderThemeControl()
       )
     )
   );
@@ -219,6 +242,18 @@ function render(): void {
           },
           onFindingsSeverityChange: (value) => {
             state.resultsViewState.findingsSeverity = value;
+            render();
+          },
+          onFindingsCategoryChange: (value) => {
+            state.resultsViewState.findingsCategory = value;
+            render();
+          },
+          onFindingsRuntimeDetectionChange: (value) => {
+            state.resultsViewState.findingsRuntimeDetection = value;
+            render();
+          },
+          onFindingsConfidenceChange: (value) => {
+            state.resultsViewState.findingsConfidence = value;
             render();
           },
           onFindingsTextChange: (value) => {
@@ -828,9 +863,12 @@ function repositoryFormFromProfile(profile: RepositoryProfile): RepositoryFormMo
 function resetResultsViewState(): void {
   state.resultsViewState = {
     findingsSeverity: 'ALL',
+    findingsCategory: 'ALL',
+    findingsRuntimeDetection: 'ALL',
+    findingsConfidence: 'ALL',
     findingsText: '',
     findingsExpanded: false,
-    findingsGrouped: false,
+    findingsGrouped: true,
     configurationSearch: '',
     configurationProfile: 'ALL',
     configurationSource: 'ALL',
@@ -868,6 +906,74 @@ function toggleSort(sortState: { key: string; direction: 'asc' | 'desc' }, key: 
   }
   sortState.key = key;
   sortState.direction = 'asc';
+}
+
+function renderThemeControl(): HTMLElement {
+  const group = element('div', {
+    className: 'theme-control',
+    attributes: { role: 'group', 'aria-label': 'Color theme' }
+  });
+  group.appendChild(element('span', { className: 'theme-control-label', text: 'Theme' }));
+  const segmented = element('div', { className: 'theme-segmented-control' });
+  for (const option of THEME_OPTIONS) {
+    const button = element('button', {
+      className: state.themePreference === option ? 'theme-button active' : 'theme-button',
+      text: capitalize(option),
+      attributes: {
+        type: 'button',
+        'aria-label': `${capitalize(option)} theme`,
+        'aria-pressed': String(state.themePreference === option)
+      }
+    });
+    button.addEventListener('click', () => {
+      if (state.themePreference === option) {
+        return;
+      }
+      state.themePreference = option;
+      saveThemePreference(option);
+      applyThemePreference(option);
+      render();
+    });
+    segmented.appendChild(button);
+  }
+  group.appendChild(segmented);
+  return group;
+}
+
+function loadThemePreference(): ThemePreference {
+  if (typeof window === 'undefined') {
+    return 'system';
+  }
+  const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+  return stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system';
+}
+
+function saveThemePreference(preference: ThemePreference): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.localStorage.setItem(THEME_STORAGE_KEY, preference);
+}
+
+function applyThemePreference(preference: ThemePreference): void {
+  const resolvedTheme = preference === 'system'
+    ? (systemThemeMedia?.matches ? 'dark' : 'light')
+    : preference;
+  document.documentElement.dataset.theme = resolvedTheme;
+  document.documentElement.dataset.themePreference = preference;
+  document.documentElement.style.colorScheme = resolvedTheme;
+}
+
+function handleSystemThemeChange(): void {
+  if (state.themePreference !== 'system') {
+    return;
+  }
+  applyThemePreference('system');
+  render();
+}
+
+function capitalize(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function requiredElement<T extends HTMLElement>(id: string): T {

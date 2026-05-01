@@ -150,6 +150,7 @@ class RuntimeStackAnalyzerTest {
                 name,
                 value,
                 false,
+                false,
                 "src/main/resources/application.properties",
                 1,
                 "default",

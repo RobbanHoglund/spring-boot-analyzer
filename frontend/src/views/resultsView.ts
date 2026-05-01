@@ -32,6 +32,32 @@ import type {
 } from '../types';
 
 const FINDING_SEVERITIES = ['ALL', 'ERROR', 'WARNING', 'INFO'] as const;
+const FINDING_CATEGORIES = [
+  'ALL',
+  'SECURITY',
+  'CONFIGURATION',
+  'PROFILE_DRIFT',
+  'HTTP',
+  'STARTUP',
+  'SCHEDULING',
+  'PERSISTENCE',
+  'TRANSACTION',
+  'EXCEPTION_HANDLING',
+  'VALIDATION',
+  'CONDITIONAL_BEAN',
+  'DEPENDENCY',
+  'ACTUATOR',
+  'API_SURFACE',
+  'OBSERVABILITY',
+  'MAINTAINABILITY'
+] as const;
+const FINDING_RUNTIME_DETECTIONS = [
+  'ALL',
+  'NOT_NORMALLY_DETECTED',
+  'ACTIVE_PROFILE_RUNTIME_MAY_DETECT',
+  'RUNTIME_REQUIRED'
+] as const;
+const FINDING_CONFIDENCE_LEVELS = ['ALL', 'HIGH', 'MEDIUM', 'LOW'] as const;
 const CONFIGURATION_KINDS = [
   'ALL',
   'SPRING_BOOT',
@@ -63,6 +89,10 @@ type PresentedFinding = {
   target: string;
   location: string;
   message: string;
+  category: string;
+  confidence: string;
+  runtimeDetection: string;
+  finding: Finding;
 };
 
 type GroupedPresentedFinding = PresentedFinding & {
@@ -77,6 +107,9 @@ export interface TableSortState {
 
 export interface ResultsViewState {
   findingsSeverity: string;
+  findingsCategory: string;
+  findingsRuntimeDetection: string;
+  findingsConfidence: string;
   findingsText: string;
   findingsExpanded: boolean;
   findingsGrouped: boolean;
@@ -111,6 +144,9 @@ export interface ResultsViewState {
 
 export interface ResultsViewActions {
   onFindingsSeverityChange: (value: string) => void;
+  onFindingsCategoryChange: (value: string) => void;
+  onFindingsRuntimeDetectionChange: (value: string) => void;
+  onFindingsConfidenceChange: (value: string) => void;
   onFindingsTextChange: (value: string) => void;
   onToggleFindingsExpanded: () => void;
   onFindingsGroupedChange: (value: boolean) => void;
@@ -344,23 +380,41 @@ function renderFindingsSection(
   }
 
   const summary = element('div', { className: 'stat-grid compact' });
-  for (const severity of FINDING_SEVERITIES.slice(1)) {
+  const summaryStats: Array<{ label: string; value: number; className?: string }> = [
+    { label: 'Total findings', value: findings.length },
+    { label: 'Errors', value: findings.filter((finding) => normalizeSeverity(finding.severity) === 'ERROR').length, className: 'severity-error' },
+    { label: 'Warnings', value: findings.filter((finding) => normalizeSeverity(finding.severity) === 'WARNING').length, className: 'severity-warning' },
+    { label: 'Info', value: findings.filter((finding) => normalizeSeverity(finding.severity) === 'INFO').length, className: 'severity-info' },
+    {
+      label: 'Static-only findings',
+      value: findings.filter((finding) => normalizeRuntimeDetection(finding.runtimeDetection) === 'NOT_NORMALLY_DETECTED').length
+    },
+    {
+      label: 'Active-profile runtime may detect',
+      value: findings.filter((finding) => normalizeRuntimeDetection(finding.runtimeDetection) === 'ACTIVE_PROFILE_RUNTIME_MAY_DETECT').length
+    },
+    {
+      label: 'Runtime required',
+      value: findings.filter((finding) => normalizeRuntimeDetection(finding.runtimeDetection) === 'RUNTIME_REQUIRED').length
+    }
+  ];
+  for (const stat of summaryStats) {
     summary.appendChild(
       element(
         'div',
-        { className: `mini-stat severity-${severity.toLowerCase()}` },
-        element('div', { className: 'mini-stat-label', text: severityLabel(severity) }),
+        { className: `mini-stat ${stat.className ?? ''}`.trim() },
+        element('div', { className: 'mini-stat-label', text: stat.label }),
         element('div', {
           className: 'mini-stat-value',
-          text: String(findings.filter((finding) => normalizeSeverity(finding.severity) === severity).length)
+          text: String(stat.value)
         })
       )
     );
   }
   section.appendChild(summary);
 
-  const controls = element('div', { className: 'filter-row compact-filter-row' });
-  controls.append(
+  const primaryControls = element('div', { className: 'filter-row compact-filter-row' });
+  primaryControls.append(
     labeledInlineField(
       'Severity',
       selectInput(
@@ -369,21 +423,77 @@ function renderFindingsSection(
         actions.onFindingsSeverityChange
       )
     ),
+    labeledInlineField(
+      'Category',
+      selectInput(
+        FINDING_CATEGORIES.map((value) => ({ value, label: value === 'ALL' ? 'All categories' : findingCategoryLabel(value) })),
+        state.findingsCategory,
+        actions.onFindingsCategoryChange
+      )
+    ),
+    labeledInlineField(
+      'Runtime detection',
+      selectInput(
+        FINDING_RUNTIME_DETECTIONS.map((value) => ({
+          value,
+          label: value === 'ALL' ? 'All runtime signals' : runtimeDetectionLabel(value)
+        })),
+        state.findingsRuntimeDetection,
+        actions.onFindingsRuntimeDetectionChange
+      )
+    ),
+    labeledInlineField(
+      'Confidence',
+      selectInput(
+        FINDING_CONFIDENCE_LEVELS.map((value) => ({
+          value,
+          label: value === 'ALL' ? 'All confidence levels' : confidenceLabel(value)
+        })),
+        state.findingsConfidence,
+        actions.onFindingsConfidenceChange
+      )
+    )
+  );
+  section.appendChild(primaryControls);
+
+  const secondaryControls = element('div', { className: 'filter-row compact-filter-row' });
+  secondaryControls.append(
     labeledInlineField('Text', textInput(state.findingsText, 'Filter findings', actions.onFindingsTextChange)),
     labeledInlineField('Grouping', checkboxField('Group similar findings', state.findingsGrouped, actions.onFindingsGroupedChange))
   );
-  section.appendChild(controls);
+  section.appendChild(secondaryControls);
 
   const filtered = findings.filter((finding) => {
     const severityMatches =
       state.findingsSeverity === 'ALL' || normalizeSeverity(finding.severity) === state.findingsSeverity;
+    const categoryMatches =
+      state.findingsCategory === 'ALL' || normalizeFindingCategory(finding.category) === state.findingsCategory;
+    const runtimeMatches =
+      state.findingsRuntimeDetection === 'ALL'
+      || normalizeRuntimeDetection(finding.runtimeDetection) === state.findingsRuntimeDetection;
+    const confidenceMatches =
+      state.findingsConfidence === 'ALL' || normalizeConfidence(finding.confidence) === state.findingsConfidence;
     const textNeedle = state.findingsText.trim().toLowerCase();
     const derived = deriveFindingPresentation(finding);
-    const haystack = [finding.message, finding.location, finding.rule, finding.category, derived.ruleType, derived.target]
+    const haystack = [
+      finding.message,
+      finding.location,
+      finding.rule,
+      finding.ruleId,
+      finding.title,
+      finding.category,
+      finding.runtimeDetection,
+      finding.confidence,
+      finding.target,
+      finding.evidence,
+      derived.ruleType,
+      derived.target
+    ]
       .filter((value): value is string => Boolean(value))
       .join(' ')
       .toLowerCase();
-    return severityMatches && (!textNeedle || haystack.includes(textNeedle));
+    return severityMatches && categoryMatches && runtimeMatches && confidenceMatches
+      && (!textNeedle || haystack.includes(textNeedle));
   });
 
   if (filtered.length === 0) {
@@ -399,23 +509,42 @@ function renderFindingsSection(
   const visible = state.findingsExpanded ? sortedFindings : sortedFindings.slice(0, 25);
   const table = createTable([
     sortableHeader('Severity', 'severity', state.findingsSort, actions.onSetFindingsSort),
-    sortableHeader('Rule / Type', 'rule', state.findingsSort, actions.onSetFindingsSort),
-    sortableHeader('Target', 'target', state.findingsSort, actions.onSetFindingsSort),
-    sortableHeader('Location', 'location', state.findingsSort, actions.onSetFindingsSort),
+    'Category',
+    'Confidence',
+    'Runtime detection',
+    sortableHeader('Rule / Target', 'rule', state.findingsSort, actions.onSetFindingsSort),
     sortableHeader('Message', 'message', state.findingsSort, actions.onSetFindingsSort)
   ], 'findings-table');
   const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
   for (const derived of visible) {
-    const row = tbody.insertRow();
-    row.className = 'data-row';
     const groupedFinding = state.findingsGrouped ? (derived as GroupedPresentedFinding) : null;
+    const row = tbody.insertRow();
+    row.className = 'data-row finding-summary-row';
+    const detailsId = `finding-details-${Math.random().toString(36).slice(2, 10)}`;
     appendCells(row, [
       badgeCell(derived.severity, `badge badge-${derived.severity.toLowerCase()}`),
-      truncateCell(derived.ruleType),
-      truncateCell(derived.target),
-      truncateCell(groupedFinding ? groupedFindingLocation(groupedFinding) : derived.location),
-      groupedFinding ? groupedFindingMessageCell(groupedFinding) : truncateCell(derived.message, 'cell-wrap-two')
+      badgeCell(derived.category, 'badge badge-category'),
+      badgeCell(derived.confidence, 'badge badge-confidence'),
+      badgeCell(derived.runtimeDetection, 'badge badge-runtime'),
+      truncateCell(`${derived.ruleType}${derived.target && derived.target !== '—' ? ` — ${derived.target}` : ''}`, 'cell-wrap-two'),
+      findingSummaryCell(groupedFinding ?? derived, detailsId)
     ]);
+    const detailsRow = tbody.insertRow();
+    detailsRow.className = 'details-row finding-details-row';
+    detailsRow.hidden = true;
+    const detailsCell = detailsRow.insertCell();
+    detailsCell.colSpan = 6;
+    detailsCell.appendChild(renderFindingDetailsCard(groupedFinding ?? derived, detailsId));
+
+    const expandButton = row.querySelector('.finding-expand-button') as HTMLButtonElement | null;
+    if (expandButton) {
+      expandButton.addEventListener('click', () => {
+        const expanded = detailsRow.hidden;
+        detailsRow.hidden = !expanded;
+        expandButton.textContent = expanded ? 'Hide details' : 'Show details';
+        expandButton.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+      });
+    }
   }
   section.appendChild(wrapTable(table));
 
@@ -550,7 +679,7 @@ function renderOutboundEndpointsTable(
     appendCells(row, [
       truncateCell(endpoint.clientType ?? 'HTTP client'),
       truncateCell(endpoint.method ?? 'REQUEST'),
-      truncateCell(endpoint.fullUrlPreview ?? endpoint.urlOrTemplate ?? 'Unknown'),
+      outboundUrlCell(endpoint),
       truncateCell(endpoint.host ?? '—'),
       truncateCell(sourceLabel(endpoint.sourceFile, endpoint.line)),
       truncateCell(endpoint.configurationPropertyName ?? '—')
@@ -731,10 +860,22 @@ function renderConfigurationSection(
   );
   section.appendChild(secondaryControls);
 
-  const chipRow = element('div', { className: 'mode-switcher compact-chip-row' });
-  chipRow.append(
+  const chipPanel = element('div', { className: 'configuration-chip-panel' });
+  const viewRow = element('div', { className: 'mode-switcher compact-chip-row configuration-chip-row' });
+  viewRow.append(
     toggleChip('Flat list', state.configurationView === 'flat', () => actions.onConfigurationViewChange('flat')),
-    toggleChip('Compare profiles', state.configurationView === 'compare', () => actions.onConfigurationViewChange('compare')),
+    toggleChip('Compare profiles', state.configurationView === 'compare', () => actions.onConfigurationViewChange('compare'))
+  );
+  chipPanel.appendChild(
+    element(
+      'div',
+      { className: 'configuration-chip-group' },
+      element('div', { className: 'configuration-chip-group-label', text: 'View' }),
+      viewRow
+    )
+  );
+  const filterRow = element('div', { className: 'mode-switcher compact-chip-row configuration-chip-row' });
+  filterRow.append(
     toggleChip('All', state.configurationKind === 'ALL' && !state.configurationSensitiveOnly && !state.configurationChangedOnly, () => {
       actions.onConfigurationKindChange('ALL');
       actions.onConfigurationSensitiveOnlyChange(false);
@@ -748,7 +889,15 @@ function renderConfigurationSection(
     toggleChip('Sensitive', state.configurationSensitiveOnly, () => actions.onConfigurationSensitiveOnlyChange(!state.configurationSensitiveOnly)),
     toggleChip('Changed across profiles', state.configurationChangedOnly, () => actions.onConfigurationChangedOnlyChange(!state.configurationChangedOnly))
   );
-  section.appendChild(chipRow);
+  chipPanel.appendChild(
+    element(
+      'div',
+      { className: 'configuration-chip-group' },
+      element('div', { className: 'configuration-chip-group-label', text: 'Quick filter' }),
+      filterRow
+    )
+  );
+  section.appendChild(chipPanel);
 
   if (files.length > 0) {
     const fileRow = element('div', { className: 'configuration-files-row compact-source-summary' });
@@ -984,14 +1133,24 @@ function renderDependenciesSection(
     (item) => item.attempted && item.successful && (item.resolvedDependencyCount ?? 0) > 0
   );
   const failedResolutionResults = dependencyBearingResults.filter((item) => item.attempted && !item.successful);
+  const staticOnlyMode = isStaticOnlyDependencyMode(gradleModel);
+  const summaryCards = staticOnlyMode
+    ? [
+        ['Static dependencies detected', String(dependencies.length)],
+        ['Gradle model', gradleModelSummaryLabel(gradleModel)],
+        ['Gradle-resolved entries', String(successfulResolvedDependencies.length)],
+        ['Unique Gradle-resolved modules', String(uniqueResolvedModuleCount(gradleModel))],
+        ['Resolved configurations', `${successfulResolutionResults.length}/${dependencyBearingResults.length || 0}`]
+      ]
+    : [
+        ['Declared dependencies', String((gradleModel?.declaredDependencies ?? []).length)],
+        ['Resolved entries', String(successfulResolvedDependencies.length)],
+        ['Unique resolved modules', String(uniqueResolvedModuleCount(gradleModel))],
+        ['Resolved configurations', `${successfulResolutionResults.length}/${dependencyBearingResults.length || 0}`],
+        ['Dependency conflicts', String((gradleModel?.dependencyConflicts ?? []).length)]
+      ];
   const summary = element('div', { className: 'summary-grid runtime-grid' });
-  for (const [label, value] of [
-    ['Declared dependencies', String((gradleModel?.declaredDependencies ?? []).length)],
-    ['Resolved entries', String(successfulResolvedDependencies.length)],
-    ['Unique resolved modules', String(uniqueResolvedModuleCount(gradleModel))],
-    ['Resolved configurations', `${successfulResolutionResults.length}/${dependencyBearingResults.length || 0}`],
-    ['Dependency conflicts', String((gradleModel?.dependencyConflicts ?? []).length)]
-  ] as Array<[string, string]>) {
+  for (const [label, value] of summaryCards as Array<[string, string]>) {
     summary.appendChild(
       element(
         'div',
@@ -1007,6 +1166,20 @@ function renderDependenciesSection(
     );
   }
   section.appendChild(summary);
+
+  if (staticOnlyMode && result.buildTool === 'GRADLE') {
+    section.appendChild(
+      element(
+        'div',
+        { className: 'empty-note' },
+        element('div', { className: 'subsection-title', text: 'Analysis precision note' }),
+        element('p', {
+          className: 'muted-text',
+          text: 'Gradle model analysis was not requested. Dependency versions are inferred from static build files, so resolved transitive dependencies and exact managed versions may be incomplete.'
+        })
+      )
+    );
+  }
 
   const managedStackEntries = resolvedStackEntries(gradleModel);
   if (managedStackEntries.length > 0) {
@@ -1219,7 +1392,31 @@ function renderRawJsonSection(
 function renderBuildModelSection(gradleModel: GradleModelAnalysis | undefined): HTMLElement {
   const section = resultsSection('Build model', 'results-build-model');
   if (!gradleModel || gradleModel.status === 'NOT_REQUESTED') {
-    section.appendChild(element('div', { className: 'empty-note', text: 'Gradle model analysis was not requested.' }));
+    section.appendChild(
+      element(
+        'div',
+        { className: 'empty-note' },
+        element('div', { className: 'subsection-title', text: 'Gradle model analysis was not requested.' }),
+        element('p', {
+          className: 'muted-text',
+          text: 'Gradle model analysis was not requested. Dependency versions are inferred from static build files, so resolved transitive dependencies and exact managed versions may be incomplete.'
+        })
+      )
+    );
+    return section;
+  }
+  if (gradleModel.status === 'DISABLED') {
+    section.appendChild(
+      element(
+        'div',
+        { className: 'empty-note' },
+        element('div', { className: 'subsection-title', text: 'Gradle model analysis is disabled.' }),
+        element('p', {
+          className: 'muted-text',
+          text: 'The analyzer is configured not to run Gradle model analysis, so dependency versions are inferred from static build files only.'
+        })
+      )
+    );
     return section;
   }
 
@@ -1841,6 +2038,23 @@ function truncateCellWithTitle(text: string, title: string, extraClassName?: str
   return cell;
 }
 
+function outboundUrlCell(endpoint: OutboundEndpoint): HTMLTableCellElement {
+  const value = endpoint.fullUrlPreview ?? endpoint.urlOrTemplate ?? 'Unknown';
+  const cell = document.createElement('td');
+  cell.className = 'cell-outbound-url';
+  cell.title = value;
+  cell.appendChild(element('div', { className: 'cell-truncate', text: value }));
+  if (!endpoint.fullUrlPreview && (endpoint.urlOrTemplate ?? '').startsWith('/')) {
+    cell.appendChild(
+      element('div', {
+        className: 'cell-inline-meta',
+        text: 'Base URL not resolved statically.'
+      })
+    );
+  }
+  return cell;
+}
+
 function groupedFindingLocation(group: GroupedPresentedFinding): string {
   const locations = [...new Set(group.items.map((item) => item.location).filter(Boolean))];
   if (locations.length <= 1) {
@@ -1849,29 +2063,151 @@ function groupedFindingLocation(group: GroupedPresentedFinding): string {
   return `${locations[0]} (+${locations.length - 1} more)`;
 }
 
-function groupedFindingMessageCell(group: GroupedPresentedFinding): HTMLTableCellElement {
+function findingSummaryCell(
+  finding: GroupedPresentedFinding | PresentedFinding,
+  detailsId: string
+): HTMLTableCellElement {
   const cell = document.createElement('td');
-  cell.className = 'cell-grouped-message';
-  const summaryText =
-    group.occurrences > 1 ? `${group.message} (${group.occurrences} occurrences)` : group.message;
-  cell.appendChild(element('div', { text: summaryText }));
-  cell.title = group.items.map((item) => `${item.location} — ${item.message}`).join('\n');
-  if (group.occurrences > 1) {
-    const details = element('details', { className: 'grouped-finding-details' });
-    details.appendChild(element('summary', { text: `Show ${group.occurrences} occurrences` }));
-    const list = element('ul', { className: 'simple-list compact-list' });
-    for (const item of group.items) {
-      list.appendChild(element('li', { className: 'muted-text', text: `${item.location} — ${item.message}` }));
-    }
-    details.appendChild(list);
-    cell.appendChild(details);
+  cell.className = 'finding-summary-cell';
+  const grouped = 'occurrences' in finding;
+  const summaryText = finding.message || 'No summary available';
+  const wrapper = element('div', { className: 'finding-summary-content' });
+  const copy = element('div', { className: 'finding-summary-copy' });
+  copy.appendChild(
+    element('div', {
+      className: 'finding-summary-text cell-wrap-two',
+      text: summaryText,
+      attributes: { title: summaryText }
+    })
+  );
+  if (grouped && finding.occurrences > 1) {
+    copy.appendChild(
+      element('div', {
+        className: 'finding-summary-meta',
+        text: `(${finding.occurrences} occurrences)`
+      })
+    );
   }
+  const button = element('button', {
+    className: 'secondary-button finding-expand-button',
+    text: 'Show details',
+    attributes: {
+      type: 'button',
+      'aria-expanded': 'false',
+      'aria-controls': detailsId,
+      'aria-label': `Show details for ${finding.ruleType}${finding.target && finding.target !== '—' ? ` — ${finding.target}` : ''}`
+    }
+  });
+  wrapper.append(copy, button);
+  cell.appendChild(wrapper);
+  cell.title = grouped
+    ? finding.items.map((item) => `${item.location} — ${item.message}`).join('\n')
+    : `${finding.location} — ${finding.message}`;
   return cell;
+}
+
+function renderFindingDetailsCard(
+  finding: GroupedPresentedFinding | PresentedFinding,
+  detailsId: string
+): HTMLElement {
+  const grouped = 'occurrences' in finding;
+  const primary = grouped ? finding.items[0] : finding;
+  const card = element('div', {
+    className: 'finding-detail-card',
+    attributes: { id: detailsId }
+  });
+  const header = element('div', { className: 'finding-detail-header' });
+  const headerCopy = element('div', { className: 'finding-detail-header-copy' });
+  headerCopy.append(
+    element('div', {
+      className: 'finding-detail-title',
+      text: primary.finding.title?.trim() || primary.ruleType
+    }),
+    element('div', {
+      className: 'finding-detail-subtitle',
+      text: primary.target && primary.target !== '—' ? `Target: ${primary.target}` : 'Target: —'
+    }),
+    element('div', {
+      className: 'finding-detail-subtitle property-detail-value',
+      text: `Source: ${primary.location || '—'}`
+    })
+  );
+  const badgeRow = element('div', { className: 'finding-detail-badges' });
+  for (const [text, className] of [
+    [primary.severity, `badge badge-${primary.severity.toLowerCase()}`],
+    [primary.category, 'badge badge-category'],
+    [primary.confidence, 'badge badge-confidence'],
+    [primary.runtimeDetection, 'badge badge-runtime']
+  ] as Array<[string, string]>) {
+    badgeRow.appendChild(element('span', { className, text }));
+  }
+  header.append(headerCopy, badgeRow);
+  card.append(header, renderFindingExplanationSections(primary.finding));
+
+  if (grouped && finding.occurrences > 1) {
+    const occurrenceSection = element('div', { className: 'property-detail-section' });
+    occurrenceSection.appendChild(
+      element('div', { className: 'property-detail-section-title', text: 'Occurrences' })
+    );
+    const list = element('ul', { className: 'simple-list compact-list finding-occurrence-list' });
+    for (const item of finding.items) {
+      list.appendChild(
+        element(
+          'li',
+          { className: 'finding-occurrence-item' },
+          element('div', {
+            className: 'property-detail-value',
+            text: item.location || '—'
+          }),
+          element('div', {
+            className: 'muted-text',
+            text: item.message
+          })
+        )
+      );
+    }
+    occurrenceSection.appendChild(list);
+    card.appendChild(occurrenceSection);
+  }
+
+  return card;
+}
+
+function findingMetaLine(finding: PresentedFinding): HTMLElement {
+  return element(
+    'div',
+    { className: 'finding-meta-line' },
+    element('span', { className: 'muted-text', text: `Target: ${finding.target || '—'}` }),
+    element('span', { className: 'muted-text', text: `Source: ${finding.location || '—'}` })
+  );
+}
+
+function renderFindingExplanationSections(finding: Finding): HTMLElement {
+  const wrapper = element('div', { className: 'finding-detail-grid' });
+  const sections: Array<[string, string | null | undefined]> = [
+    ['Why this is a bad pattern', finding.whyBadPractice],
+    ['Possible impact', finding.possibleImpact],
+    ['Recommendation', finding.recommendation],
+    ['Evidence', finding.evidence ?? finding.message],
+    ['Static analysis limitation', finding.limitations]
+  ];
+  for (const [title, text] of sections) {
+    if (!text || !text.trim()) {
+      continue;
+    }
+    wrapper.appendChild(propertyDetailSection(title, text));
+  }
+  return wrapper;
 }
 
 function badgeCell(text: string, badgeClass: string): HTMLTableCellElement {
   const cell = document.createElement('td');
-  const badge = element('span', { className: badgeClass, text });
+  cell.className = 'cell-badge';
+  const badge = element('span', {
+    className: badgeClass,
+    text,
+    attributes: { title: text, 'aria-label': text }
+  });
   cell.appendChild(badge);
   return cell;
 }
@@ -2595,8 +2931,8 @@ function summarizeFindings(findings: Finding[]): string | null {
 function deriveFindingPresentation(finding: Finding): PresentedFinding {
   const message = finding.message ?? 'No message';
   const normalized = message.toLowerCase();
-  let ruleType = finding.rule || finding.category || 'Analyzer finding';
-  let target = finding.location || '—';
+  let ruleType = finding.title || finding.ruleId || finding.rule || finding.category || 'Analyzer finding';
+  let target = finding.target || finding.location || '—';
 
   const riskyMatch = message.match(/^(?<property>[\w.-]+)=.+ is risky in production\./i);
   if (riskyMatch?.groups?.property) {
@@ -2627,14 +2963,25 @@ function deriveFindingPresentation(finding: Finding): PresentedFinding {
     ruleType = 'Gradle dependency resolution';
     const configurationMatch = message.match(/^Dependency resolution failed for\s+([^:.]+)(?:[:.].*)?$/i);
     target = configurationMatch?.[1]?.trim() ?? target;
+  } else if (normalized.includes('plain http://')) {
+    ruleType = 'Plain HTTP endpoint';
+    target = target === '—' ? 'external endpoint' : target;
+  } else if (normalized.startsWith('build-aware analysis disabled')
+    || normalized.startsWith('gradle model analysis was requested, but analyzer.gradle.enabled=false')) {
+    ruleType = 'Build-aware analysis disabled';
+    target = 'Gradle model';
   }
 
   return {
     severity: normalizeSeverity(finding.severity),
+    category: findingCategoryLabel(normalizeFindingCategory(finding.category)),
+    confidence: confidenceLabel(normalizeConfidence(finding.confidence)),
+    runtimeDetection: runtimeDetectionLabel(normalizeRuntimeDetection(finding.runtimeDetection)),
     ruleType,
     target,
     location: buildFindingLocation(finding),
-    message
+    message,
+    finding
   };
 }
 
@@ -2642,26 +2989,36 @@ function groupFindings(findings: Finding[]): GroupedPresentedFinding[] {
   const grouped = new Map<string, ReturnType<typeof deriveFindingPresentation>[]>();
   for (const finding of findings) {
     const derived = deriveFindingPresentation(finding);
-    const key = [derived.severity, derived.ruleType, derived.target].join('|');
+    const key = [
+      finding.ruleId ?? derived.ruleType,
+      normalizeGroupingText(derived.target),
+      normalizeFindingCategory(finding.category),
+      normalizeSeverity(finding.severity),
+      normalizeRuntimeDetection(finding.runtimeDetection),
+      finding.title ?? derived.ruleType,
+      normalizeGroupingText(finding.whyBadPractice ?? '')
+    ].join('|');
     const bucket = grouped.get(key) ?? [];
     bucket.push(derived);
     grouped.set(key, bucket);
   }
   return [...grouped.values()].map((bucket) => ({
     severity: bucket[0].severity,
+    category: bucket[0].category,
+    confidence: bucket[0].confidence,
+    runtimeDetection: bucket[0].runtimeDetection,
     ruleType: bucket[0].ruleType,
     target: bucket[0].target,
     message: bucket[0].message,
     location: [...new Set(bucket.map((item) => item.location))].join('; '),
     occurrences: bucket.length,
-    items: bucket
+    items: bucket,
+    finding: bucket[0].finding
   }));
 }
 
 function sortFindingGroups(findings: GroupedPresentedFinding[], sort: TableSortState): GroupedPresentedFinding[] {
-  return [...findings].sort((left, right) =>
-    compareValues(findingGroupSortValue(left, sort.key), findingGroupSortValue(right, sort.key), sort.direction)
-  );
+  return [...findings].sort((left, right) => compareFindings(left, right, sort));
 }
 
 function componentDisplayName(component: Partial<DetectedClass>): string {
@@ -2672,6 +3029,72 @@ function componentDisplayName(component: Partial<DetectedClass>): string {
     return `${component.packageName}.${component.simpleClassName ?? component.simpleName ?? ''}`;
   }
   return component.simpleClassName ?? component.simpleName ?? 'Unknown component';
+}
+
+function normalizeFindingCategory(value: string | undefined): string {
+  if (!value || !value.trim()) {
+    return 'MAINTAINABILITY';
+  }
+  return value.trim().toUpperCase();
+}
+
+function normalizeRuntimeDetection(value: string | undefined): string {
+  if (!value || !value.trim()) {
+    return 'NOT_NORMALLY_DETECTED';
+  }
+  return value.trim().toUpperCase();
+}
+
+function normalizeConfidence(value: string | undefined): string {
+  if (!value || !value.trim()) {
+    return 'MEDIUM';
+  }
+  return value.trim().toUpperCase();
+}
+
+function findingCategoryLabel(value: string): string {
+  switch (value) {
+    case 'PROFILE_DRIFT':
+      return 'Profile drift';
+    case 'EXCEPTION_HANDLING':
+      return 'Exception handling';
+    case 'CONDITIONAL_BEAN':
+      return 'Conditional bean';
+    case 'API_SURFACE':
+      return 'API surface';
+    default:
+      return value
+        .toLowerCase()
+        .split('_')
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(' ');
+  }
+}
+
+function runtimeDetectionLabel(value: string): string {
+  switch (value) {
+    case 'NOT_NORMALLY_DETECTED':
+      return 'Static-only';
+    case 'ACTIVE_PROFILE_RUNTIME_MAY_DETECT':
+      return 'Active profile only';
+    case 'RUNTIME_REQUIRED':
+      return 'Runtime required';
+    default:
+      return value;
+  }
+}
+
+function confidenceLabel(value: string): string {
+  switch (value) {
+    case 'HIGH':
+      return 'High';
+    case 'MEDIUM':
+      return 'Medium';
+    case 'LOW':
+      return 'Low';
+    default:
+      return value;
+  }
 }
 
 function redactSensitiveValues(value: unknown): unknown {
@@ -2693,6 +3116,13 @@ function redactSensitiveValues(value: unknown): unknown {
 }
 
 function propertyMeaning(property: ApplicationProperty): string {
+  const configured = property.value !== null && property.value !== undefined && property.value !== '';
+  const hasReferences = (property.references?.length ?? 0) > 0;
+  if (property.kind === 'CODE_REFERENCED' || property.kind === 'CONDITIONAL_PROPERTY' || hasReferences) {
+    return configured
+      ? 'Referenced in code and configured in the scanned files.'
+      : 'Referenced in code but no matching configured property was found in the scanned files.';
+  }
   if (property.documentation?.description) {
     return property.documentation.description;
   }
@@ -2705,10 +3135,36 @@ function propertyMeaning(property: ApplicationProperty): string {
   if (property.kind === 'CUSTOM_CONFIGURATION_PROPERTIES') {
     return 'Custom application configuration property.';
   }
-  if (property.kind === 'CODE_REFERENCED' || property.kind === 'CONDITIONAL_PROPERTY') {
-    return 'Referenced in code but not configured in the scanned files.';
-  }
   return 'No description available.';
+}
+
+function normalizeGroupingText(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function isStaticOnlyDependencyMode(gradleModel: GradleModelAnalysis | undefined): boolean {
+  const status = gradleModel?.status ?? null;
+  return !gradleModel || status === 'NOT_REQUESTED' || status === 'DISABLED';
+}
+
+function gradleModelSummaryLabel(gradleModel: GradleModelAnalysis | undefined): string {
+  const status = gradleModel?.status ?? null;
+  switch (status) {
+    case 'SUCCESS':
+    case 'SUCCESS_WITH_WORKAROUND':
+      return 'Success';
+    case 'PARTIAL':
+      return 'Partial';
+    case 'FAILED':
+      return 'Failed';
+    case 'TIMED_OUT':
+      return 'Timed out';
+    case 'DISABLED':
+      return 'Disabled';
+    case 'NOT_REQUESTED':
+    default:
+      return 'Not requested';
+  }
 }
 
 function displayPropertyValue(property: ApplicationProperty): string {
@@ -2729,9 +3185,11 @@ function sourceLabel(sourceFile?: string | null, line?: number | null): string {
 }
 
 function buildFindingLocation(finding: Finding): string {
-  const locationParts = [finding.location, finding.rule, finding.category].filter(
-    (value): value is string => Boolean(value)
-  );
+  const source = sourceLabel(finding.sourceFile, finding.line);
+  if (source !== '—') {
+    return source;
+  }
+  const locationParts = [finding.location, finding.target].filter((value): value is string => Boolean(value));
   return locationParts.join(' | ') || '—';
 }
 
@@ -2795,7 +3253,46 @@ function buildProfileComparisonGroups(properties: ApplicationProperty[]): Array<
 }
 
 function sortFindings(findings: Finding[], sort: TableSortState): Finding[] {
-  return [...findings].sort((left, right) => compareValues(findingSortValue(left, sort.key), findingSortValue(right, sort.key), sort.direction));
+  return [...findings].sort((left, right) => compareFindings(deriveFindingPresentation(left), deriveFindingPresentation(right), sort));
+}
+
+function compareFindings(left: PresentedFinding, right: PresentedFinding, sort: TableSortState): number {
+  if (sort.key === 'severity') {
+    const severityResult = rankedCompare(left.severity, right.severity, ['ERROR', 'WARNING', 'INFO'], sort.direction);
+    if (severityResult !== 0) {
+      return severityResult;
+    }
+    const confidenceResult = rankedCompare(left.confidence, right.confidence, ['High', 'Medium', 'Low'], sort.direction);
+    if (confidenceResult !== 0) {
+      return confidenceResult;
+    }
+    const runtimeResult = rankedCompare(
+      left.runtimeDetection,
+      right.runtimeDetection,
+      ['Static-only', 'Active profile only', 'Runtime required'],
+      sort.direction
+    );
+    if (runtimeResult !== 0) {
+      return runtimeResult;
+    }
+    return compareValues(left.location, right.location, 'asc');
+  }
+  return compareValues(findingGroupSortValue(left, sort.key), findingGroupSortValue(right, sort.key), sort.direction);
+}
+
+function rankedCompare(left: string, right: string, ranking: string[], direction: SortDirection): number {
+  const leftRank = rankValue(left, ranking);
+  const rightRank = rankValue(right, ranking);
+  if (leftRank === rightRank) {
+    return 0;
+  }
+  return direction === 'asc' ? rightRank - leftRank : leftRank - rightRank;
+}
+
+function rankValue(value: string, ranking: string[]): number {
+  const normalized = value.toLowerCase();
+  const index = ranking.findIndex((candidate) => candidate.toLowerCase() === normalized);
+  return index < 0 ? ranking.length : index;
 }
 
 function sortInboundEndpoints(endpoints: InboundEndpoint[], sort: TableSortState): InboundEndpoint[] {

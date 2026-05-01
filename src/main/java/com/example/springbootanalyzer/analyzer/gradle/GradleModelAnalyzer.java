@@ -271,11 +271,6 @@ public class GradleModelAnalyzer {
     ) {
         if ("STATIC_ONLY".equals(decision.reason()) && buildInfo.buildTool().name().equals("GRADLE")) {
             LOGGER.info("Skipping Gradle model analysis because analysisMode=STATIC_ONLY");
-            findings.add(new Finding(
-                    FindingSeverity.INFO,
-                    "Build-aware analysis disabled; dependency versions are inferred statically.",
-                    null
-            ));
             return new Result(emptyAnalysis(
                     GradleAnalysisStatus.NOT_REQUESTED,
                     decision.executionMode().name(),
@@ -295,11 +290,6 @@ public class GradleModelAnalyzer {
         }
         if ("DISABLED".equals(decision.reason())) {
             LOGGER.info("Gradle model analysis requested but analyzer.gradle.enabled=false");
-            findings.add(new Finding(
-                    FindingSeverity.INFO,
-                    "Gradle model analysis was requested, but analyzer.gradle.enabled=false.",
-                    null
-            ));
             return new Result(emptyAnalysis(
                     GradleAnalysisStatus.DISABLED,
                     decision.executionMode().name(),

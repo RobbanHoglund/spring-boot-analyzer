@@ -29,6 +29,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
     private final GradleModelAnalyzer gradleModelAnalyzer;
     private final RuntimeStackAnalyzer runtimeStackAnalyzer;
     private final HttpSurfaceAnalyzer httpSurfaceAnalyzer;
+    private final StaticPracticeFindingAnalyzer staticPracticeFindingAnalyzer;
     private final AnalyzerProperties analyzerProperties;
 
     public SpringBootProjectAnalyzer(
@@ -38,6 +39,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
             GradleModelAnalyzer gradleModelAnalyzer,
             RuntimeStackAnalyzer runtimeStackAnalyzer,
             HttpSurfaceAnalyzer httpSurfaceAnalyzer,
+            StaticPracticeFindingAnalyzer staticPracticeFindingAnalyzer,
             AnalyzerProperties analyzerProperties
     ) {
         this.buildFileAnalyzer = buildFileAnalyzer;
@@ -46,6 +48,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
         this.gradleModelAnalyzer = gradleModelAnalyzer;
         this.runtimeStackAnalyzer = runtimeStackAnalyzer;
         this.httpSurfaceAnalyzer = httpSurfaceAnalyzer;
+        this.staticPracticeFindingAnalyzer = staticPracticeFindingAnalyzer;
         this.analyzerProperties = analyzerProperties;
     }
 
@@ -89,6 +92,15 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
                 runtimeResult.runtimeStackAnalysis().webStack()
         );
         findings.addAll(httpResult.findings());
+        findings.addAll(staticPracticeFindingAnalyzer.analyze(
+                repositoryRoot,
+                buildInfo,
+                configurationResult.configurationAnalysis(),
+                gradleResult.gradleModelAnalysis(),
+                runtimeResult.runtimeStackAnalysis(),
+                httpResult.httpSurfaceAnalysis(),
+                detectedClasses
+        ));
 
         return new AnalysisResult(
                 repositoryReference.repositoryUrl(),

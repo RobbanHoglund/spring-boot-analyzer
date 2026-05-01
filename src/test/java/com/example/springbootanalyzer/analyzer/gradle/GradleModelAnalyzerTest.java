@@ -48,6 +48,8 @@ class GradleModelAnalyzerTest {
         assertThat(toolingExecutionService.invoked).isFalse();
         assertThat(executionService.invoked).isFalse();
         assertThat(result.gradleModelAnalysis().status()).isEqualTo(GradleAnalysisStatus.NOT_REQUESTED);
+        assertThat(result.findings()).extracting(finding -> finding.message())
+                .noneMatch(message -> message != null && message.contains("Build-aware analysis disabled"));
     }
 
     @Test

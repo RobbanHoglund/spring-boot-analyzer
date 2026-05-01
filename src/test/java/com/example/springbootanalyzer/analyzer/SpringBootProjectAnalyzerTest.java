@@ -77,6 +77,7 @@ class SpringBootProjectAnalyzerTest {
                     ),
                     new RuntimeStackAnalyzer(),
                     new HttpSurfaceAnalyzer(),
+                    new StaticPracticeFindingAnalyzer(),
                     new AnalyzerProperties(
                             Path.of("."),
                             true,

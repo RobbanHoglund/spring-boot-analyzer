@@ -214,4 +214,206 @@ class ConfigurationAnalyzerTest {
                 .anyMatch(message -> message.contains("exposure.include=*"))
                 .anyMatch(message -> message.contains("health.show-details=always"));
     }
+
+    @Test
+    void distinguishesCredentialTokensFromTokenLimitsAndFlagsLiteralFallbacks() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.writeString(tempDir.resolve("src/main/resources/application.properties"), """
+                summary.ai.max-output-tokens=900
+                openai.max-output-tokens=1200
+                token-limit=1000
+                openai.api-key=sk-live-secret
+                openai.safe-api-key=${OPENAI_API_KEY}
+                openai.fallback-api-key=${OPENAI_API_KEY:sk-fallback-secret}
+                spring.datasource.password=${DB_PASSWORD:secret}
+                """);
+
+        var result = analyzer.analyze(tempDir, emptyBuildInfo());
+        var analysis = result.configurationAnalysis();
+
+        assertThat(analysis.properties()).anyMatch(property ->
+                "summary.ai.max-output-tokens".equals(property.name()) && !property.valueRedacted()
+        );
+        assertThat(analysis.properties()).anyMatch(property ->
+                "openai.max-output-tokens".equals(property.name()) && !property.valueRedacted()
+        );
+        assertThat(analysis.properties()).anyMatch(property ->
+                "token-limit".equals(property.name()) && !property.valueRedacted()
+        );
+        assertThat(analysis.properties()).anyMatch(property ->
+                "openai.api-key".equals(property.name()) && property.valueRedacted()
+        );
+        assertThat(analysis.properties()).anyMatch(property ->
+                "openai.safe-api-key".equals(property.name()) && property.placeholderValue()
+        );
+
+        assertThat(result.findings()).filteredOn(finding -> "SPRING_SECRET_LITERAL".equals(finding.ruleId()))
+                .extracting(finding -> finding.target())
+                .contains("openai.api-key", "openai.fallback-api-key")
+                .doesNotContain("summary.ai.max-output-tokens", "openai.max-output-tokens", "openai.safe-api-key", "token-limit");
+        assertThat(result.findings()).filteredOn(finding -> "SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT".equals(finding.ruleId()))
+                .extracting(finding -> finding.target())
+                .contains("spring.datasource.password");
+    }
+
+    @Test
+    void recognizesWildcardSpringBootPropertiesAndIgnoresJvmSystemPropertyReferences() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.writeString(tempDir.resolve("src/main/resources/application.properties"), """
+                logging.level.xfeeder=INFO
+                logging.level.org.springframework.web.client=WARN
+                management.endpoint.health.show-details=always
+                management.endpoints.web.exposure.include=health,info
+                spring.mail.properties.mail.smtp.auth=true
+                spring.datasource.hikari.maximum-pool-size=10
+                custom.unknown.property=value
+                """);
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("ConfigReferences.java"), """
+                package com.example.demo;
+
+                import org.springframework.beans.factory.annotation.Value;
+                import org.springframework.core.env.Environment;
+                import org.springframework.stereotype.Component;
+
+                @Component
+                class ConfigReferences {
+
+                    @Value("${my.application.setting}")
+                    String appSetting;
+
+                    String read(Environment environment) {
+                        return System.getProperty("java.version")
+                                + System.getProperty("java.vm.name")
+                                + System.getProperty("java.runtime.version")
+                                + environment.getProperty("my.application.setting");
+                    }
+                }
+                """);
+
+        var result = analyzer.analyze(tempDir, emptyBuildInfo());
+        var analysis = result.configurationAnalysis();
+
+        assertThat(analysis.properties()).anyMatch(property ->
+                "logging.level.xfeeder".equals(property.name()) && property.kind() == PropertyKind.SPRING_BOOT_MAP_PROPERTY
+        );
+        assertThat(analysis.properties()).anyMatch(property ->
+                "logging.level.org.springframework.web.client".equals(property.name()) && property.kind() == PropertyKind.SPRING_BOOT_MAP_PROPERTY
+        );
+        assertThat(analysis.properties()).anyMatch(property ->
+                "management.endpoint.health.show-details".equals(property.name()) && property.kind() == PropertyKind.SPRING_BOOT
+        );
+        assertThat(analysis.properties()).anyMatch(property ->
+                "management.endpoints.web.exposure.include".equals(property.name()) && property.kind() == PropertyKind.SPRING_BOOT
+        );
+        assertThat(analysis.properties()).anyMatch(property ->
+                "spring.mail.properties.mail.smtp.auth".equals(property.name()) && property.kind() == PropertyKind.SPRING_BOOT_MAP_PROPERTY
+        );
+        assertThat(analysis.properties()).anyMatch(property ->
+                "spring.datasource.hikari.maximum-pool-size".equals(property.name()) && property.kind() == PropertyKind.SPRING_BOOT
+        );
+        assertThat(analysis.properties()).anyMatch(property ->
+                "custom.unknown.property".equals(property.name()) && property.kind() == PropertyKind.UNKNOWN
+        );
+        assertThat(analysis.properties()).noneMatch(property ->
+                "java.version".equals(property.name())
+                        || "java.vm.name".equals(property.name())
+                        || "java.runtime.version".equals(property.name())
+        );
+
+        assertThat(result.findings()).extracting(finding -> finding.message())
+                .noneMatch(message -> message != null && message.contains("java.version"))
+                .noneMatch(message -> message != null && message.contains("java.vm.name"))
+                .noneMatch(message -> message != null && message.contains("java.runtime.version"))
+                .anyMatch(message -> message != null && message.contains("my.application.setting"));
+    }
+
+    @Test
+    void flagsWeakSecretPlaceholderDefaultsWithoutFlaggingSafePlaceholders() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.writeString(tempDir.resolve("src/main/resources/application.properties"), """
+                admin.security.password=${ADMIN_PASSWORD:admin}
+                spring.datasource.password=${DB_PASSWORD:password}
+                external.api.key=${API_KEY:}
+                external.other.password=${ADMIN_PASSWORD}
+                """);
+
+        var result = analyzer.analyze(tempDir, emptyBuildInfo());
+
+        assertThat(result.findings()).filteredOn(finding ->
+                        "SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT".equals(finding.ruleId()))
+                .extracting(finding -> finding.target())
+                .contains("admin.security.password", "spring.datasource.password")
+                .doesNotContain("external.api.key", "external.other.password");
+    }
+
+    @Test
+    void classifiesNestedAndMapStyleCustomPropertiesUnderConfigurationPrefixes() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.writeString(tempDir.resolve("src/main/resources/application.properties"), """
+                reports.cleanup.initial-delay-ms=15000
+                ticker.overrides[saab]=SAAB-B.ST
+                logging.level.xfeeder=INFO
+                unknown.custom.typo=true
+                """);
+
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("ReportCleanupProperties.java"), """
+                package com.example.demo;
+
+                import org.springframework.boot.context.properties.ConfigurationProperties;
+
+                @ConfigurationProperties(prefix = "reports.cleanup")
+                public record ReportCleanupProperties(Long retentionDays) {
+                }
+                """);
+        Files.writeString(sourceRoot.resolve("TickerProperties.java"), """
+                package com.example.demo;
+
+                import java.util.Map;
+                import org.springframework.boot.context.properties.ConfigurationProperties;
+
+                @ConfigurationProperties(prefix = "ticker")
+                public record TickerProperties(Map<String, String> overrides) {
+                }
+                """);
+
+        var result = analyzer.analyze(tempDir, emptyBuildInfo());
+        var analysis = result.configurationAnalysis();
+
+        assertThat(analysis.properties()).anyMatch(property ->
+                "reports.cleanup.initial-delay-ms".equals(property.name())
+                        && property.kind() == PropertyKind.CUSTOM_CONFIGURATION_PROPERTIES
+        );
+        assertThat(analysis.properties()).anyMatch(property ->
+                "ticker.overrides[saab]".equals(property.name())
+                        && property.kind() == PropertyKind.CUSTOM_CONFIGURATION_PROPERTIES
+        );
+        assertThat(analysis.properties()).anyMatch(property ->
+                "logging.level.xfeeder".equals(property.name())
+                        && property.kind() == PropertyKind.SPRING_BOOT_MAP_PROPERTY
+        );
+        assertThat(analysis.properties()).anyMatch(property ->
+                "unknown.custom.typo".equals(property.name())
+                        && property.kind() == PropertyKind.UNKNOWN
+        );
+
+        assertThat(result.findings()).filteredOn(finding -> "CONFIG_UNKNOWN_PROPERTY".equals(finding.ruleId()))
+                .extracting(finding -> finding.evidence())
+                .allMatch(evidence -> evidence != null
+                        && !evidence.contains("reports.cleanup.initial-delay-ms")
+                        && !evidence.contains("ticker.overrides[saab]"));
+    }
+
+    private BuildInfo emptyBuildInfo() {
+        return new BuildInfo(
+                BuildTool.GRADLE,
+                true,
+                "25",
+                java.util.List.of(),
+                "3.5.13",
+                "build.gradle plugin",
+                "HIGH"
+        );
+    }
 }
