@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.springframework.http.ResponseEntity;
+import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -23,6 +24,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
+@EnableScheduling
 @RequestMapping("/bad-designed")
 public class BadDesigned {
 
@@ -66,6 +68,7 @@ public class BadDesigned {
     ResponseEntity<?> create(@RequestBody CreateOrderRequest request) {
         try {
             Integer quantity = parseQuantity(request.quantity());
+            waitForSlowDependency();
             if (quantity == null) {
                 return ResponseEntity.ok(Map.of("status", "accepted", "quantity", 0));
             }
@@ -77,7 +80,7 @@ public class BadDesigned {
 
     @ExceptionHandler(Exception.class)
     ResponseEntity<String> handle(Exception exception) {
-        return ResponseEntity.status(500).body(exception.getMessage());
+        return ResponseEntity.ok(exception.getMessage());
     }
 
     Integer parseQuantity(String raw) {
@@ -103,6 +106,22 @@ public class BadDesigned {
             } catch (DateTimeParseException ignored) {
                 // TODO review later
             }
+        }
+    }
+
+    String loadBackupState() {
+        try {
+            return Files.readString(Path.of("build", "state.txt"));
+        } catch (Throwable fatal) {
+            return "";
+        }
+    }
+
+    void waitForSlowDependency() {
+        try {
+            Thread.sleep(250);
+        } catch (InterruptedException exception) {
+            exception.printStackTrace();
         }
     }
 
