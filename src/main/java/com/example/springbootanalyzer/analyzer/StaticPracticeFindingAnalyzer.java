@@ -3,10 +3,12 @@ package com.example.springbootanalyzer.analyzer;
 import com.example.springbootanalyzer.analyzer.model.BuildInfo;
 import com.example.springbootanalyzer.analyzer.model.DetectedClass;
 import com.example.springbootanalyzer.analyzer.model.Finding;
-import com.example.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.example.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.example.springbootanalyzer.analyzer.model.FindingFactory;
 import com.example.springbootanalyzer.analyzer.model.FindingRules;
+import com.example.springbootanalyzer.analyzer.model.FindingSeverity;
+import com.example.springbootanalyzer.analyzer.model.HighlightRange;
+import com.example.springbootanalyzer.analyzer.model.SourceLocation;
 import com.example.springbootanalyzer.analyzer.model.SpringComponentType;
 import com.example.springbootanalyzer.analyzer.model.configuration.ApplicationProperty;
 import com.example.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
@@ -19,6 +21,7 @@ import com.example.springbootanalyzer.analyzer.model.runtime.RuntimeStackAnalysi
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.NodeList;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.ConstructorDeclaration;
@@ -122,6 +125,7 @@ public class StaticPracticeFindingAnalyzer {
         detectConditionalBeanMatrixIssues(configurationAnalysis, findings);
         detectFlywaySchemaRisks(repositoryRoot, buildInfo, configurationAnalysis, gradleModelAnalysis, findings);
         detectSourcePractices(repositoryRoot, httpSurfaceAnalysis, detectedClasses, findings);
+        detectRepeatedFallbackParsingPattern(findings);
         return dedupe(findings);
     }
 
@@ -548,7 +552,7 @@ public class StaticPracticeFindingAnalyzer {
             }
 
             if (serviceLike) {
-                detectTransactionRisks(relativePath, declaration, method, transactionalMethods, signals, findings);
+                detectTransactionRisks(relativePath, declaration, method, transactionalMethods, repositoryLike, signals, findings);
             }
 
             if (controllerLike) {
@@ -632,16 +636,27 @@ public class StaticPracticeFindingAnalyzer {
         String primaryType = caughtTypes.isEmpty() ? catchClause.getParameter().getTypeAsString() : caughtTypes.iterator().next();
         String evidencePrefix = "Catch block for " + primaryType + " in " + context.target() + " (" + context.relativePath() + ":" + defaultString(line == null ? null : String.valueOf(line)) + ").";
         boolean specificRuleTriggered = false;
+        SourceLocation catchLocation = catchLocation(context, catchClause);
+        boolean broadCatch = caughtTypes.stream().anyMatch(this::isBroadCatchType);
+        boolean likelyParserFallback = isLikelyParserFallback(context, caughtTypes, analysis);
 
         if (analysis.emptyLike()) {
             if (!analysis.intentionalIgnoreSafe()) {
+                boolean testSource = context.relativePath().startsWith("src/test/");
+                boolean commentOnly = analysis.commentOnly();
+                FindingSeverity severity = (testSource || likelyParserFallback)
+                        ? FindingSeverity.INFO
+                        : FindingSeverity.WARNING;
+                FindingConfidence confidence = (commentOnly || likelyParserFallback)
+                        ? FindingConfidence.MEDIUM
+                        : (broadCatch && !testSource ? FindingConfidence.HIGH : FindingConfidence.MEDIUM);
                 findings.add(FindingFactory.builder(
-                                FindingRules.SPRING_EMPTY_CATCH_BLOCK.ruleId(),
-                                FindingRules.SPRING_EMPTY_CATCH_BLOCK.title(),
-                                FindingSeverity.WARNING,
-                                FindingRules.SPRING_EMPTY_CATCH_BLOCK.category(),
-                                FindingRules.SPRING_EMPTY_CATCH_BLOCK.runtimeDetection(),
-                                FindingConfidence.HIGH
+                                FindingRules.JAVA_EMPTY_CATCH_BLOCK.ruleId(),
+                                FindingRules.JAVA_EMPTY_CATCH_BLOCK.title(),
+                                severity,
+                                FindingRules.JAVA_EMPTY_CATCH_BLOCK.category(),
+                                FindingRules.JAVA_EMPTY_CATCH_BLOCK.runtimeDetection(),
+                                confidence
                         )
                         .shortMessage("Exception is caught but the catch block is empty.")
                         .whyBadPractice("An empty catch block silently discards failure information. The application may continue in an invalid state while the original cause is lost.")
@@ -649,7 +664,8 @@ public class StaticPracticeFindingAnalyzer {
                         .recommendation("Handle the exception intentionally, log it with useful context, rethrow/wrap it, or document and isolate the intentionally ignored case.")
                         .evidence(evidencePrefix + " Catch variable: " + catchClause.getParameter().getNameAsString() + ".")
                         .limitations("Static analysis cannot prove whether the exception is truly harmless, but an empty catch block hides the failure path from normal runtime diagnostics.")
-                        .source(context.relativePath(), line)
+                        .sourceLocation(catchLocation)
+                        .highlightRange(new HighlightRange(catchLocation.startLine(), catchLocation.endLine(), null, null, "issue"))
                         .target(context.target())
                         .build());
                 specificRuleTriggered = true;
@@ -664,7 +680,8 @@ public class StaticPracticeFindingAnalyzer {
                     .recommendation("Call Thread.currentThread().interrupt() and either return safely or rethrow/wrap the exception.")
                     .evidence(evidencePrefix + " No Thread.currentThread().interrupt() or rethrow was found.")
                     .limitations("Static analysis cannot prove the surrounding threading model, but swallowing interruption is usually unsafe in application code.")
-                    .source(context.relativePath(), line)
+                    .sourceLocation(catchLocation)
+                    .highlightRange(new HighlightRange(catchLocation.startLine(), catchLocation.endLine(), null, null, "issue"))
                     .target(context.target())
                     .build());
             specificRuleTriggered = true;
@@ -688,22 +705,29 @@ public class StaticPracticeFindingAnalyzer {
                     .recommendation("Catch the narrowest expected exception type. Only catch Throwable at process boundaries where the error is logged and rethrown or the process is allowed to fail safely.")
                     .evidence(evidencePrefix + " Catch type(s): " + String.join(", ", caughtTypes) + ".")
                     .limitations("Static analysis cannot know whether this is an intentional top-level boundary, so review the surrounding code before changing it.")
-                    .source(context.relativePath(), line)
+                    .sourceLocation(catchLocation)
+                    .highlightRange(new HighlightRange(catchLocation.startLine(), catchLocation.endLine(), null, null, "issue"))
                     .target(context.target())
                     .build());
             specificRuleTriggered = true;
         }
 
         if (context.controllerLike() || context.exceptionHandler()) {
-            if (containsRawExceptionMessageExposure(catchClause.getBody(), catchClause.getParameter().getNameAsString())) {
+            Optional<Node> rawExposureNode = findRawExceptionMessageExposureNode(
+                    catchClause.getBody(),
+                    catchClause.getParameter().getNameAsString()
+            );
+            if (rawExposureNode.isPresent()) {
+                SourceLocation rawExposureLocation = nodeLocation(context.relativePath(), context.target(), rawExposureNode.get(), catchLocation);
                 findings.add(FindingFactory.builder(FindingRules.SPRING_RAW_EXCEPTION_MESSAGE_HTTP, FindingConfidence.MEDIUM)
                         .shortMessage("HTTP response appears to include a raw exception message.")
                         .whyBadPractice("Exception messages can contain internal class names, SQL details, file paths, URLs, configuration names, or sensitive operational details.")
                         .possibleImpact("Clients may see internal implementation details that help attackers or confuse normal users.")
                         .recommendation("Return a sanitized client-facing error message and log the technical exception server-side with correlation information.")
-                        .evidence(evidencePrefix + " Response construction references " + catchClause.getParameter().getNameAsString() + ".getMessage().")
+                        .evidence(evidencePrefix + " Response construction uses " + summarizeNode(rawExposureNode.get()) + ".")
                         .limitations("Static analysis cannot prove whether the exception message is sanitized before this point.")
-                        .source(context.relativePath(), line)
+                        .sourceLocation(rawExposureLocation)
+                        .highlightRange(highlightRangeFor(rawExposureLocation))
                         .target(context.target())
                         .build());
                 specificRuleTriggered = true;
@@ -711,21 +735,35 @@ public class StaticPracticeFindingAnalyzer {
         }
 
         if (analysis.usesFallbackWithoutVisibleHandling() && !analysis.hasStrongLogging() && !analysis.rethrows()) {
+            boolean warningContext = broadCatch || context.productionLikeBoundary();
+            FindingSeverity severity = likelyParserFallback && !warningContext
+                    ? FindingSeverity.INFO
+                    : (warningContext ? FindingSeverity.WARNING : FindingRules.SPRING_SWALLOWED_EXCEPTION_FALLBACK.defaultSeverity());
+            String whyBadPractice = likelyParserFallback && !warningContext
+                    ? "This may be intentional for best-effort parsing, but without logging or an explicit comment it is hard to distinguish expected parse failures from unexpected data loss."
+                    : "Returning a fallback without recording the exception makes real failures look like valid empty or default results.";
+            String possibleImpact = likelyParserFallback && !warningContext
+                    ? "Unexpected input formats can be silently ignored, which may make later data quality issues harder to diagnose."
+                    : "Data may silently disappear, processing may be skipped, or callers may make decisions based on incomplete information.";
+            String recommendation = likelyParserFallback && !warningContext
+                    ? "Keep the fallback if it is intentional, but consider adding a short comment, metric, debug log, or typed parse result when the failure is operationally relevant."
+                    : "Log the exception with useful context, return a typed error result, rethrow a domain exception, or make the fallback behavior explicit and observable.";
             findings.add(FindingFactory.builder(
                             FindingRules.SPRING_SWALLOWED_EXCEPTION_FALLBACK.ruleId(),
                             FindingRules.SPRING_SWALLOWED_EXCEPTION_FALLBACK.title(),
-                            context.productionLikeBoundary() ? FindingSeverity.WARNING : FindingRules.SPRING_SWALLOWED_EXCEPTION_FALLBACK.defaultSeverity(),
+                            severity,
                             FindingRules.SPRING_SWALLOWED_EXCEPTION_FALLBACK.category(),
                             FindingRules.SPRING_SWALLOWED_EXCEPTION_FALLBACK.runtimeDetection(),
                             FindingConfidence.MEDIUM
                     )
                     .shortMessage("Exception is caught and replaced with a fallback result without visible logging or propagation.")
-                    .whyBadPractice("Returning a fallback without recording the exception makes real failures look like valid empty or default results.")
-                    .possibleImpact("Data may silently disappear, processing may be skipped, or callers may make decisions based on incomplete information.")
-                    .recommendation("Log the exception with context, return a typed error result, rethrow a domain exception, or make the fallback behavior explicit and observable.")
+                    .whyBadPractice(whyBadPractice)
+                    .possibleImpact(possibleImpact)
+                    .recommendation(recommendation)
                     .evidence(evidencePrefix + " Detected fallback-only handling: " + analysis.fallbackDescription() + ".")
                     .limitations("Static analysis cannot prove whether the fallback is intentional or safe for this business path.")
-                    .source(context.relativePath(), line)
+                    .sourceLocation(catchLocation)
+                    .highlightRange(new HighlightRange(catchLocation.startLine(), catchLocation.endLine(), null, null, "issue"))
                     .target(context.target())
                     .build());
             specificRuleTriggered = true;
@@ -744,10 +782,28 @@ public class StaticPracticeFindingAnalyzer {
                     .recommendation("Catch the expected exception types separately, add context-rich logging, or convert failures to a clear domain or application exception.")
                     .evidence(evidencePrefix + " Catch type " + primaryType + " uses weak handling in a Spring boundary.")
                     .limitations("Static analysis cannot prove whether all possible exceptions are equivalent in this context.")
-                    .source(context.relativePath(), line)
+                    .sourceLocation(catchLocation)
+                    .highlightRange(new HighlightRange(catchLocation.startLine(), catchLocation.endLine(), null, null, "issue"))
                     .target(context.target())
                     .build());
         }
+    }
+
+    private SourceLocation catchLocation(ExceptionHandlingContext context, CatchClause catchClause) {
+        int startLine = catchClause.getBegin().map(position -> position.line).orElse(1);
+        int endLine = catchClause.getEnd().map(position -> position.line).orElse(startLine);
+        Integer startColumn = catchClause.getBegin().map(position -> position.column).orElse(null);
+        Integer endColumn = catchClause.getEnd().map(position -> position.column).orElse(null);
+        return new SourceLocation(
+                context.relativePath(),
+                startLine,
+                endLine,
+                startColumn,
+                endColumn,
+                context.target(),
+                "java",
+                null
+        );
     }
 
     private void detectBroadSpringExceptionHandler(
@@ -758,20 +814,31 @@ public class StaticPracticeFindingAnalyzer {
         if (!handlesBroadException(method)) {
             return;
         }
-        boolean rawExposure = exposesRawExceptionMessageFromParameters(method);
-        if (rawExposure) {
+        Optional<Node> rawExposureNode = findRawExceptionMessageExposureNode(method);
+        if (rawExposureNode.isPresent()) {
+            SourceLocation location = nodeLocation(
+                    context.relativePath(),
+                    context.target(),
+                    rawExposureNode.get(),
+                    methodLocation(context, method)
+            );
             findings.add(FindingFactory.builder(FindingRules.SPRING_RAW_EXCEPTION_MESSAGE_HTTP, FindingConfidence.MEDIUM)
                     .shortMessage("HTTP response appears to include a raw exception message.")
                     .whyBadPractice("Exception messages can contain internal class names, SQL details, file paths, URLs, configuration names, or sensitive operational details.")
                     .possibleImpact("Clients may see internal implementation details that help attackers or confuse normal users.")
                     .recommendation("Return a sanitized client-facing error message and log the technical exception server-side with correlation information.")
-                    .evidence("@ExceptionHandler method " + context.target() + " appears to return an exception message directly to clients.")
+                    .evidence("@ExceptionHandler method " + context.target() + " returns " + summarizeNode(rawExposureNode.get()) + " to HTTP clients.")
                     .limitations("Static analysis cannot prove whether the exception message is sanitized before this point.")
-                    .source(context.relativePath(), method.getBegin().map(position -> position.line).orElse(null))
+                    .sourceLocation(location)
+                    .highlightRange(highlightRangeFor(location))
                     .target(context.target())
                     .build());
+            return;
         }
-        FindingSeverity severity = rawExposure ? FindingSeverity.WARNING : FindingRules.SPRING_BROAD_EXCEPTION_HANDLER.defaultSeverity();
+        String responseBehavior = broadExceptionHandlerResponseBehavior(method);
+        FindingSeverity severity = responseBehavior == null
+                ? FindingRules.SPRING_BROAD_EXCEPTION_HANDLER.defaultSeverity()
+                : FindingSeverity.WARNING;
         findings.add(FindingFactory.builder(
                         FindingRules.SPRING_BROAD_EXCEPTION_HANDLER.ruleId(),
                         FindingRules.SPRING_BROAD_EXCEPTION_HANDLER.title(),
@@ -784,7 +851,8 @@ public class StaticPracticeFindingAnalyzer {
                 .whyBadPractice("A catch-all exception handler can make unrelated failures look the same and can accidentally hide programming errors.")
                 .possibleImpact("Operational failures, validation failures, and unexpected bugs may be mapped to the same HTTP response or log level.")
                 .recommendation("Use narrower exception handlers for expected application errors and keep a final catch-all handler for sanitized 500 responses.")
-                .evidence("@ExceptionHandler on " + context.target() + " catches Exception, RuntimeException, or Throwable.")
+                .evidence("@ExceptionHandler on " + context.target() + " catches Exception, RuntimeException, or Throwable."
+                        + (responseBehavior == null ? "" : " Response behavior appears to map failures to " + responseBehavior + "."))
                 .limitations("Static analysis cannot prove whether this is the intended global fallback handler.")
                 .source(context.relativePath(), method.getBegin().map(position -> position.line).orElse(null))
                 .target(context.target())
@@ -932,6 +1000,7 @@ public class StaticPracticeFindingAnalyzer {
             ClassOrInterfaceDeclaration declaration,
             MethodDeclaration method,
             Set<String> transactionalMethods,
+            boolean repositoryLike,
             MethodSignals signals,
             List<Finding> findings
     ) {
@@ -976,8 +1045,11 @@ public class StaticPracticeFindingAnalyzer {
             return;
         }
         boolean multiWrite = signals.writeCallCount() >= 2;
-        boolean mixedSideEffects = signals.writeCallCount() >= 1 && (signals.hasHttpCalls() || signals.hasMessagingCalls());
-        if (!transactional && (multiWrite || mixedSideEffects)) {
+        boolean mixedSideEffects = signals.hasPotentialWriteOperations() && (signals.hasHttpCalls() || signals.hasMessagingCalls());
+        if (transactional || (!multiWrite && !mixedSideEffects)) {
+            return;
+        }
+        if (signals.hasDatabaseWrites() || repositoryLike) {
             findings.add(FindingFactory.builder(
                             FindingRules.SPRING_TRANSACTION_MISSING_BOUNDARY.ruleId(),
                             FindingRules.SPRING_TRANSACTION_MISSING_BOUNDARY.title(),
@@ -995,7 +1067,18 @@ public class StaticPracticeFindingAnalyzer {
                     .source(relativePath, line)
                     .target(declaration.getNameAsString() + "#" + method.getNameAsString())
                     .build());
+            return;
         }
+        findings.add(FindingFactory.builder(FindingRules.SPRING_SIDE_EFFECT_ORCHESTRATION_NO_BOUNDARY, FindingConfidence.MEDIUM)
+                .shortMessage("Potential side-effect orchestration without explicit consistency boundary: " + declaration.getNameAsString() + "#" + method.getNameAsString())
+                .whyBadPractice("Methods that coordinate several write-like or external side effects can be hard to reason about when one step fails partway through the workflow.")
+                .possibleImpact("Retries or partial failures can leave downstream systems out of sync even when no single database transaction applies.")
+                .recommendation("Review whether the workflow should use an explicit consistency strategy, idempotency guard, compensating action, or a clearer orchestration boundary.")
+                .evidence("Detected " + signals.describe() + " in " + relativePath + " without a visible consistency boundary, but the code did not show clear persistence infrastructure signals.")
+                .limitations("Static analysis cannot prove whether the detected write-like calls mutate shared state or whether another consistency boundary exists outside this method.")
+                .source(relativePath, line)
+                .target(declaration.getNameAsString() + "#" + method.getNameAsString())
+                .build());
     }
 
     private void detectValidationGap(
@@ -1048,6 +1131,7 @@ public class StaticPracticeFindingAnalyzer {
         List<Statement> statements = body.getStatements();
         boolean emptyLike = statements.isEmpty() || statements.stream().allMatch(EmptyStmt.class::isInstance);
         String comments = allCommentText(body);
+        boolean commentOnly = emptyLike && !comments.isBlank();
         boolean hasStrongLogging = hasVisibleLogging(body, Set.of("warn", "error"));
         boolean hasWeakLogging = hasVisibleLogging(body, Set.of("debug", "trace", "info"));
         boolean rethrows = !body.findAll(ThrowStmt.class).isEmpty();
@@ -1067,6 +1151,7 @@ public class StaticPracticeFindingAnalyzer {
                 restoresInterrupt,
                 fallbackReturn || fallbackLoopControl || fallbackAssignment,
                 intentionalIgnoreSafe,
+                commentOnly,
                 fallbackDescription
         );
     }
@@ -1142,24 +1227,27 @@ public class StaticPracticeFindingAnalyzer {
                 && call.getScope().map(Expression::toString).orElse("").equals("Thread.currentThread()");
     }
 
-    private boolean containsRawExceptionMessageExposure(BlockStmt body, String exceptionVariableName) {
+    private Optional<Node> findRawExceptionMessageExposureNode(BlockStmt body, String exceptionVariableName) {
         String needle = exceptionVariableName + ".getMessage()";
-        if (body.findAll(ReturnStmt.class).stream()
-                .map(ReturnStmt::getExpression)
-                .flatMap(Optional::stream)
-                .map(Expression::toString)
-                .anyMatch(text -> text.contains(needle))) {
-            return true;
+        Optional<Node> returnNode = body.findAll(ReturnStmt.class).stream()
+                .filter(statement -> statement.getExpression()
+                        .map(Expression::toString)
+                        .filter(text -> text.contains(needle))
+                        .isPresent())
+                .map(statement -> (Node) statement)
+                .findFirst();
+        if (returnNode.isPresent()) {
+            return returnNode;
         }
-        return body.findAll(MethodCallExpr.class).stream().anyMatch(call -> {
+        return body.findAll(MethodCallExpr.class).stream().filter(call -> {
             if (!Set.of("body", "put", "setDetail").contains(call.getNameAsString())) {
                 return false;
             }
             return call.getArguments().stream().map(Expression::toString).anyMatch(text -> text.contains(needle));
-        });
+        }).map(call -> (Node) call).findFirst();
     }
 
-    private boolean exposesRawExceptionMessageFromParameters(MethodDeclaration method) {
+    private Optional<Node> findRawExceptionMessageExposureNode(MethodDeclaration method) {
         Set<String> exceptionParameters = method.getParameters().stream()
                 .filter(parameter -> parameter.getTypeAsString().endsWith("Exception")
                         || parameter.getTypeAsString().endsWith("Throwable")
@@ -1167,10 +1255,15 @@ public class StaticPracticeFindingAnalyzer {
                 .map(Parameter::getNameAsString)
                 .collect(Collectors.toSet());
         if (exceptionParameters.isEmpty()) {
-            return false;
+            return Optional.empty();
         }
-        return exceptionParameters.stream().anyMatch(name ->
-                method.getBody().map(body -> containsRawExceptionMessageExposure(body, name)).orElse(false));
+        for (String name : exceptionParameters) {
+            Optional<Node> exposure = method.getBody().flatMap(body -> findRawExceptionMessageExposureNode(body, name));
+            if (exposure.isPresent()) {
+                return exposure;
+            }
+        }
+        return Optional.empty();
     }
 
     private boolean handlesBroadException(MethodDeclaration method) {
@@ -1182,8 +1275,65 @@ public class StaticPracticeFindingAnalyzer {
                 .orElse(false);
     }
 
+    private String broadExceptionHandlerResponseBehavior(MethodDeclaration method) {
+        String normalized = method.toString().toLowerCase(Locale.ROOT);
+        if (normalized.contains("badrequest(") || normalized.contains("status(400)") || normalized.contains("httpstatus.bad_request")) {
+            return "HTTP 400-style response";
+        }
+        if (normalized.contains("ok(") || normalized.contains("status(200)") || normalized.contains("httpstatus.ok")) {
+            return "HTTP 200-style response";
+        }
+        return null;
+    }
+
+    private SourceLocation methodLocation(
+            ExceptionHandlingContext context,
+            MethodDeclaration method
+    ) {
+        Integer startLine = method.getBegin().map(position -> position.line).orElse(null);
+        Integer endLine = method.getEnd().map(position -> position.line).orElse(startLine);
+        if (startLine == null) {
+            return null;
+        }
+        return new SourceLocation(
+                context.relativePath(),
+                startLine,
+                endLine == null ? startLine : endLine,
+                method.getBegin().map(position -> position.column).orElse(null),
+                method.getEnd().map(position -> position.column).orElse(null),
+                context.target(),
+                "java",
+                null
+        );
+    }
+
+    private SourceLocation nodeLocation(String relativePath, String target, Node node, SourceLocation fallback) {
+        Integer startLine = node.getBegin().map(position -> position.line).orElse(null);
+        if (startLine == null) {
+            return fallback;
+        }
+        int endLine = node.getEnd().map(position -> position.line).orElse(startLine);
+        Integer startColumn = node.getBegin().map(position -> position.column).orElse(null);
+        Integer endColumn = node.getEnd().map(position -> position.column).orElse(null);
+        return new SourceLocation(relativePath, startLine, endLine, startColumn, endColumn, target, "java", null);
+    }
+
+    private HighlightRange highlightRangeFor(SourceLocation location) {
+        return new HighlightRange(location.startLine(), location.endLine(), location.startColumn(), location.endColumn(), "issue");
+    }
+
+    private String summarizeNode(Node node) {
+        String compact = node.toString().replaceAll("\\s+", " ").trim();
+        return compact.length() > 160 ? compact.substring(0, 157) + "..." : compact;
+    }
+
     private boolean isInterruptedType(String typeName) {
         return "InterruptedException".equals(simpleName(typeName));
+    }
+
+    private boolean isBroadCatchType(String typeName) {
+        String simple = simpleName(typeName);
+        return simple.equals("Exception") || simple.equals("RuntimeException") || simple.equals("Throwable");
     }
 
     private boolean isFatalCatchType(String typeName) {
@@ -1227,6 +1377,85 @@ public class StaticPracticeFindingAnalyzer {
         return BENIGN_IGNORE_COMMENT_MARKERS.stream().anyMatch(comments::contains);
     }
 
+    private boolean isLikelyParserFallback(
+            ExceptionHandlingContext context,
+            Set<String> caughtTypes,
+            CatchAnalysis analysis
+    ) {
+        if (context.productionLikeBoundary()) {
+            return false;
+        }
+        if (!analysis.usesFallbackWithoutVisibleHandling() && !analysis.emptyLike()) {
+            return false;
+        }
+        String normalizedTarget = defaultString(context.target()).toLowerCase(Locale.ROOT);
+        boolean parserLikeName = normalizedTarget.contains("#parse")
+                || normalizedTarget.contains("#tryparse")
+                || normalizedTarget.contains("#extract")
+                || normalizedTarget.contains("#decode")
+                || normalizedTarget.contains("#convert")
+                || normalizedTarget.contains("#normalize");
+        if (!parserLikeName) {
+            return false;
+        }
+        return caughtTypes.stream().map(this::simpleName).anyMatch(type ->
+                type.equals("NumberFormatException")
+                        || type.equals("DateTimeParseException")
+                        || type.equals("ParseException")
+                        || type.equals("IllegalArgumentException")
+        );
+    }
+
+    private void detectRepeatedFallbackParsingPattern(List<Finding> findings) {
+        List<Finding> parserFallbacks = findings.stream()
+                .filter(Objects::nonNull)
+                .filter(finding -> FindingRules.SPRING_SWALLOWED_EXCEPTION_FALLBACK.ruleId().equals(finding.ruleId())
+                        || FindingRules.JAVA_EMPTY_CATCH_BLOCK.ruleId().equals(finding.ruleId()))
+                .filter(this::isParserLikeFallbackFinding)
+                .toList();
+        if (parserFallbacks.size() < 3) {
+            return;
+        }
+        Set<String> classes = parserFallbacks.stream()
+                .map(Finding::target)
+                .filter(Objects::nonNull)
+                .map(target -> target.contains("#") ? target.substring(0, target.indexOf('#')) : target)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (classes.size() < 2) {
+            return;
+        }
+        String evidence = parserFallbacks.stream()
+                .map(finding -> defaultString(finding.target(), finding.sourceFile()))
+                .filter(value -> !value.isBlank())
+                .limit(6)
+                .collect(Collectors.joining(", "));
+        if (parserFallbacks.size() > 6) {
+            evidence = evidence + ", ...";
+        }
+        findings.add(FindingFactory.builder(FindingRules.SPRING_REPEATED_FALLBACK_PARSING_PATTERN, FindingConfidence.MEDIUM)
+                .shortMessage("Similar parse/fallback exception handling appears in multiple classes.")
+                .whyBadPractice("Repeated parser helpers that silently fall back on exceptions spread data-loss behavior across the codebase and make failure handling harder to reason about consistently.")
+                .possibleImpact("Unexpected input can be dropped in slightly different ways across parsing paths, which makes data quality issues harder to diagnose and operational behavior harder to compare.")
+                .recommendation("Consider centralizing parsing rules and making fallback behavior explicit with typed parse results, comments, metrics, or targeted debug logging where the behavior matters operationally.")
+                .evidence("Parser-like fallback handling was detected in multiple locations: " + evidence + ".")
+                .limitations("Static analysis cannot prove whether every fallback is wrong, but repeated silent parsing fallbacks are worth reviewing together.")
+                .target("Multiple parsing helpers")
+                .location("Exception handling")
+                .build());
+    }
+
+    private boolean isParserLikeFallbackFinding(Finding finding) {
+        String target = defaultString(finding.target()).toLowerCase(Locale.ROOT);
+        String why = defaultString(finding.whyBadPractice()).toLowerCase(Locale.ROOT);
+        return target.contains("#parse")
+                || target.contains("#tryparse")
+                || target.contains("#extract")
+                || target.contains("#decode")
+                || target.contains("#convert")
+                || target.contains("#normalize")
+                || why.contains("best-effort parsing");
+    }
+
     private MethodSignals methodSignals(String body, String methodName) {
         String normalized = body.toLowerCase(Locale.ROOT);
         boolean httpCalls = normalized.contains(".retrieve(")
@@ -1246,6 +1475,13 @@ public class StaticPracticeFindingAnalyzer {
         for (String marker : WRITE_CALL_MARKERS) {
             writeCalls += countOccurrences(normalized, "." + marker.toLowerCase(Locale.ROOT) + "(");
         }
+        boolean persistenceSignals = normalized.contains("repository.")
+                || normalized.contains("jdbctemplate.")
+                || normalized.contains("namedparameterjdbctemplate.")
+                || normalized.contains("entitymanager.")
+                || normalized.contains("crudrepository")
+                || normalized.contains("springdata")
+                || normalized.contains("hibernate");
         boolean fileOps = normalized.contains("files.writestring")
                 || normalized.contains("files.write(")
                 || normalized.contains("deleteifexists")
@@ -1265,7 +1501,7 @@ public class StaticPracticeFindingAnalyzer {
                 || normalized.contains("foreach")
                 || normalized.contains("while (");
         boolean tryCatch = normalized.contains("try {");
-        return new MethodSignals(httpCalls, writeCalls, fileOps, threadCreation, messagingCalls, repositoryLoop, tryCatch, methodName);
+        return new MethodSignals(httpCalls, writeCalls, persistenceSignals, fileOps, threadCreation, messagingCalls, repositoryLoop, tryCatch, methodName);
     }
 
     private boolean isWriteLikeEndpoint(MethodDeclaration method) {
@@ -1574,6 +1810,7 @@ public class StaticPracticeFindingAnalyzer {
     private record MethodSignals(
             boolean httpCalls,
             int writeCallCount,
+            boolean persistenceSignals,
             boolean fileOperations,
             boolean threadCreation,
             boolean messagingCalls,
@@ -1590,6 +1827,10 @@ public class StaticPracticeFindingAnalyzer {
         }
 
         boolean hasDatabaseWrites() {
+            return writeCallCount > 0 && persistenceSignals;
+        }
+
+        boolean hasPotentialWriteOperations() {
             return writeCallCount > 0;
         }
 
@@ -1609,7 +1850,7 @@ public class StaticPracticeFindingAnalyzer {
                 parts.add("outbound HTTP execution");
             }
             if (writeCallCount > 0) {
-                parts.add("write-like persistence calls");
+                parts.add(persistenceSignals ? "write-like persistence calls" : "write-like side effects");
             }
             if (fileOperations) {
                 parts.add("file system operations");
@@ -1669,6 +1910,7 @@ public class StaticPracticeFindingAnalyzer {
             boolean restoresInterrupt,
             boolean usesFallbackWithoutVisibleHandling,
             boolean intentionalIgnoreSafe,
+            boolean commentOnly,
             String fallbackDescription
     ) {
     }

@@ -4,8 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.springbootanalyzer.analyzer.model.BuildInfo;
 import com.example.springbootanalyzer.analyzer.model.BuildTool;
+import com.example.springbootanalyzer.analyzer.model.Finding;
 import com.example.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.example.springbootanalyzer.analyzer.model.configuration.PropertyKind;
+import com.example.springbootanalyzer.analyzer.model.configuration.PropertyReference;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -326,6 +328,45 @@ class ConfigurationAnalyzerTest {
                 .noneMatch(message -> message != null && message.contains("java.vm.name"))
                 .noneMatch(message -> message != null && message.contains("java.runtime.version"))
                 .anyMatch(message -> message != null && message.contains("my.application.setting"));
+    }
+
+    @Test
+    void ignoresGradleAndWrapperPropertyLookupsWhenCheckingMissingSpringConfiguration() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.writeString(tempDir.resolve("src/main/resources/application.properties"), """
+                app.mode=demo
+                """);
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("BuildSupport.java"), """
+                package com.example.demo;
+
+                import java.util.Properties;
+                import org.springframework.core.env.Environment;
+                import org.springframework.stereotype.Component;
+
+                @Component
+                class BuildSupport {
+
+                    String read(Environment environment, Properties properties) {
+                        return properties.getProperty("distributionUrl")
+                                + properties.getProperty("org.gradle.jvmargs")
+                                + properties.getProperty("java_version")
+                                + environment.getProperty("spring.application.name");
+                    }
+                }
+                """);
+
+        var result = analyzer.analyze(tempDir, emptyBuildInfo());
+
+        assertThat(result.configurationAnalysis().codeReferences())
+                .extracting(PropertyReference::propertyName)
+                .contains("spring.application.name")
+                .doesNotContain("distributionurl", "org.gradle.jvmargs", "java_version");
+
+        assertThat(result.findings()).filteredOn(finding -> "CONFIG_CODE_REFERENCE_MISSING".equals(finding.ruleId()))
+                .extracting(Finding::target)
+                .contains("spring.application.name")
+                .doesNotContain("distributionurl", "org.gradle.jvmargs", "java_version");
     }
 
     @Test

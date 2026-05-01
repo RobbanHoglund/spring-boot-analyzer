@@ -10,6 +10,8 @@ public record AnalysisResult(
         String repositoryUrl,
         String branch,
         String workspaceId,
+        String analysisId,
+        String commitSha,
         BuildInfo buildInfo,
         List<String> mainApplicationClasses,
         List<DetectedClass> detectedComponents,

@@ -1,5 +1,8 @@
 package com.example.springbootanalyzer.analyzer.model;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public final class FindingFactory {
 
     private FindingFactory() {
@@ -44,6 +47,9 @@ public final class FindingFactory {
         private Integer line;
         private String target;
         private String location;
+        private SourceLocation primaryLocation;
+        private final List<HighlightRange> highlightRanges = new ArrayList<>();
+        private final List<FindingOccurrence> occurrences = new ArrayList<>();
 
         private Builder(
                 String ruleId,
@@ -94,6 +100,52 @@ public final class FindingFactory {
         public Builder source(String sourceFile, Integer line) {
             this.sourceFile = sourceFile;
             this.line = line;
+            if (sourceFile != null && line != null && line > 0) {
+                this.primaryLocation = new SourceLocation(
+                        sourceFile,
+                        line,
+                        line,
+                        null,
+                        null,
+                        target,
+                        SourceLocation.inferLanguage(sourceFile),
+                        null
+                );
+                if (highlightRanges.isEmpty()) {
+                    highlightRanges.add(new HighlightRange(line, line, null, null, "issue"));
+                }
+            }
+            return this;
+        }
+
+        public Builder sourceLocation(SourceLocation primaryLocation) {
+            this.primaryLocation = primaryLocation;
+            if (primaryLocation != null) {
+                this.sourceFile = primaryLocation.filePath();
+                this.line = primaryLocation.startLine();
+            }
+            return this;
+        }
+
+        public Builder highlightRange(HighlightRange range) {
+            if (range != null) {
+                highlightRanges.add(range);
+            }
+            return this;
+        }
+
+        public Builder occurrences(List<FindingOccurrence> occurrences) {
+            this.occurrences.clear();
+            if (occurrences != null) {
+                this.occurrences.addAll(occurrences);
+            }
+            return this;
+        }
+
+        public Builder addOccurrence(FindingOccurrence occurrence) {
+            if (occurrence != null) {
+                this.occurrences.add(occurrence);
+            }
             return this;
         }
 
@@ -109,6 +161,22 @@ public final class FindingFactory {
 
         public Finding build() {
             String effectiveLocation = location != null ? location : sourceFile;
+            SourceLocation effectivePrimaryLocation = primaryLocation;
+            if (effectivePrimaryLocation != null
+                    && (effectivePrimaryLocation.symbol() == null || effectivePrimaryLocation.symbol().isBlank())
+                    && target != null
+                    && !target.isBlank()) {
+                effectivePrimaryLocation = new SourceLocation(
+                        effectivePrimaryLocation.filePath(),
+                        effectivePrimaryLocation.startLine(),
+                        effectivePrimaryLocation.endLine(),
+                        effectivePrimaryLocation.startColumn(),
+                        effectivePrimaryLocation.endColumn(),
+                        target,
+                        effectivePrimaryLocation.language(),
+                        effectivePrimaryLocation.githubUrl()
+                );
+            }
             return new Finding(
                     severity,
                     shortMessage,
@@ -125,7 +193,10 @@ public final class FindingFactory {
                     limitations,
                     sourceFile,
                     line,
-                    target
+                    target,
+                    effectivePrimaryLocation,
+                    List.copyOf(highlightRanges),
+                    List.copyOf(occurrences)
             );
         }
     }

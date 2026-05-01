@@ -2,11 +2,16 @@ package com.example.springbootanalyzer.application;
 
 import com.example.springbootanalyzer.analyzer.StaticAnalyzer;
 import com.example.springbootanalyzer.analyzer.model.AnalysisResult;
+import com.example.springbootanalyzer.analyzer.model.Finding;
+import com.example.springbootanalyzer.analyzer.model.FindingOccurrence;
+import com.example.springbootanalyzer.analyzer.model.SourceLocation;
 import com.example.springbootanalyzer.config.AnalyzerProperties;
 import com.example.springbootanalyzer.git.GitCloneService;
+import com.example.springbootanalyzer.git.GitHubLinkBuilder;
 import com.example.springbootanalyzer.git.GitRepositoryReference;
 import com.example.springbootanalyzer.workspace.WorkspaceService;
 import com.example.springbootanalyzer.workspace.WorkspaceService.Workspace;
+import java.util.List;
 import java.nio.file.Path;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,17 +26,23 @@ public class RepositoryAnalysisService {
     private final GitCloneService gitCloneService;
     private final StaticAnalyzer staticAnalyzer;
     private final AnalyzerProperties analyzerProperties;
+    private final GitHubLinkBuilder gitHubLinkBuilder;
+    private final AnalysisSessionRegistry analysisSessionRegistry;
 
     public RepositoryAnalysisService(
             WorkspaceService workspaceService,
             GitCloneService gitCloneService,
             StaticAnalyzer staticAnalyzer,
-            AnalyzerProperties analyzerProperties
+            AnalyzerProperties analyzerProperties,
+            GitHubLinkBuilder gitHubLinkBuilder,
+            AnalysisSessionRegistry analysisSessionRegistry
     ) {
         this.workspaceService = workspaceService;
         this.gitCloneService = gitCloneService;
         this.staticAnalyzer = staticAnalyzer;
         this.analyzerProperties = analyzerProperties;
+        this.gitHubLinkBuilder = gitHubLinkBuilder;
+        this.analysisSessionRegistry = analysisSessionRegistry;
     }
 
     public AnalysisResult analyze(GitRepositoryReference repositoryReference) {
@@ -46,8 +57,17 @@ public class RepositoryAnalysisService {
         );
         try {
             Path clonedRepository = gitCloneService.cloneRepository(repositoryReference, workspace.path().resolve("repository"));
+            String commitSha = gitCloneService.resolveHeadCommit(clonedRepository).orElse(null);
             LOGGER.info("Repository cloned successfully: workspaceId={}, path={}", workspace.id(), clonedRepository);
             result = staticAnalyzer.analyze(repositoryReference, clonedRepository, workspace.id());
+            result = enrichAnalysisResult(result, workspace.id(), commitSha);
+            analysisSessionRegistry.register(new AnalysisSessionRegistry.AnalysisSession(
+                    result.analysisId(),
+                    clonedRepository,
+                    result.repositoryUrl(),
+                    result.branch(),
+                    result.commitSha()
+            ));
             LOGGER.info(
                     "Repository analysis completed: workspaceId={}, findings={}, components={}, gradleStatus={}",
                     workspace.id(),
@@ -64,6 +84,14 @@ public class RepositoryAnalysisService {
     private void cleanupWorkspace(Workspace workspace, AnalysisResult result) {
         if (!analyzerProperties.cleanupAfterAnalysis()) {
             LOGGER.info("Workspace cleanup skipped by configuration: workspaceId={}, path={}", workspace.id(), workspace.path());
+            return;
+        }
+        if (result != null && result.analysisId() != null) {
+            LOGGER.info(
+                    "Workspace retained for source snippet browsing: workspaceId={}, path={}",
+                    workspace.id(),
+                    workspace.path()
+            );
             return;
         }
         if (analyzerProperties.workspaceKeepOnGradleFailure()
@@ -85,5 +113,54 @@ public class RepositoryAnalysisService {
         } catch (RuntimeException exception) {
             LOGGER.warn("Failed to delete workspace {}", workspace.path(), exception);
         }
+    }
+
+    private AnalysisResult enrichAnalysisResult(AnalysisResult result, String analysisId, String commitSha) {
+        List<Finding> findings = result.findings().stream()
+                .map(finding -> enrichFinding(finding, result.repositoryUrl(), commitSha))
+                .toList();
+        return new AnalysisResult(
+                result.repositoryUrl(),
+                result.branch(),
+                result.workspaceId(),
+                analysisId,
+                commitSha,
+                result.buildInfo(),
+                result.mainApplicationClasses(),
+                result.detectedComponents(),
+                findings,
+                result.configurationAnalysis(),
+                result.runtimeStackAnalysis(),
+                result.httpSurfaceAnalysis(),
+                result.gradleModelAnalysis()
+        );
+    }
+
+    private Finding enrichFinding(Finding finding, String repositoryUrl, String commitSha) {
+        SourceLocation location = enrichLocation(finding.primaryLocation(), repositoryUrl, commitSha);
+        List<FindingOccurrence> occurrences = finding.occurrences().stream()
+                .map(occurrence -> occurrence.withGithubUrl(buildGithubUrl(repositoryUrl, commitSha, occurrence.location())))
+                .toList();
+        return finding.withSourceDetails(location, finding.highlightRanges(), occurrences);
+    }
+
+    private SourceLocation enrichLocation(SourceLocation location, String repositoryUrl, String commitSha) {
+        if (location == null) {
+            return null;
+        }
+        return location.withGithubUrl(buildGithubUrl(repositoryUrl, commitSha, location));
+    }
+
+    private String buildGithubUrl(String repositoryUrl, String commitSha, SourceLocation location) {
+        if (location == null) {
+            return null;
+        }
+        return gitHubLinkBuilder.buildBlobUrl(
+                repositoryUrl,
+                commitSha,
+                location.filePath(),
+                location.startLine(),
+                location.endLine()
+        );
     }
 }

@@ -135,8 +135,15 @@ public final class FindingRules {
             FindingCategory.TRANSACTION,
             FindingRuntimeDetection.NOT_NORMALLY_DETECTED
     );
-    public static final FindingRule SPRING_EMPTY_CATCH_BLOCK = rule(
-            "SPRING_EMPTY_CATCH_BLOCK",
+    public static final FindingRule SPRING_SIDE_EFFECT_ORCHESTRATION_NO_BOUNDARY = rule(
+            "SPRING_SIDE_EFFECT_ORCHESTRATION_NO_BOUNDARY",
+            "Potential side-effect orchestration without explicit consistency boundary",
+            FindingSeverity.INFO,
+            FindingCategory.MAINTAINABILITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule JAVA_EMPTY_CATCH_BLOCK = rule(
+            "JAVA_EMPTY_CATCH_BLOCK",
             "Empty catch block",
             FindingSeverity.WARNING,
             FindingCategory.EXCEPTION_HANDLING,
@@ -147,6 +154,13 @@ public final class FindingRules {
             "Exception is swallowed and replaced with fallback",
             FindingSeverity.INFO,
             FindingCategory.EXCEPTION_HANDLING,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_REPEATED_FALLBACK_PARSING_PATTERN = rule(
+            "SPRING_REPEATED_FALLBACK_PARSING_PATTERN",
+            "Repeated fallback parsing pattern",
+            FindingSeverity.INFO,
+            FindingCategory.MAINTAINABILITY,
             FindingRuntimeDetection.NOT_NORMALLY_DETECTED
     );
     public static final FindingRule SPRING_INTERRUPTED_EXCEPTION_SWALLOWED = rule(

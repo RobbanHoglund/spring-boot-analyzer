@@ -8,11 +8,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.example.springbootanalyzer.api.dto.AnalysisMode;
+import com.example.springbootanalyzer.api.dto.SourceSnippetResponse;
 import com.example.springbootanalyzer.analyzer.model.AnalysisResult;
 import com.example.springbootanalyzer.analyzer.model.BuildInfo;
 import com.example.springbootanalyzer.analyzer.model.BuildTool;
 import com.example.springbootanalyzer.analyzer.model.DetectedClass;
 import com.example.springbootanalyzer.analyzer.model.Finding;
+import com.example.springbootanalyzer.analyzer.model.HighlightRange;
 import com.example.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.example.springbootanalyzer.analyzer.model.SpringComponentType;
 import com.example.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
@@ -23,6 +25,7 @@ import com.example.springbootanalyzer.analyzer.model.runtime.RuntimeStackAnalysi
 import com.example.springbootanalyzer.analyzer.model.runtime.VirtualThreadAnalysis;
 import com.example.springbootanalyzer.analyzer.model.runtime.WebStack;
 import com.example.springbootanalyzer.application.RepositoryAnalysisService;
+import com.example.springbootanalyzer.application.SourceSnippetService;
 import com.example.springbootanalyzer.error.GlobalExceptionHandler;
 import com.example.springbootanalyzer.git.GitRepositoryReference;
 import java.util.List;
@@ -45,12 +48,17 @@ class AnalysisControllerTest {
     @MockitoBean
     private RepositoryAnalysisService repositoryAnalysisService;
 
+    @MockitoBean
+    private SourceSnippetService sourceSnippetService;
+
     @Test
     void acceptsValidAnalyzeRequest() throws Exception {
         AnalysisResult analysisResult = new AnalysisResult(
                 "https://github.com/example/demo.git",
                 "main",
                 "workspace-123",
+                "workspace-123",
+                "abc123",
                 buildInfo("25"),
                 List.of("com.example.demo.DemoApplication"),
                 List.of(new DetectedClass(
@@ -82,6 +90,8 @@ class AnalysisControllerTest {
                 .andExpect(jsonPath("$.repositoryUrl").value("https://github.com/example/demo.git"))
                 .andExpect(jsonPath("$.branch").value("main"))
                 .andExpect(jsonPath("$.workspaceId").value("workspace-123"))
+                .andExpect(jsonPath("$.analysisId").value("workspace-123"))
+                .andExpect(jsonPath("$.commitSha").value("abc123"))
                 .andExpect(jsonPath("$.buildTool").value("GRADLE"))
                 .andExpect(jsonPath("$.javaVersionHint").value("25"))
                 .andExpect(jsonPath("$.springBootDetected").value(true))
@@ -99,6 +109,8 @@ class AnalysisControllerTest {
                 "https://github.com/example/private-demo.git",
                 "main",
                 "workspace-credentials",
+                "workspace-credentials",
+                null,
                 buildInfo("21"),
                 List.of(),
                 List.of(),
@@ -146,6 +158,8 @@ class AnalysisControllerTest {
                 "https://github.com/example/private-demo.git",
                 "main",
                 "workspace-credentials",
+                "workspace-credentials",
+                null,
                 buildInfo("21"),
                 List.of(),
                 List.of(),
@@ -186,6 +200,52 @@ class AnalysisControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.title").value("Validation failed"))
                 .andExpect(jsonPath("$.errors.repositoryUrl").value("repositoryUrl is required"));
+    }
+
+    @Test
+    void servesSourceSnippet() throws Exception {
+        given(sourceSnippetService.loadSnippet("workspace-123", "src/main/java/com/example/demo/Demo.java", 10, 12, 4))
+                .willReturn(new SourceSnippetResponse(
+                        "src/main/java/com/example/demo/Demo.java",
+                        "java",
+                        6,
+                        16,
+                        "https://github.com/example/demo/blob/abc123/src/main/java/com/example/demo/Demo.java#L10-L12",
+                        List.of(),
+                        List.of(new HighlightRange(10, 12, null, null, "issue"))
+                ));
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/analyses/workspace-123/source-snippet")
+                        .param("path", "src/main/java/com/example/demo/Demo.java")
+                        .param("startLine", "10")
+                        .param("endLine", "12")
+                        .param("context", "4"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.filePath").value("src/main/java/com/example/demo/Demo.java"))
+                .andExpect(jsonPath("$.language").value("java"))
+                .andExpect(jsonPath("$.highlightRanges[0].kind").value("issue"));
+    }
+
+    @Test
+    void servesSourceSnippetWithoutExactLineRange() throws Exception {
+        given(sourceSnippetService.loadSnippet("workspace-123", "src/main/java/com/example/demo/Demo.java", null, null, 6))
+                .willReturn(new SourceSnippetResponse(
+                        "src/main/java/com/example/demo/Demo.java",
+                        "java",
+                        1,
+                        20,
+                        "https://github.com/example/demo/blob/abc123/src/main/java/com/example/demo/Demo.java",
+                        List.of(),
+                        List.of()
+                ));
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/analyses/workspace-123/source-snippet")
+                        .param("path", "src/main/java/com/example/demo/Demo.java")
+                        .param("context", "6"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.filePath").value("src/main/java/com/example/demo/Demo.java"))
+                .andExpect(jsonPath("$.highlightRanges").isArray())
+                .andExpect(jsonPath("$.highlightRanges").isEmpty());
     }
 
     private BuildInfo buildInfo(String javaVersion) {

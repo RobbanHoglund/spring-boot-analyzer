@@ -1,4 +1,8 @@
-import type { AnalyzeRepositoryRequest, AnalyzeRepositoryResponse } from './types';
+import type {
+  AnalyzeRepositoryRequest,
+  AnalyzeRepositoryResponse,
+  SourceSnippetResponse
+} from './types';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -30,6 +34,31 @@ export async function analyzeRepository(
   }
 
   return isObject(payload) ? (payload as AnalyzeRepositoryResponse) : {};
+}
+
+export async function fetchSourceSnippet(
+  analysisId: string,
+  path: string,
+  startLine?: number | null,
+  endLine?: number | null,
+  context = 4
+): Promise<SourceSnippetResponse> {
+  const params = new URLSearchParams({
+    path,
+    context: String(context)
+  });
+  if (typeof startLine === 'number' && typeof endLine === 'number') {
+    params.set('startLine', String(startLine));
+    params.set('endLine', String(endLine));
+  }
+  const response = await fetch(`/api/analyses/${encodeURIComponent(analysisId)}/source-snippet?${params.toString()}`);
+  const payload = await parsePayload(response);
+
+  if (!response.ok) {
+    throw new ApiError(buildErrorMessage(response.status, payload), response.status, payload);
+  }
+
+  return isObject(payload) ? (payload as SourceSnippetResponse) : {};
 }
 
 async function parsePayload(response: Response): Promise<unknown> {

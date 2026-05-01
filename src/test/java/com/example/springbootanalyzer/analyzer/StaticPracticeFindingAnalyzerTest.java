@@ -320,6 +320,39 @@ class StaticPracticeFindingAnalyzerTest {
     }
 
     @Test
+    void downgradesNonPersistenceSideEffectOrchestrationToMaintainability() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("AnalyzerWorkflowService.java"), """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Service;
+
+                @Service
+                class AnalyzerWorkflowService {
+                    void runWorkflow() {
+                        reportStore.save();
+                        notificationClient.send();
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).anyMatch(finding ->
+                FindingRules.SPRING_SIDE_EFFECT_ORCHESTRATION_NO_BOUNDARY.ruleId().equals(finding.ruleId())
+                        && finding.category() == FindingCategory.MAINTAINABILITY
+                        && finding.message() != null
+                        && finding.message().contains("Potential side-effect orchestration")
+        );
+        assertThat(findings).noneMatch(finding ->
+                FindingRules.SPRING_TRANSACTION_MISSING_BOUNDARY.ruleId().equals(finding.ruleId())
+                        && finding.target() != null
+                        && finding.target().contains("runWorkflow")
+        );
+    }
+
+    @Test
     void doesNotFlagTransactionalMultiWriteMethod() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
         Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
@@ -445,16 +478,23 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings)
-                .filteredOn(finding -> FindingRules.SPRING_EMPTY_CATCH_BLOCK.ruleId().equals(finding.ruleId()))
-                .hasSize(2)
-                .allSatisfy(finding -> {
+        List<Finding> emptyCatchFindings = findings.stream()
+                .filter(finding -> FindingRules.JAVA_EMPTY_CATCH_BLOCK.ruleId().equals(finding.ruleId()))
+                .toList();
+
+        assertThat(emptyCatchFindings).hasSize(2);
+        assertThat(emptyCatchFindings)
+                .anySatisfy(finding -> {
                     assertThat(finding.severity()).isEqualTo(FindingSeverity.WARNING);
-                    assertThat(finding.category()).isEqualTo(FindingCategory.EXCEPTION_HANDLING);
-                    assertThat(finding.runtimeDetection()).isEqualTo(FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
                     assertThat(finding.confidence()).isEqualTo(FindingConfidence.HIGH);
-                    assertThat(finding.evidence()).contains("Catch block for");
-                    assertThat(finding.line()).isNotNull();
+                    assertThat(finding.primaryLocation()).isNotNull();
+                    assertThat(finding.highlightRanges()).isNotEmpty();
+                    assertThat(finding.primaryLocation().startLine()).isLessThanOrEqualTo(finding.primaryLocation().endLine());
+                })
+                .anySatisfy(finding -> {
+                    assertThat(finding.severity()).isEqualTo(FindingSeverity.WARNING);
+                    assertThat(finding.confidence()).isEqualTo(FindingConfidence.MEDIUM);
+                    assertThat(finding.evidence()).contains("Catch block for IOException");
                 });
     }
 
@@ -484,7 +524,7 @@ class StaticPracticeFindingAnalyzerTest {
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
         assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_EMPTY_CATCH_BLOCK.ruleId().equals(finding.ruleId())
+                FindingRules.JAVA_EMPTY_CATCH_BLOCK.ruleId().equals(finding.ruleId())
         );
     }
 
@@ -538,6 +578,9 @@ class StaticPracticeFindingAnalyzerTest {
                 FindingRules.SPRING_SWALLOWED_EXCEPTION_FALLBACK.ruleId().equals(finding.ruleId())
                         && finding.severity() == FindingSeverity.WARNING
                         && "com.example.demo.OrderService#load".equals(finding.target())
+                        && finding.primaryLocation() != null
+                        && finding.primaryLocation().endLine() >= finding.primaryLocation().startLine()
+                        && !finding.highlightRanges().isEmpty()
         );
         assertThat(findings).anyMatch(finding ->
                 FindingRules.SPRING_INTERRUPTED_EXCEPTION_SWALLOWED.ruleId().equals(finding.ruleId())
@@ -608,6 +651,8 @@ class StaticPracticeFindingAnalyzerTest {
                 FindingRules.SPRING_RAW_EXCEPTION_MESSAGE_HTTP.ruleId().equals(finding.ruleId())
                         && finding.severity() == FindingSeverity.WARNING
                         && finding.category() == FindingCategory.SECURITY
+                        && finding.evidence() != null
+                        && finding.evidence().contains("body(e.getMessage())")
                         && "com.example.demo.ApiController#get".equals(finding.target())
         );
     }
@@ -636,8 +681,156 @@ class StaticPracticeFindingAnalyzerTest {
 
         assertThat(findings).anyMatch(finding ->
                 FindingRules.SPRING_BROAD_EXCEPTION_HANDLER.ruleId().equals(finding.ruleId())
+                        && finding.severity() == FindingSeverity.INFO
                         && finding.category() == FindingCategory.EXCEPTION_HANDLING
                         && finding.runtimeDetection() == FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+        );
+    }
+
+    @Test
+    void warnsWhenBroadSpringExceptionHandlerMapsToBadRequest() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("GlobalErrors.java"), """
+                package com.example.demo;
+
+                import org.springframework.http.ResponseEntity;
+                import org.springframework.web.bind.annotation.ExceptionHandler;
+                import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+                @RestControllerAdvice
+                class GlobalErrors {
+                    @ExceptionHandler(Exception.class)
+                    ResponseEntity<String> handle(Exception ex) {
+                        return ResponseEntity.badRequest().body("invalid");
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web")));
+
+        assertThat(findings).anyMatch(finding ->
+                FindingRules.SPRING_BROAD_EXCEPTION_HANDLER.ruleId().equals(finding.ruleId())
+                        && finding.severity() == FindingSeverity.WARNING
+                        && finding.evidence() != null
+                        && finding.evidence().contains("HTTP 400-style response")
+        );
+    }
+
+    @Test
+    void downgradesParserFallbackToInfo() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("ParserHelper.java"), """
+                package com.example.demo;
+
+                class ParserHelper {
+                    Integer parseAmount(String value) {
+                        try {
+                            return Integer.valueOf(value);
+                        } catch (NumberFormatException ignored) {
+                            return null;
+                        }
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).anyMatch(finding ->
+                FindingRules.SPRING_SWALLOWED_EXCEPTION_FALLBACK.ruleId().equals(finding.ruleId())
+                        && finding.severity() == FindingSeverity.INFO
+                        && finding.whyBadPractice() != null
+                        && finding.whyBadPractice().contains("best-effort parsing")
+                        && "com.example.demo.ParserHelper#parseAmount".equals(finding.target())
+        );
+    }
+
+    @Test
+    void warnsOnBroadCatchFallbackOutsideParserHelpers() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("Worker.java"), """
+                package com.example.demo;
+
+                class Worker {
+                    String loadValue() {
+                        try {
+                            return work();
+                        } catch (Exception ignored) {
+                            return "";
+                        }
+                    }
+
+                    String work() {
+                        return "ok";
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).anyMatch(finding ->
+                FindingRules.SPRING_SWALLOWED_EXCEPTION_FALLBACK.ruleId().equals(finding.ruleId())
+                        && finding.severity() == FindingSeverity.WARNING
+                        && finding.evidence() != null
+                        && finding.evidence().contains("return \"\"")
+                        && "com.example.demo.Worker#loadValue".equals(finding.target())
+        );
+    }
+
+    @Test
+    void emitsRepeatedFallbackParsingPatternWhenParserFallbacksRepeat() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("ParserA.java"), """
+                package com.example.demo;
+
+                class ParserA {
+                    Integer parseAmount(String value) {
+                        try {
+                            return Integer.valueOf(value);
+                        } catch (NumberFormatException ignored) {
+                            return null;
+                        }
+                    }
+                }
+                """);
+        Files.writeString(sourceRoot.resolve("ParserB.java"), """
+                package com.example.demo;
+
+                class ParserB {
+                    Integer parseCount(String value) {
+                        try {
+                            return Integer.valueOf(value);
+                        } catch (NumberFormatException ignored) {
+                            return null;
+                        }
+                    }
+                }
+                """);
+        Files.writeString(sourceRoot.resolve("ParserC.java"), """
+                package com.example.demo;
+
+                class ParserC {
+                    Integer parseLimit(String value) {
+                        try {
+                            return Integer.valueOf(value);
+                        } catch (NumberFormatException ignored) {
+                            return null;
+                        }
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).anyMatch(finding ->
+                FindingRules.SPRING_REPEATED_FALLBACK_PARSING_PATTERN.ruleId().equals(finding.ruleId())
+                        && finding.category() == FindingCategory.MAINTAINABILITY
+                        && finding.severity() == FindingSeverity.INFO
+                        && finding.message() != null
+                        && finding.message().contains("Similar parse/fallback exception handling appears in multiple classes")
         );
     }
 

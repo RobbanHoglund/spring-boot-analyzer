@@ -145,6 +145,46 @@ class RuntimeStackAnalyzerTest {
                 .doesNotContain("No strong runtime stack signal");
     }
 
+    @Test
+    void ignoresScheduledMarkersInsideCommentsAndStrings() throws IOException {
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("Notes.java"), """
+                package com.example.demo;
+
+                class Notes {
+                    String marker = "@Scheduled";
+
+                    void document() {
+                        // @EnableScheduling is mentioned here as documentation only.
+                        String text = "Do not trigger @Scheduled detection from strings.";
+                    }
+                }
+                """);
+
+        BuildInfo buildInfo = new BuildInfo(
+                BuildTool.GRADLE,
+                true,
+                "25",
+                List.of("org.springframework.boot:spring-boot-starter"),
+                "3.5.13",
+                "Gradle plugins",
+                "HIGH"
+        );
+
+        var result = analyzer.analyze(
+                tempDir,
+                buildInfo,
+                GradleModelAnalysis.empty(GradleAnalysisStatus.NOT_REQUESTED, "SYSTEM_GRADLE", List.of()),
+                new ConfigurationAnalysis(List.of(), List.of(), List.of(), List.of(), new ConfigurationSummary(0, 0, 0, 0, 0, 0, List.of("default"))),
+                List.of(),
+                List.of("com.example.demo.DemoApplication")
+        );
+
+        assertThat(result.runtimeStackAnalysis().virtualThreads().scheduledWorkDetected()).isFalse();
+        assertThat(result.runtimeStackAnalysis().virtualThreads().evidence())
+                .noneMatch(item -> item.contains("@Scheduled") || item.contains("@EnableScheduling"));
+    }
+
     private ApplicationProperty property(String name, String value) {
         return new ApplicationProperty(
                 name,

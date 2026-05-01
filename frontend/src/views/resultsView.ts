@@ -1,4 +1,6 @@
 ﻿import { element } from '../dom';
+import { tokenizeJavaLines } from '../code/javaHighlighter';
+import { expandSnippetHighlightRanges } from '../code/highlightRanges';
 import type {
   ActuatorEndpointExposure,
   AnalyzeRepositoryResponse,
@@ -6,6 +8,7 @@ import type {
   ConfiguredUrl,
   DetectedClass,
   Finding,
+  FindingOccurrence,
   GradleConfigurationModel,
   GradleDependencyConflict,
   GradleDependencyModel,
@@ -25,10 +28,13 @@ import type {
   GradleSourceSetModel,
   GradleTaskModel,
   HttpSurfaceAnalysis,
+  HighlightRange,
   InboundEndpoint,
   OutboundEndpoint,
   PropertyReference,
-  RuntimeStackAnalysis
+  RuntimeStackAnalysis,
+  SourceLocation,
+  SourceSnippetResponse
 } from '../types';
 
 const FINDING_SEVERITIES = ['ALL', 'ERROR', 'WARNING', 'INFO'] as const;
@@ -83,15 +89,24 @@ const COMPONENT_TYPES = [
 ] as const;
 
 type SortDirection = 'asc' | 'desc';
+type SectionChipTone = 'default' | 'info' | 'warning' | 'success';
+type SectionChip = {
+  text: string;
+  tone?: SectionChipTone;
+};
 type PresentedFinding = {
   severity: string;
+  title: string;
   ruleType: string;
   target: string;
   location: string;
+  locationShort: string;
   message: string;
+  summary: string;
   category: string;
   confidence: string;
   runtimeDetection: string;
+  heuristic: boolean;
   finding: Finding;
 };
 
@@ -99,6 +114,33 @@ type GroupedPresentedFinding = PresentedFinding & {
   occurrences: number;
   items: PresentedFinding[];
 };
+
+export interface FindingCodeOccurrence {
+  key: string;
+  label: string;
+  summary: string;
+  location: SourceLocation;
+  highlightRanges: HighlightRange[];
+}
+
+export interface CodeSnippetModalState {
+  open: boolean;
+  title: string;
+  summary: string;
+  ruleType: string;
+  target: string;
+  severity: string;
+  category: string;
+  confidence: string;
+  runtimeDetection: string;
+  analysisId: string | null;
+  occurrences: FindingCodeOccurrence[];
+  selectedOccurrenceIndex: number;
+  snippet: SourceSnippetResponse | null;
+  loading: boolean;
+  errorMessage: string;
+  returnFocusId: string | null;
+}
 
 export interface TableSortState {
   key: string;
@@ -140,6 +182,7 @@ export interface ResultsViewState {
   httpOutboundExpanded: boolean;
   httpConfiguredExpanded: boolean;
   httpActuatorExpanded: boolean;
+  codeModal: CodeSnippetModalState;
 }
 
 export interface ResultsViewActions {
@@ -177,6 +220,9 @@ export interface ResultsViewActions {
   onToggleHttpOutboundExpanded: () => void;
   onToggleHttpConfiguredExpanded: () => void;
   onToggleHttpActuatorExpanded: () => void;
+  onOpenFindingCode: (finding: Finding, groupedFindings: Finding[], triggerId: string, selectedOccurrenceIndex?: number) => void;
+  onCloseFindingCode: () => void;
+  onSelectFindingCodeOccurrence: (index: number) => void;
 }
 
 export function renderResultsView(
@@ -206,6 +252,7 @@ export function renderResultsView(
 
   panel.appendChild(renderSectionJumpNav());
   panel.appendChild(renderProjectSection(result));
+  panel.appendChild(renderResultsOverviewBlock(result));
   panel.appendChild(renderRuntimeStackSection(result));
   panel.appendChild(renderFindingsSection(result.findings ?? [], state, actions));
   panel.appendChild(renderHttpSurfaceSection(result.httpSurfaceAnalysis, state, actions));
@@ -215,11 +262,18 @@ export function renderResultsView(
   panel.appendChild(renderDependenciesSection(result, state, actions));
   panel.appendChild(renderBuildModelSection(result.gradleModelAnalysis));
   panel.appendChild(renderRawJsonSection(result, state, actions));
+  if (state.codeModal.open) {
+    panel.appendChild(renderCodeSnippetModal(state.codeModal, actions));
+  }
   return panel;
 }
 
 function renderProjectSection(result: AnalyzeRepositoryResponse): HTMLElement {
-  const section = resultsSection('Project', 'results-project');
+  const section = resultsSection(
+    'Project',
+    'results-project',
+    'Repository source, branch selection, and analyzer workspace identity for this run.'
+  );
   const block = element('div', { className: 'project-summary-card project-summary-card-compact' });
   const rows = element('div', { className: 'project-summary-grid project-summary-grid-compact' });
   rows.appendChild(summaryValueRow('Repository URL', result.repositoryUrl ?? 'Unknown', true));
@@ -230,6 +284,141 @@ function renderProjectSection(result: AnalyzeRepositoryResponse): HTMLElement {
   return section;
 }
 
+function renderResultsOverviewBlock(result: AnalyzeRepositoryResponse): HTMLElement {
+  const wrapper = element('section', { className: 'results-overview-block' });
+  const grid = element('div', { className: 'results-overview-grid' });
+  grid.append(
+    renderTopConcernsCard(result),
+    renderSecurityPostureCard(result),
+    renderPersistenceSummaryCard(result)
+  );
+  wrapper.appendChild(grid);
+  const toolingNote = toolingProjectNote(result);
+  if (toolingNote) {
+    wrapper.appendChild(
+      element('div', {
+        className: 'empty-note overview-empty-note',
+        text: toolingNote
+      })
+    );
+  }
+  return wrapper;
+}
+
+function toolingProjectNote(result: AnalyzeRepositoryResponse): string | null {
+  const repositoryText = `${result.repositoryUrl ?? ''} ${result.workspaceId ?? ''}`.toLowerCase();
+  const componentSignals = (result.detectedComponents ?? [])
+    .map((component) => componentDisplayName(component).toLowerCase());
+  const sourceSignals = (result.findings ?? [])
+    .map((finding) => `${finding.sourceFile ?? ''} ${finding.target ?? ''}`.toLowerCase());
+  const matches = [
+    repositoryText,
+    ...componentSignals,
+    ...sourceSignals
+  ].filter((value) =>
+    value.includes('analyzer')
+    || value.includes('scanner')
+    || value.includes('parser')
+    || value.includes('gradlemodel')
+    || value.includes('staticpracticefindinganalyzer')
+  ).length;
+  if (matches < 2) {
+    return null;
+  }
+  return 'This repository appears to be an analyzer or tooling application. Some parser and fallback findings may be intentional robustness decisions; review them with that context in mind.';
+}
+
+function topConcernGroups(findings: Finding[]): GroupedPresentedFinding[] {
+  const merged = new Map<string, PresentedFinding[]>();
+  for (const group of groupFindings(findings)) {
+    const key = topConcernKey(group);
+    const bucket = merged.get(key) ?? [];
+    bucket.push(...group.items);
+    merged.set(key, bucket);
+  }
+
+  return [...merged.entries()]
+    .map(([, bucket]) => {
+      const representative = chooseFindingGroupRepresentative(bucket);
+      const uniqueTargets = uniqueValues(bucket.map((item) => item.target).filter((value) => value && value !== '—'));
+      const target = uniqueTargets.length <= 1
+        ? (uniqueTargets[0] ?? representative.target)
+        : groupedTargetSummary(representative, uniqueTargets.length);
+      return {
+        severity: representative.severity,
+        title: representative.title,
+        category: representative.category,
+        confidence: representative.confidence,
+        runtimeDetection: representative.runtimeDetection,
+        heuristic: representative.heuristic,
+        ruleType: representative.ruleType,
+        target,
+        message: representative.message,
+        summary: representative.summary,
+        location: representative.location,
+        locationShort: middleEllipsis(representative.location, 56),
+        occurrences: bucket.length,
+        items: bucket,
+        finding: representative.finding
+      };
+    })
+    .filter((finding) => finding.severity === 'ERROR' || finding.severity === 'WARNING')
+    .sort((left, right) => {
+      const priority = topConcernPriority(left) - topConcernPriority(right);
+      if (priority !== 0) {
+        return priority;
+      }
+      const severity = findingPriority(left.severity, ['ERROR', 'WARNING', 'INFO'])
+        - findingPriority(right.severity, ['ERROR', 'WARNING', 'INFO']);
+      if (severity !== 0) {
+        return severity;
+      }
+      if (left.occurrences !== right.occurrences) {
+        return right.occurrences - left.occurrences;
+      }
+      const confidence = findingPriority(left.confidence, ['High', 'Medium', 'Low'])
+        - findingPriority(right.confidence, ['High', 'Medium', 'Low']);
+      if (confidence !== 0) {
+        return confidence;
+      }
+      return compareValues(left.title, right.title, 'asc');
+    });
+}
+
+function topConcernKey(finding: GroupedPresentedFinding): string {
+  const ruleId = (finding.finding.ruleId ?? '').trim();
+  if (ruleId) {
+    return ruleId;
+  }
+  return normalizeGroupingText(finding.title || finding.ruleType);
+}
+
+function topConcernPriority(finding: GroupedPresentedFinding): number {
+  const ruleId = (finding.finding.ruleId ?? '').trim();
+  if (ruleId === 'SPRING_RAW_EXCEPTION_MESSAGE_HTTP') {
+    return 1;
+  }
+  if (ruleId === 'SPRING_SECRET_LITERAL' || ruleId === 'SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT') {
+    return 2;
+  }
+  if (ruleId === 'SPRING_RISKY_PROD_CONFIG' || finding.category === 'Actuator') {
+    return 3;
+  }
+  if (ruleId === 'JAVA_EMPTY_CATCH_BLOCK') {
+    return 4;
+  }
+  if (ruleId === 'SPRING_SWALLOWED_EXCEPTION_FALLBACK') {
+    return 5;
+  }
+  if (ruleId === 'SPRING_BROAD_EXCEPTION_HANDLER') {
+    return 6;
+  }
+  if (ruleId === 'CONFIG_CODE_REFERENCE_MISSING') {
+    return 7;
+  }
+  return 20;
+}
+
 function renderRuntimeStackSection(result: AnalyzeRepositoryResponse): HTMLElement {
   const runtime = result.runtimeStackAnalysis ?? {};
   const gradleModel = result.gradleModelAnalysis;
@@ -237,7 +426,16 @@ function renderRuntimeStackSection(result: AnalyzeRepositoryResponse): HTMLEleme
   const configSummary = result.configurationAnalysis?.summary ?? {};
   const findings = result.findings ?? [];
   const detectedComponents = result.detectedComponents ?? [];
-  const section = resultsSection('Runtime and stack', 'results-runtime');
+  const section = resultsSection(
+    'Runtime and stack',
+    'results-runtime',
+    'Detected Java, Spring Boot, web stack, runtime capabilities, and dependency model.',
+    [
+      sectionChip(runtime.springBootVersion ? `Spring Boot ${runtime.springBootVersion}` : 'Spring Boot unknown'),
+      sectionChip(webStackLabel(runtime.webStack)),
+      sectionChip(dependencyModelLabel(gradleModel), 'info')
+    ]
+  );
   section.appendChild(
     renderRuntimePillars([
       {
@@ -313,7 +511,7 @@ function renderRuntimeStackSection(result: AnalyzeRepositoryResponse): HTMLEleme
   const findingsMeta = summarizeFindings(findings);
   const metrics: Array<{ label: string; value: string; meta?: string | null; warning?: boolean }> = [
     { label: 'Inbound endpoints', value: String(httpSummary.inboundEndpointCount ?? 0) },
-    { label: 'Outbound endpoints', value: String(httpSummary.outboundEndpointCount ?? 0) },
+    { label: 'Outbound calls', value: String(httpSummary.outboundEndpointCount ?? 0) },
     { label: 'Components', value: String(detectedComponents.length) },
     {
       label: 'Configured properties',
@@ -335,6 +533,7 @@ function renderRuntimeStackSection(result: AnalyzeRepositoryResponse): HTMLEleme
 
   overview.append(stackPanel, metricsPanel);
   section.appendChild(overview);
+  section.appendChild(renderJavaModelCard(result));
   return section;
 }
 
@@ -366,12 +565,152 @@ function renderRuntimePillars(
   return grid;
 }
 
+function renderTopConcernsCard(result: AnalyzeRepositoryResponse): HTMLElement {
+  const findings = result.findings ?? [];
+  const concerns = topConcernGroups(findings).slice(0, 5);
+  const card = summaryInsightCard(
+    'Top concerns',
+    'Highest-value static findings to review first before diving into the full details.'
+  );
+  if (concerns.length === 0) {
+    card.appendChild(
+      element('div', {
+        className: 'empty-note success-note overview-empty-note',
+        text: 'No major concerns detected. The analyzer did not find any warning-level or error-level issues in this run.'
+      })
+    );
+    return card;
+  }
+  const list = element('ol', { className: 'top-concern-list' });
+  concerns.forEach((concern) => {
+    const item = element('li', { className: 'top-concern-item' });
+    const link = element('a', {
+      className: 'top-concern-link',
+      text: concern.title,
+      attributes: {
+        href: '#results-findings',
+        title: concern.summary || concern.message
+      }
+    });
+    item.append(
+      link,
+      element('div', {
+        className: 'top-concern-summary',
+        text: concern.summary || concern.message
+      }),
+      element(
+        'div',
+        { className: 'top-concern-meta' },
+        element('span', { className: `badge badge-${concern.severity.toLowerCase()}`, text: concern.severity }),
+        element('span', { className: 'badge badge-category', text: concern.category }),
+        element('span', { className: 'badge badge-runtime', text: concern.runtimeDetection }),
+        concern.occurrences > 1
+          ? element('span', { className: 'finding-summary-count', text: `${concern.occurrences} occurrences` })
+          : null
+      )
+    );
+    list.appendChild(item);
+  });
+  card.appendChild(list);
+  return card;
+}
+
+function renderSecurityPostureCard(result: AnalyzeRepositoryResponse): HTMLElement {
+  const findings = result.findings ?? [];
+  const dependencies = collectDependencyNotations(result);
+  const inboundCount = result.httpSurfaceAnalysis?.summary?.inboundEndpointCount
+    ?? (result.httpSurfaceAnalysis?.inboundEndpoints ?? []).length;
+  const actuatorExposureCount = result.httpSurfaceAnalysis?.summary?.actuatorExposureCount
+    ?? (result.httpSurfaceAnalysis?.actuatorExposures ?? []).length;
+  const securityPresent = dependencies.some((dependency) =>
+    dependency.includes('spring-boot-starter-security') || dependency.includes('org.springframework.security')
+  );
+  const securityConfigDetected = (result.detectedComponents ?? []).some((component) => {
+    const name = componentDisplayName(component).toLowerCase();
+    const annotations = (component.annotationNames ?? component.annotations ?? []).map((value) => value.toLowerCase());
+    return name.includes('security')
+      || annotations.some((value) => value.includes('enablewebsecurity') || value.includes('securityfilterchain'));
+  });
+  const sensitiveValues = result.configurationAnalysis?.summary?.sensitiveValueCount
+    ?? findings.filter((finding) => finding.ruleId === 'SPRING_SECRET_LITERAL').length;
+  const weakSecretDefaults = findings.filter((finding) => finding.ruleId === 'SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT').length;
+  const rawExceptionExposures = findings.filter((finding) => finding.ruleId === 'SPRING_RAW_EXCEPTION_MESSAGE_HTTP').length;
+  const healthDetailsExposed = findings.some((finding) =>
+    finding.ruleId === 'SPRING_RISKY_PROD_CONFIG'
+      && (finding.target === 'management.endpoint.health.show-details'
+        || defaultText(finding.evidence).includes('management.endpoint.health.show-details'))
+  );
+
+  const card = summaryInsightCard(
+    'Security posture',
+    'Static signals about security dependencies, exposed surfaces, and sensitive configuration handling.'
+  );
+  const list = element('div', { className: 'detail-card detail-card-compact overview-detail-list' });
+  [
+    ['Spring Security', securityPresent ? 'Present' : 'Not detected'],
+    ['Security configuration', securityConfigDetected ? 'Detected' : 'Not confirmed statically'],
+    ['Inbound endpoints', String(inboundCount)],
+    ['Actuator exposures', actuatorExposureCount > 0 ? String(actuatorExposureCount) : '0 detected'],
+    ['Sensitive values redacted', `${sensitiveValues}`],
+    ['Weak secret defaults', String(weakSecretDefaults)],
+    ['Raw exception responses', String(rawExceptionExposures)],
+    ['Health details exposure', healthDetailsExposed ? 'Review needed' : 'Not detected'],
+    ['Endpoint authorization model', 'Not confirmed statically']
+  ].forEach(([label, value]) => list.appendChild(renderDetailRow(label, value)));
+  card.appendChild(list);
+  return card;
+}
+
+function renderPersistenceSummaryCard(result: AnalyzeRepositoryResponse): HTMLElement {
+  const findings = result.findings ?? [];
+  const dependencies = collectDependencyNotations(result);
+  const repositories = (result.detectedComponents ?? []).filter((component) => normalizeComponentType(component) === 'REPOSITORY');
+  const runtimeDatabase = inferDatabaseSignal(result, ['default', 'prod', 'production', 'staging']);
+  const testDatabase = inferDatabaseSignal(result, ['test']);
+  const persistenceStyle = inferPersistenceStyle(dependencies);
+  const flywayPresent = dependencies.some((dependency) => dependency.includes('org.flywaydb:flyway-core'))
+    || (result.gradleModelAnalysis?.pluginDeclarations ?? []).some((plugin) => plugin.pluginId === 'org.flywaydb.flyway')
+    || (result.gradleModelAnalysis?.plugins ?? []).some((plugin) => defaultText(plugin.pluginId).includes('flyway'));
+  const persistencePresent = persistenceStyle !== 'Not confirmed statically'
+    || repositories.length > 0
+    || runtimeDatabase !== null
+    || testDatabase !== null
+    || flywayPresent;
+  const transactionConcerns = findings.filter((finding) => normalizeFindingCategory(finding.category) === 'TRANSACTION').length;
+
+  const card = summaryInsightCard(
+    'Persistence',
+    'Detected persistence stack, database signals, schema tooling, and transaction-related review points.'
+  );
+  const list = element('div', { className: 'detail-card detail-card-compact overview-detail-list' });
+  [
+    ['Persistence style', persistencePresent ? persistenceStyle : 'Not confirmed statically'],
+    ['Runtime database', runtimeDatabase ?? 'Not confirmed statically'],
+    ['Test database', testDatabase ?? 'Not confirmed statically'],
+    ['Flyway', flywayPresent ? 'Present' : 'Not detected'],
+    ['Repositories', String(repositories.length)],
+    [persistencePresent ? 'Transaction concerns' : 'Potential consistency concerns', String(transactionConcerns)]
+  ].forEach(([label, value]) => list.appendChild(renderDetailRow(label, value)));
+  card.appendChild(list);
+  return card;
+}
+
 function renderFindingsSection(
   findings: Finding[],
   state: ResultsViewState,
   actions: ResultsViewActions
 ): HTMLElement {
-  const section = resultsSection(`Findings (${findings.length})`, 'results-findings');
+  const warningCount = findings.filter((finding) => normalizeSeverity(finding.severity) === 'WARNING').length;
+  const staticOnlyCount = findings.filter((finding) => normalizeRuntimeDetection(finding.runtimeDetection) === 'NOT_NORMALLY_DETECTED').length;
+  const section = resultsSection(
+    `Findings (${findings.length})`,
+    'results-findings',
+    'Prioritized static findings from configuration, code patterns, HTTP usage, and profile drift.',
+    [
+      sectionChip(`${warningCount} warnings`, warningCount > 0 ? 'warning' : 'default'),
+      sectionChip(`${staticOnlyCount} detected statically`, 'info')
+    ]
+  );
   if (findings.length === 0) {
     section.appendChild(
       element('div', { className: 'empty-note success-note', text: 'No issues detected by the current checks.' })
@@ -386,15 +725,15 @@ function renderFindingsSection(
     { label: 'Warnings', value: findings.filter((finding) => normalizeSeverity(finding.severity) === 'WARNING').length, className: 'severity-warning' },
     { label: 'Info', value: findings.filter((finding) => normalizeSeverity(finding.severity) === 'INFO').length, className: 'severity-info' },
     {
-      label: 'Static-only findings',
+      label: 'Detected statically',
       value: findings.filter((finding) => normalizeRuntimeDetection(finding.runtimeDetection) === 'NOT_NORMALLY_DETECTED').length
     },
     {
-      label: 'Active-profile runtime may detect',
+      label: 'Depends on active profile',
       value: findings.filter((finding) => normalizeRuntimeDetection(finding.runtimeDetection) === 'ACTIVE_PROFILE_RUNTIME_MAY_DETECT').length
     },
     {
-      label: 'Runtime required',
+      label: 'Requires runtime verification',
       value: findings.filter((finding) => normalizeRuntimeDetection(finding.runtimeDetection) === 'RUNTIME_REQUIRED').length
     }
   ];
@@ -510,10 +849,9 @@ function renderFindingsSection(
   const table = createTable([
     sortableHeader('Severity', 'severity', state.findingsSort, actions.onSetFindingsSort),
     'Category',
-    'Confidence',
-    'Runtime detection',
-    sortableHeader('Rule / Target', 'rule', state.findingsSort, actions.onSetFindingsSort),
-    sortableHeader('Message', 'message', state.findingsSort, actions.onSetFindingsSort)
+    sortableHeader('Finding', 'rule', state.findingsSort, actions.onSetFindingsSort),
+    sortableHeader('Location', 'location', state.findingsSort, actions.onSetFindingsSort),
+    'Actions'
   ], 'findings-table');
   const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
   for (const derived of visible) {
@@ -521,20 +859,20 @@ function renderFindingsSection(
     const row = tbody.insertRow();
     row.className = 'data-row finding-summary-row';
     const detailsId = `finding-details-${Math.random().toString(36).slice(2, 10)}`;
+    const codeButtonId = createFindingCodeButtonId(groupedFinding ?? derived);
     appendCells(row, [
       badgeCell(derived.severity, `badge badge-${derived.severity.toLowerCase()}`),
       badgeCell(derived.category, 'badge badge-category'),
-      badgeCell(derived.confidence, 'badge badge-confidence'),
-      badgeCell(derived.runtimeDetection, 'badge badge-runtime'),
-      truncateCell(`${derived.ruleType}${derived.target && derived.target !== '—' ? ` — ${derived.target}` : ''}`, 'cell-wrap-two'),
-      findingSummaryCell(groupedFinding ?? derived, detailsId)
+      findingSummaryCell(groupedFinding ?? derived, detailsId),
+      findingLocationCell(groupedFinding ?? derived),
+      findingActionsCell(groupedFinding ?? derived, detailsId, codeButtonId)
     ]);
     const detailsRow = tbody.insertRow();
     detailsRow.className = 'details-row finding-details-row';
     detailsRow.hidden = true;
     const detailsCell = detailsRow.insertCell();
-    detailsCell.colSpan = 6;
-    detailsCell.appendChild(renderFindingDetailsCard(groupedFinding ?? derived, detailsId));
+    detailsCell.colSpan = 5;
+    detailsCell.appendChild(renderFindingDetailsCard(groupedFinding ?? derived, detailsId, actions));
 
     const expandButton = row.querySelector('.finding-expand-button') as HTMLButtonElement | null;
     if (expandButton) {
@@ -543,6 +881,17 @@ function renderFindingsSection(
         detailsRow.hidden = !expanded;
         expandButton.textContent = expanded ? 'Hide details' : 'Show details';
         expandButton.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+      });
+    }
+    const codeButton = row.querySelector('.finding-code-button') as HTMLButtonElement | null;
+    if (codeButton) {
+      codeButton.addEventListener('click', () => {
+        actions.onOpenFindingCode(
+          groupedFinding ? groupedFinding.finding : derived.finding,
+          groupedFinding ? groupedFinding.items.map((item) => item.finding) : [derived.finding],
+          codeButtonId,
+          0
+        );
       });
     }
   }
@@ -571,7 +920,16 @@ function renderHttpSurfaceSection(
   const actuator = analysis.actuatorExposures ?? [];
   const summary = analysis.summary ?? {};
 
-  const section = resultsSection('HTTP surface', 'results-http');
+  const section = resultsSection(
+    'HTTP surface',
+    'results-http',
+    'Inbound routes, outbound calls, configured service URLs, and actuator exposure signals detected statically.',
+    [
+      sectionChip(`${summary.inboundEndpointCount ?? inbound.length} inbound`),
+      sectionChip(`${summary.outboundEndpointCount ?? outbound.length} outbound`, 'info'),
+      sectionChip(`${summary.actuatorExposureCount ?? actuator.length} actuator`, actuator.length > 0 ? 'warning' : 'default')
+    ]
+  );
   const cards = element('div', { className: 'summary-grid runtime-grid' });
   for (const [label, value] of [
     ['Inbound endpoints', String(summary.inboundEndpointCount ?? inbound.length)],
@@ -790,7 +1148,17 @@ function renderConfigurationSection(
   const properties = analysis.properties ?? [];
   const files = analysis.files ?? [];
   const summary = analysis.summary ?? {};
-  const section = resultsSection('Configuration', 'results-configuration');
+  const profiles = uniqueValues(properties.map((property) => property.profile ?? 'default'));
+  const section = resultsSection(
+    'Configuration',
+    'results-configuration',
+    'Configured properties, profile comparison, Spring Boot metadata matches, and code-referenced configuration signals.',
+    [
+      sectionChip(`${properties.length} properties`),
+      sectionChip(`${summary.sensitiveValueCount ?? 0} sensitive redacted`, (summary.sensitiveValueCount ?? 0) > 0 ? 'warning' : 'default'),
+      sectionChip(`${(summary.profiles ?? profiles).length} profiles`, 'info')
+    ]
+  );
 
   const cards = element('div', { className: 'summary-grid runtime-grid' });
   for (const [label, value] of [
@@ -817,8 +1185,6 @@ function renderConfigurationSection(
     section.appendChild(element('div', { className: 'empty-note', text: 'No application configuration files or property references were detected.' }));
     return section;
   }
-
-  const profiles = uniqueValues(properties.map((property) => property.profile ?? 'default'));
   const sourceFiles = uniqueValues(properties.map((property) => property.sourceFile));
 
   const primaryControls = element('div', { className: 'filter-row compact-filter-row configuration-primary-filters' });
@@ -958,66 +1324,77 @@ function renderConfigurationSection(
 }
 
 function renderSpringApiUsageSection(result: AnalyzeRepositoryResponse): HTMLElement {
-  const section = resultsSection('Spring API usage', 'results-spring-api');
-  const groups = new Map<string, string[]>();
-  const add = (category: string, value: string) => {
-    const items = groups.get(category) ?? [];
-    if (!items.includes(value)) {
-      items.push(value);
-    }
-    groups.set(category, items);
-  };
+  const section = resultsSection(
+    'Spring API usage',
+    'results-spring-api',
+    'Detected Spring Boot starters, likely auto-configuration signals, and framework APIs used by the application.'
+  );
+  const starters = detectSpringBootStarters(result);
+  const autoConfigurations = inferLikelyAutoConfigurations(result, starters);
+  const apiSignals = detectSpringApiSignals(result);
 
-  if ((result.mainApplicationClasses ?? []).length > 0) {
-    add('Bootstrap', '@SpringBootApplication');
-    add('Bootstrap', 'SpringApplication.run (inferred)');
-  }
-  if ((result.configurationAnalysis?.configurationPropertiesClasses ?? []).length > 0) {
-    add('Configuration', '@ConfigurationProperties');
-  }
-  if ((result.configurationAnalysis?.codeReferences ?? []).some((reference) => reference.referenceType === '@ConditionalOnProperty')) {
-    add('Configuration', '@ConditionalOnProperty');
-  }
-  if ((result.configurationAnalysis?.codeReferences ?? []).some((reference) => reference.referenceType === '@Scheduled')) {
-    add('Scheduling', '@Scheduled');
-  }
-  if ((result.detectedComponents ?? []).some((component) => component.componentType === 'REST_CONTROLLER')) {
-    add('Web', '@RestController');
-  }
-  if ((result.detectedComponents ?? []).some((component) => (component.annotationNames ?? []).includes('RequestMapping'))) {
-    add('Web', '@RequestMapping');
-  }
-  if ((result.detectedComponents ?? []).some((component) => component.componentType === 'REPOSITORY')) {
-    add('Persistence', '@Repository');
-  }
-  if ((result.dependencies ?? []).some((dependency) => dependency.includes('spring-boot-starter-actuator'))) {
-    add('Actuator', 'spring-boot-starter-actuator');
-  }
-  if ((result.detectedComponents ?? []).some((component) => (component.annotationNames ?? []).includes('EnableScheduling'))) {
-    add('Scheduling', '@EnableScheduling');
-  }
-
-  if (groups.size === 0) {
+  if (starters.length === 0 && autoConfigurations.length === 0 && apiSignals.length === 0) {
     section.appendChild(element('p', { className: 'muted-text', text: 'No Spring API usage patterns were detected.' }));
     return section;
   }
 
-  const grid = element('div', { className: 'summary-grid runtime-grid' });
-  for (const category of ['Bootstrap', 'Web', 'Configuration', 'Scheduling', 'Persistence', 'Actuator']) {
-    const values = groups.get(category);
-    if (!values?.length) {
-      continue;
+  if (starters.length > 0) {
+    section.appendChild(element('h4', { text: `Detected Spring Boot starters (${starters.length})` }));
+    const starterGrid = element('div', { className: 'summary-grid runtime-grid starter-grid' });
+    for (const starter of starters) {
+      starterGrid.appendChild(
+        element(
+          'div',
+          { className: 'summary-card compact-summary-card starter-card' },
+          element('div', { className: 'summary-label', text: starter.artifact }),
+          element('div', { className: 'summary-value', text: starter.label }),
+          element('div', { className: 'compact-card-meta', text: starter.description })
+        )
+      );
     }
-    grid.appendChild(
+    section.appendChild(starterGrid);
+  }
+
+  if (autoConfigurations.length > 0) {
+    section.appendChild(element('h4', { text: 'Likely auto-configurations' }));
+    const configGrid = element('div', { className: 'summary-grid runtime-grid' });
+    for (const configuration of autoConfigurations) {
+      configGrid.appendChild(
+        element(
+          'div',
+          { className: 'summary-card compact-summary-card' },
+          element('div', { className: 'summary-value', text: configuration })
+        )
+      );
+    }
+    section.appendChild(configGrid);
+    section.appendChild(
       element(
         'div',
-        { className: 'summary-card compact-summary-card' },
-        element('div', { className: 'summary-label', text: category }),
-        element('div', { className: 'summary-value', text: values.join(', ') })
+        { className: 'empty-note' },
+        element('p', {
+          className: 'muted-text',
+          text: 'Static analysis can infer likely auto-configurations, but active runtime conditions may differ by profile, classpath, and environment.'
+        })
       )
     );
   }
-  section.appendChild(grid);
+
+  if (apiSignals.length > 0) {
+    section.appendChild(element('h4', { text: 'Detected Spring API signals' }));
+    const grid = element('div', { className: 'summary-grid runtime-grid' });
+    for (const signal of apiSignals) {
+      grid.appendChild(
+        element(
+          'div',
+          { className: 'summary-card compact-summary-card' },
+          element('div', { className: 'summary-label', text: signal.category }),
+          element('div', { className: 'summary-value', text: signal.values.join(', ') })
+        )
+      );
+    }
+    section.appendChild(grid);
+  }
   return section;
 }
 
@@ -1026,7 +1403,12 @@ function renderComponentsSection(
   state: ResultsViewState,
   actions: ResultsViewActions
 ): HTMLElement {
-  const section = resultsSection(`Components (${components.length})`, 'results-components');
+  const section = resultsSection(
+    `Components (${components.length})`,
+    'results-components',
+    'Detected Spring components, configuration classes, repositories, entities, and application entry points.',
+    [sectionChip(`${components.length} detected`, 'info')]
+  );
   const grouped = groupComponents(components);
   if (grouped.size > 0) {
     const summary = element('div', { className: 'stat-grid compact' });
@@ -1128,7 +1510,12 @@ function renderDependenciesSection(
   const resolutionResults = gradleModel?.resolutionResults ?? [];
   const dependencyBearingResults = dependencyBearingGradleResolutionResults(gradleModel);
   const configurationOptions = uniqueValues(successfulResolvedDependencies.map((dependency) => dependency.configuration));
-  const section = resultsSection('Dependencies', 'results-dependencies');
+  const section = resultsSection(
+    'Dependencies',
+    'results-dependencies',
+    'Declared and resolved dependency information, managed stack versions, and dependency-resolution signals.',
+    [sectionChip(dependencyModelLabel(gradleModel), 'info')]
+  );
   const successfulResolutionResults = dependencyBearingResults.filter(
     (item) => item.attempted && item.successful && (item.resolvedDependencyCount ?? 0) > 0
   );
@@ -1196,6 +1583,26 @@ function renderDependenciesSection(
     section.appendChild(managedStack);
   }
 
+  const needle = state.dependencyText.trim().toLowerCase();
+  const declared = (gradleModel?.declaredDependencies ?? []).filter((dependency) =>
+    !needle || [dependency.projectPath, dependency.configuration, dependency.notation]
+      .filter((value): value is string => Boolean(value))
+      .join(' ')
+      .toLowerCase()
+      .includes(needle)
+  );
+  const resolved = successfulResolvedDependencies.filter((dependency) =>
+    (state.resolvedDependencyConfiguration === 'ALL' || (dependency.configuration ?? '') === state.resolvedDependencyConfiguration)
+      && (!state.resolvedDependencyDirectOnly || Boolean(dependency.direct))
+      && (!needle || [dependency.projectPath, dependency.configuration, dependency.group, dependency.artifact, dependency.version, dependency.selectedReason, selectedReasonSummary(dependency)]
+      .filter((value): value is string => Boolean(value))
+      .join(' ')
+      .toLowerCase()
+      .includes(needle))
+  );
+  const filtered = dependencies.filter((dependency) => dependency.toLowerCase().includes(needle));
+  section.appendChild(renderDependencyInsights(result, declared, resolved, failedResolutionResults));
+
   const controls = element('div', { className: 'filter-row compact-filter-row' });
   controls.append(
     labeledInlineField('Search', textInput(state.dependencyText, 'Filter dependencies', actions.onDependencyTextChange)),
@@ -1213,24 +1620,6 @@ function renderDependenciesSection(
     )
   );
   section.appendChild(controls);
-  const needle = state.dependencyText.trim().toLowerCase();
-  const resolved = successfulResolvedDependencies.filter((dependency) =>
-    (state.resolvedDependencyConfiguration === 'ALL' || (dependency.configuration ?? '') === state.resolvedDependencyConfiguration)
-      && (!state.resolvedDependencyDirectOnly || Boolean(dependency.direct))
-      && (!needle || [dependency.projectPath, dependency.configuration, dependency.group, dependency.artifact, dependency.version, dependency.selectedReason, selectedReasonSummary(dependency)]
-      .filter((value): value is string => Boolean(value))
-      .join(' ')
-      .toLowerCase()
-      .includes(needle))
-  );
-  const declared = (gradleModel?.declaredDependencies ?? []).filter((dependency) =>
-    !needle || [dependency.projectPath, dependency.configuration, dependency.notation]
-      .filter((value): value is string => Boolean(value))
-      .join(' ')
-      .toLowerCase()
-      .includes(needle)
-  );
-  const filtered = dependencies.filter((dependency) => dependency.toLowerCase().includes(needle));
   if (filtered.length === 0 && resolved.length === 0 && declared.length === 0) {
     section.appendChild(element('p', { className: 'muted-text', text: 'No dependencies match the current filter.' }));
     return section;
@@ -1258,8 +1647,33 @@ function renderDependenciesSection(
     );
   }
 
+  if (declared.length > 0) {
+    section.appendChild(element('h4', { text: 'Declared dependencies' }));
+    const table = createTable(['Project', 'Configuration', 'Notation', 'Source'], 'dependencies-table');
+    const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
+    for (const dependency of declared.slice(0, 50)) {
+      const row = tbody.insertRow();
+      row.className = 'data-row';
+      appendCells(row, [
+        truncateCell(dependency.projectPath ?? '—'),
+        truncateCell(dependency.configuration ?? '—'),
+        truncateCell(dependency.notation ?? '—'),
+        truncateCell('Gradle model')
+      ]);
+    }
+    section.appendChild(wrapTable(table));
+  }
+
   if (resolved.length > 0) {
-    section.appendChild(element('h4', { text: 'Resolved dependencies' }));
+    const details = element('details', { className: 'subsection-block advanced-details-block' });
+    details.appendChild(element('summary', { text: `Advanced resolved dependency graph (${resolved.length})` }));
+    const inner = element('div', { className: 'subsection-block-inner' });
+    inner.appendChild(
+      element('p', {
+        className: 'muted-text',
+        text: 'Resolved dependencies are kept available for deep inspection, but collapsed by default because transitive graphs are usually much noisier than declared dependencies.'
+      })
+    );
     const table = createTable([
       'Project',
       'Configuration',
@@ -1287,28 +1701,15 @@ function renderDependenciesSection(
         )
       ]);
     }
-    section.appendChild(wrapTable(table));
-  }
-
-  if (declared.length > 0) {
-    section.appendChild(element('h4', { text: 'Declared dependencies' }));
-    const table = createTable(['Project', 'Configuration', 'Notation', 'Source'], 'dependencies-table');
-    const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
-    for (const dependency of declared.slice(0, 50)) {
-      const row = tbody.insertRow();
-      row.className = 'data-row';
-      appendCells(row, [
-        truncateCell(dependency.projectPath ?? '—'),
-        truncateCell(dependency.configuration ?? '—'),
-        truncateCell(dependency.notation ?? '—'),
-        truncateCell('Gradle model')
-      ]);
-    }
-    section.appendChild(wrapTable(table));
+    inner.appendChild(wrapTable(table));
+    details.appendChild(inner);
+    section.appendChild(details);
   }
 
   if (resolutionResults.length > 0) {
-    section.appendChild(element('h4', { text: 'Resolution results' }));
+    const details = element('details', { className: 'subsection-block advanced-details-block' });
+    details.appendChild(element('summary', { text: `Resolution results (${resolutionResults.length})` }));
+    const inner = element('div', { className: 'subsection-block-inner' });
     const table = createTable(
       ['Project', 'Configuration', 'Status', 'Fallback', 'Resolved count', 'Error'],
       'dependencies-table'
@@ -1326,11 +1727,15 @@ function renderDependenciesSection(
         truncateCell(resultItem.errorMessage ?? '—', 'cell-wrap-two')
       ]);
     }
-    section.appendChild(wrapTable(table));
+    inner.appendChild(wrapTable(table));
+    details.appendChild(inner);
+    section.appendChild(details);
   }
 
   if ((gradleModel?.dependencyConflicts ?? []).length > 0) {
-    section.appendChild(element('h4', { text: 'Dependency conflicts' }));
+    const details = element('details', { className: 'subsection-block advanced-details-block' });
+    details.appendChild(element('summary', { text: `Dependency conflicts (${(gradleModel?.dependencyConflicts ?? []).length})` }));
+    const inner = element('div', { className: 'subsection-block-inner' });
     const table = createTable(['Project', 'Configuration', 'Module', 'Requested', 'Selected'], 'dependencies-table');
     const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
     for (const conflict of (gradleModel?.dependencyConflicts ?? []).slice(0, 50)) {
@@ -1344,7 +1749,9 @@ function renderDependenciesSection(
         truncateCell(conflict.selectedVersion ?? '—')
       ]);
     }
-    section.appendChild(wrapTable(table));
+    inner.appendChild(wrapTable(table));
+    details.appendChild(inner);
+    section.appendChild(details);
   }
 
   if (resolved.length === 0 && declared.length === 0 && filtered.length > 0) {
@@ -1390,7 +1797,12 @@ function renderRawJsonSection(
 }
 
 function renderBuildModelSection(gradleModel: GradleModelAnalysis | undefined): HTMLElement {
-  const section = resultsSection('Build model', 'results-build-model');
+  const section = resultsSection(
+    'Build model',
+    'results-build-model',
+    'Gradle model collection status, plugins, configurations, source sets, and analyzer execution details.',
+    gradleModel ? [sectionChip(gradleModelSummaryLabel(gradleModel), gradleModel.status === 'SUCCESS' || gradleModel.status === 'SUCCESS_WITH_WORKAROUND' ? 'success' : 'warning')] : undefined
+  );
   if (!gradleModel || gradleModel.status === 'NOT_REQUESTED') {
     section.appendChild(
       element(
@@ -1436,6 +1848,7 @@ function renderBuildModelSection(gradleModel: GradleModelAnalysis | undefined): 
   for (const [label, value] of [
     ['Status', gradleModel.status ?? 'Unknown'],
     ['Gradle version', gradleModel.gradleVersion ?? 'Unknown'],
+    ['Java version', gradleModel.javaVersion ?? 'Unknown'],
     ['Projects', String((gradleModel.projects ?? []).length)],
     ['Declared dependencies', String((gradleModel.declaredDependencies ?? []).length)],
     ['Resolved entries', String(successfulResolvedDependencies.length)],
@@ -1550,9 +1963,31 @@ function renderBuildModelSection(gradleModel: GradleModelAnalysis | undefined): 
     );
   }
 
+  const visibleAppliedPlugins = filterVisibleAppliedPlugins(gradleModel.plugins ?? []);
+  const highlightCards = element('div', { className: 'summary-grid runtime-grid build-highlight-grid' });
+  highlightCards.append(
+    buildCompactSummaryCard('User-relevant plugins', visibleAppliedPlugins.map((plugin) => plugin.pluginId ?? plugin.implementationClass ?? 'Unknown').slice(0, 4).join(', ') || 'None'),
+    buildCompactSummaryCard('Source sets', (gradleModel.sourceSets ?? []).map((item) => item.name ?? 'unknown').slice(0, 4).join(', ') || 'None'),
+    buildCompactSummaryCard('Java toolchain', summarizeJavaToolchain(gradleModel.javaToolchains ?? [])),
+    buildCompactSummaryCard('Repositories', repositories.slice(0, 3).map((item) => normalizedRepositoryName(item)).join(', ') || 'None')
+  );
+  section.appendChild(highlightCards);
+
+  if ((gradleModel.findings ?? []).length > 0) {
+    const list = element('ul', { className: 'simple-list' });
+    for (const finding of gradleModel.findings ?? []) {
+      list.appendChild(element('li', { className: 'muted-text', text: finding.message ?? 'Gradle model finding' }));
+    }
+    section.appendChild(list);
+  }
+
+  const advanced = element('details', { className: 'subsection-block build-model-details advanced-details-block' });
+  advanced.appendChild(element('summary', { text: 'Advanced Gradle internals' }));
+  const advancedInner = element('div', { className: 'subsection-block-inner' });
+
   if (repositories.length > 0) {
     appendBuildModelDetailsTable(
-      section,
+      advancedInner,
       'Repositories',
       ['Project', 'Name', 'Type', 'URL'],
       repositories.slice(0, 50),
@@ -1566,8 +2001,8 @@ function renderBuildModelSection(gradleModel: GradleModelAnalysis | undefined): 
   }
 
   if ((gradleModel.pluginDeclarations ?? []).length > 0) {
-    appendBuildModelTable(
-      section,
+    appendBuildModelDetailsTable(
+      advancedInner,
       'Declared plugins',
       ['Plugin ID', 'Version', 'Source', 'Prefetched', 'Implementation'],
       (gradleModel.pluginDeclarations ?? []).slice(0, 50),
@@ -1587,8 +2022,8 @@ function renderBuildModelSection(gradleModel: GradleModelAnalysis | undefined): 
   }
 
   if (resolutionResults.length > 0) {
-    appendBuildModelTable(
-      section,
+    appendBuildModelDetailsTable(
+      advancedInner,
       'Configuration resolution results',
       ['Project', 'Configuration', 'Status', 'Fallback', 'Resolved count', 'Error'],
       resolutionResults.slice(0, 50),
@@ -1604,8 +2039,8 @@ function renderBuildModelSection(gradleModel: GradleModelAnalysis | undefined): 
   }
 
   if ((bridgeFailures ?? []).length > 0) {
-    appendBuildModelTable(
-      section,
+    appendBuildModelDetailsTable(
+      advancedInner,
       'Plugin bridge failures',
       ['Plugin ID', 'Version', 'Source', 'Marker', 'Implementation', 'Message'],
       bridgeFailures.slice(0, 25),
@@ -1620,9 +2055,8 @@ function renderBuildModelSection(gradleModel: GradleModelAnalysis | undefined): 
     );
   }
 
-  const visibleAppliedPlugins = filterVisibleAppliedPlugins(gradleModel.plugins ?? []);
   if (visibleAppliedPlugins.length > 0) {
-    appendBuildModelDetailsTable(section, 'Applied plugins', ['Project', 'Plugin', 'Implementation'], visibleAppliedPlugins.slice(0, 25), (item: GradlePluginModel) => [
+    appendBuildModelDetailsTable(advancedInner, 'Applied plugins', ['Project', 'Plugin', 'Implementation'], visibleAppliedPlugins.slice(0, 25), (item: GradlePluginModel) => [
       truncateCell(item.projectPath ?? '—'),
       truncateCell(item.pluginId ?? '—'),
       truncateCell(item.implementationClass ?? '—')
@@ -1630,21 +2064,16 @@ function renderBuildModelSection(gradleModel: GradleModelAnalysis | undefined): 
   }
   const hiddenAppliedPlugins = (gradleModel.plugins ?? []).filter((item) => !visibleAppliedPlugins.includes(item));
   if (hiddenAppliedPlugins.length > 0) {
-    const details = element('details', { className: 'subsection-block build-model-details' });
-    details.appendChild(element('summary', { text: `Show all applied plugins (${(gradleModel.plugins ?? []).length})` }));
-    const inner = element('div', { className: 'subsection-block-inner' });
-    appendBuildModelTable(inner, 'All applied plugins', ['Project', 'Plugin', 'Implementation'], (gradleModel.plugins ?? []).slice(0, 50), (item: GradlePluginModel) => [
+    appendBuildModelDetailsTable(advancedInner, 'All applied plugins', ['Project', 'Plugin', 'Implementation'], (gradleModel.plugins ?? []).slice(0, 50), (item: GradlePluginModel) => [
       truncateCell(item.projectPath ?? '—'),
       truncateCell(item.pluginId ?? '—'),
       truncateCell(item.implementationClass ?? '—')
     ]);
-    details.appendChild(inner);
-    section.appendChild(details);
   }
 
   if ((gradleModel.settingsPlugins ?? []).length > 0) {
     appendBuildModelDetailsTable(
-      section,
+      advancedInner,
       'Settings plugins',
       ['Plugin ID', 'Version', 'Source'],
       (gradleModel.settingsPlugins ?? []).slice(0, 25),
@@ -1655,15 +2084,8 @@ function renderBuildModelSection(gradleModel: GradleModelAnalysis | undefined): 
       ]
     );
   }
-  if ((gradleModel.findings ?? []).length > 0) {
-    const list = element('ul', { className: 'simple-list' });
-    for (const finding of gradleModel.findings ?? []) {
-      list.appendChild(element('li', { className: 'muted-text', text: finding.message ?? 'Gradle model finding' }));
-    }
-    section.appendChild(list);
-  }
 
-  appendBuildModelDetailsTable(section, 'Configurations', ['Project', 'Configuration', 'Resolvable', 'Consumable', 'Declared', 'All', 'Extends from'], (gradleModel.configurations ?? []).slice(0, 25), (item: GradleConfigurationModel) => [
+  appendBuildModelDetailsTable(advancedInner, 'Configurations', ['Project', 'Configuration', 'Resolvable', 'Consumable', 'Declared', 'All', 'Extends from'], (gradleModel.configurations ?? []).slice(0, 25), (item: GradleConfigurationModel) => [
     truncateCell(item.projectPath ?? '—'),
     truncateCell(item.name ?? '—'),
     truncateCell(String(item.resolvable ?? false)),
@@ -1672,31 +2094,34 @@ function renderBuildModelSection(gradleModel: GradleModelAnalysis | undefined): 
     truncateCell(String(item.allDependencyCount ?? item.dependencyCount ?? 0)),
     truncateCell((item.extendsFrom ?? []).join(', ') || '—')
   ]);
-  appendBuildModelDetailsTable(section, 'Source sets', ['Project', 'Source set', 'Java dirs', 'Resource dirs'], (gradleModel.sourceSets ?? []).slice(0, 25), (item: GradleSourceSetModel) => [
+  appendBuildModelDetailsTable(advancedInner, 'Source sets', ['Project', 'Source set', 'Java dirs', 'Resource dirs'], (gradleModel.sourceSets ?? []).slice(0, 25), (item: GradleSourceSetModel) => [
     truncateCell(item.projectPath ?? '—'),
     truncateCell(item.name ?? '—'),
     truncateCell((item.javaDirs ?? []).join(', ') || '—'),
     truncateCell((item.resourceDirs ?? []).join(', ') || '—')
   ]);
-  appendBuildModelDetailsTable(section, 'Java toolchains', ['Project', 'Language', 'Vendor', 'Implementation'], (gradleModel.javaToolchains ?? []).slice(0, 25), (item: GradleJavaToolchainModel) => [
+  appendBuildModelDetailsTable(advancedInner, 'Java toolchains', ['Project', 'Language', 'Vendor', 'Implementation'], (gradleModel.javaToolchains ?? []).slice(0, 25), (item: GradleJavaToolchainModel) => [
     truncateCell(item.projectPath ?? '—'),
     truncateCell(item.languageVersion ?? '—'),
     truncateCell(item.vendor ?? '—'),
     truncateCell(item.implementation ?? '—')
   ]);
-  appendBuildModelTable(section, 'Dependency conflicts', ['Project', 'Configuration', 'Module', 'Requested', 'Selected'], (gradleModel.dependencyConflicts ?? []).slice(0, 25), (item: GradleDependencyConflict) => [
+  appendBuildModelDetailsTable(advancedInner, 'Dependency conflicts', ['Project', 'Configuration', 'Module', 'Requested', 'Selected'], (gradleModel.dependencyConflicts ?? []).slice(0, 25), (item: GradleDependencyConflict) => [
     truncateCell(item.projectPath ?? '—'),
     truncateCell(item.configuration ?? '—'),
     truncateCell(`${item.group ?? ''}:${item.artifact ?? ''}`),
     truncateCell(item.requestedVersions ?? '—'),
     truncateCell(item.selectedVersion ?? '—')
   ]);
-  appendBuildModelDetailsTable(section, 'Tasks', ['Project', 'Task', 'Group', 'Description'], (gradleModel.tasks ?? []).slice(0, 25), (item: GradleTaskModel) => [
+  appendBuildModelDetailsTable(advancedInner, 'Tasks', ['Project', 'Task', 'Group', 'Description'], (gradleModel.tasks ?? []).slice(0, 25), (item: GradleTaskModel) => [
     truncateCell(item.projectPath ?? '—'),
     truncateCell(item.name ?? '—'),
     truncateCell(item.group ?? '—'),
     truncateCell(item.description ?? '—')
   ]);
+
+  advanced.appendChild(advancedInner);
+  section.appendChild(advanced);
   return section;
 }
 
@@ -1933,12 +2358,367 @@ function renderResultsHeader(status?: {
   return header;
 }
 
-function resultsSection(title: string, id?: string): HTMLElement {
-  return element('section', { className: 'results-section', attributes: id ? { id } : undefined }, element('h3', { text: title }));
+function resultsSection(title: string, id?: string, description?: string, chips: SectionChip[] = []): HTMLElement {
+  const section = element('section', { className: 'results-section', attributes: id ? { id } : undefined });
+  const header = element('div', { className: 'results-section-header' });
+  const copy = element('div', { className: 'results-section-copy' });
+  copy.appendChild(element('h3', { className: 'results-section-title', text: title }));
+  if (description?.trim()) {
+    copy.appendChild(element('p', { className: 'results-section-description', text: description.trim() }));
+  }
+  header.appendChild(copy);
+  if (chips.length > 0) {
+    const chipRow = element('div', { className: 'results-section-chips' });
+    chips.forEach((chip) => chipRow.appendChild(sectionChipElement(chip)));
+    header.appendChild(chipRow);
+  }
+  section.appendChild(header);
+  return section;
+}
+
+function summaryInsightCard(title: string, description: string): HTMLElement {
+  return element(
+    'div',
+    { className: 'summary-card insight-summary-card' },
+    element('div', { className: 'summary-value insight-summary-title', text: title }),
+    element('div', { className: 'compact-card-meta insight-summary-description', text: description })
+  );
+}
+
+function renderDetailRow(label: string, value: string): HTMLElement {
+  return element(
+    'div',
+    { className: 'detail-row overview-detail-row' },
+    element('div', { className: 'detail-label', text: label }),
+    element('div', { className: 'detail-value property-detail-value', text: value })
+  );
+}
+
+function sectionChip(text: string, tone: SectionChipTone = 'default'): SectionChip {
+  return { text, tone };
+}
+
+function sectionChipElement(chip: SectionChip): HTMLElement {
+  const toneClass = chip.tone && chip.tone !== 'default' ? ` status-chip-${chip.tone}` : '';
+  return element('span', { className: `status-chip${toneClass}`.trim(), text: chip.text });
+}
+
+function buildCompactSummaryCard(label: string, value: string, meta?: string | null): HTMLElement {
+  return element(
+    'div',
+    { className: 'summary-card compact-summary-card' },
+    element('div', { className: 'summary-label', text: label }),
+    element('div', { className: 'summary-value', text: value }),
+    meta ? element('div', { className: 'compact-card-meta', text: meta }) : null
+  );
 }
 
 function wrapTable(table: HTMLTableElement): HTMLElement {
   return element('div', { className: 'data-table-wrapper' }, table);
+}
+
+function renderJavaModelCard(result: AnalyzeRepositoryResponse): HTMLElement {
+  const runtime = result.runtimeStackAnalysis ?? {};
+  const gradleModel = result.gradleModelAnalysis;
+  const toolchainVersions = uniqueValues((gradleModel?.javaToolchains ?? []).map((toolchain) => toolchain.languageVersion));
+  const detectedJava = runtime.javaVersion ?? result.javaVersionHint ?? gradleModel?.javaVersion ?? 'Unknown';
+  const previewDetected = false;
+  const card = element(
+    'div',
+    { className: 'detail-card java-model-card' },
+    element('div', { className: 'subsection-title', text: 'Java model' }),
+    element('div', { className: 'compact-card-meta', text: 'Static Java/runtime/build compatibility signals from source and Gradle metadata.' })
+  );
+  const grid = element('div', { className: 'property-detail-grid' });
+  [
+    ['Detected Java', detectedJava],
+    ['Toolchain language version', toolchainVersions.join(', ') || 'Not confirmed statically'],
+    ['Source compatibility', 'Not explicitly configured'],
+    ['Target compatibility', 'Not explicitly configured'],
+    ['Preview features', previewDetected ? 'Detected' : 'Not detected'],
+    ['Virtual threads', virtualThreadLabel(runtime)],
+    ['Compatibility note', springBootCompatibilityNote(result)]
+  ].forEach(([label, value]) => grid.appendChild(propertyDetailItem(label, value)));
+  card.appendChild(grid);
+  return card;
+}
+
+function renderDependencyInsights(
+  result: AnalyzeRepositoryResponse,
+  declared: GradleDependencyModel[],
+  resolved: GradleResolvedDependencyModel[],
+  failedResolutionResults: GradleResolutionResult[]
+): HTMLElement {
+  const explicitVersions = declared.filter((dependency) => Boolean(dependency.version?.trim()));
+  const duplicateMajorVersions = countDuplicateMajorVersions(resolved);
+  const conflicts = result.gradleModelAnalysis?.dependencyConflicts ?? [];
+  const card = element(
+    'div',
+    { className: 'empty-note dependency-insights-card' },
+    element('div', { className: 'subsection-title', text: 'Dependency insights' })
+  );
+  const grid = element('div', { className: 'property-detail-grid' });
+  [
+    ['Dependency conflicts', String(conflicts.length)],
+    ['Explicit declared versions', String(explicitVersions.length)],
+    ['Unresolved configurations', String(failedResolutionResults.length)],
+    ['Duplicate major versions', String(duplicateMajorVersions)]
+  ].forEach(([label, value]) => grid.appendChild(propertyDetailItem(label, value)));
+  card.appendChild(grid);
+  if (explicitVersions.length > 0) {
+    card.appendChild(
+      element('p', {
+        className: 'muted-text',
+        text: `Declared dependencies with explicit versions include ${explicitVersions.slice(0, 4).map((dependency) => dependency.notation ?? `${dependency.group ?? ''}:${dependency.artifact ?? ''}:${dependency.version ?? ''}`).join(', ')}${explicitVersions.length > 4 ? ', ...' : ''}.`
+      })
+    );
+  }
+  return card;
+}
+
+function detectSpringBootStarters(
+  result: AnalyzeRepositoryResponse
+): Array<{ artifact: string; label: string; description: string }> {
+  const dependencies = collectDependencyNotations(result);
+  const starters = [
+    ['spring-boot-starter-web', 'Spring MVC + embedded servlet container', 'Servlet-based web stack and MVC auto-configuration are likely available.'],
+    ['spring-boot-starter-webflux', 'Spring WebFlux + reactive stack', 'Reactive HTTP stack and WebFlux auto-configuration are likely available.'],
+    ['spring-boot-starter-security', 'Spring Security auto-configuration likely active', 'Security filter chain and related security auto-configuration are likely on the classpath.'],
+    ['spring-boot-starter-actuator', 'Operational endpoints available', 'Actuator endpoints and operational diagnostics are likely available.'],
+    ['spring-boot-starter-jdbc', 'DataSource/JdbcTemplate stack available', 'JDBC access, DataSource configuration, and JdbcTemplate support are likely available.'],
+    ['spring-boot-starter-data-jpa', 'Spring Data JPA stack available', 'JPA repositories, entity management, and Hibernate integration are likely available.'],
+    ['spring-boot-starter-validation', 'Jakarta Bean Validation available', 'Bean validation APIs are likely available for configuration and request validation.'],
+    ['spring-boot-starter-test', 'Spring Boot test support', 'Spring Boot test slices and testing support are available in the project.']
+  ] as Array<[string, string, string]>;
+  return starters
+    .filter(([artifact]) => dependencies.some((dependency) => dependency.includes(artifact)))
+    .map(([artifact, label, description]) => ({ artifact, label, description }));
+}
+
+function inferLikelyAutoConfigurations(
+  result: AnalyzeRepositoryResponse,
+  starters: Array<{ artifact: string; label: string; description: string }>
+): string[] {
+  const dependencies = collectDependencyNotations(result);
+  const configurations = new Set<string>();
+  const starterArtifacts = new Set(starters.map((starter) => starter.artifact));
+  if (starterArtifacts.has('spring-boot-starter-web') || result.runtimeStackAnalysis?.webStack === 'SERVLET_MVC') {
+    configurations.add('WebMvcAutoConfiguration');
+  }
+  if (starterArtifacts.has('spring-boot-starter-webflux') || result.runtimeStackAnalysis?.webStack === 'REACTIVE_WEBFLUX') {
+    configurations.add('WebFluxAutoConfiguration');
+  }
+  if (starterArtifacts.has('spring-boot-starter-web') || starterArtifacts.has('spring-boot-starter-webflux') || dependencies.some((dependency) => dependency.includes('jackson-databind'))) {
+    configurations.add('JacksonAutoConfiguration');
+  }
+  if (starterArtifacts.has('spring-boot-starter-security')) {
+    configurations.add('SecurityAutoConfiguration');
+  }
+  if (starterArtifacts.has('spring-boot-starter-jdbc') || starterArtifacts.has('spring-boot-starter-data-jpa') || dependencies.some((dependency) => dependency.includes('com.zaxxer:HikariCP'))) {
+    configurations.add('DataSourceAutoConfiguration');
+    configurations.add('JdbcTemplateAutoConfiguration');
+  }
+  if (starterArtifacts.has('spring-boot-starter-data-jpa')) {
+    configurations.add('HibernateJpaAutoConfiguration');
+  }
+  if (dependencies.some((dependency) => dependency.includes('org.flywaydb:flyway-core'))) {
+    configurations.add('FlywayAutoConfiguration');
+  }
+  if (starterArtifacts.has('spring-boot-starter-actuator')) {
+    configurations.add('EndpointAutoConfiguration');
+    configurations.add('HealthEndpointAutoConfiguration');
+  }
+  return [...configurations];
+}
+
+function detectSpringApiSignals(
+  result: AnalyzeRepositoryResponse
+): Array<{ category: string; values: string[] }> {
+  const groups = new Map<string, string[]>();
+  const add = (category: string, value: string) => {
+    const items = groups.get(category) ?? [];
+    if (!items.includes(value)) {
+      items.push(value);
+    }
+    groups.set(category, items);
+  };
+  if ((result.mainApplicationClasses ?? []).length > 0) {
+    add('Bootstrap', '@SpringBootApplication');
+    add('Bootstrap', 'SpringApplication.run (inferred)');
+  }
+  if ((result.configurationAnalysis?.configurationPropertiesClasses ?? []).length > 0) {
+    add('Configuration', '@ConfigurationProperties');
+  }
+  if ((result.configurationAnalysis?.codeReferences ?? []).some((reference) => reference.referenceType === '@ConditionalOnProperty')) {
+    add('Configuration', '@ConditionalOnProperty');
+  }
+  if ((result.configurationAnalysis?.codeReferences ?? []).some((reference) => reference.referenceType === '@Scheduled')) {
+    add('Scheduling', '@Scheduled');
+  }
+  if ((result.detectedComponents ?? []).some((component) => component.componentType === 'REST_CONTROLLER')) {
+    add('Web', '@RestController');
+  }
+  if ((result.detectedComponents ?? []).some((component) => (component.annotationNames ?? []).includes('RequestMapping'))) {
+    add('Web', '@RequestMapping');
+  }
+  if ((result.detectedComponents ?? []).some((component) => component.componentType === 'REPOSITORY')) {
+    add('Persistence', '@Repository');
+  }
+  if ((result.detectedComponents ?? []).some((component) => (component.annotationNames ?? []).includes('EnableScheduling'))) {
+    add('Scheduling', '@EnableScheduling');
+  }
+  return ['Bootstrap', 'Web', 'Configuration', 'Scheduling', 'Persistence', 'Actuator']
+    .map((category) => ({ category, values: groups.get(category) ?? [] }))
+    .filter((entry) => entry.values.length > 0);
+}
+
+function collectDependencyNotations(result: AnalyzeRepositoryResponse): string[] {
+  const collected = new Set<string>();
+  (result.dependencies ?? []).forEach((dependency) => collected.add(dependency));
+  (result.gradleModelAnalysis?.declaredDependencies ?? []).forEach((dependency) => {
+    const notation = dependency.notation?.trim()
+      || [dependency.group, dependency.artifact, dependency.version].filter((value) => Boolean(value?.trim())).join(':');
+    if (notation) {
+      collected.add(notation);
+    }
+  });
+  successfulResolvedGradleDependencies(result.gradleModelAnalysis).forEach((dependency) => {
+    const notation = [dependency.group, dependency.artifact, dependency.version]
+      .filter((value) => Boolean(value?.trim()))
+      .join(':');
+    if (notation) {
+      collected.add(notation);
+    }
+  });
+  return [...collected];
+}
+
+function inferPersistenceStyle(dependencies: string[]): string {
+  const hasJpa = dependencies.some((dependency) => dependency.includes('spring-boot-starter-data-jpa'));
+  const hasJdbc = dependencies.some((dependency) => dependency.includes('spring-boot-starter-jdbc'));
+  const hasR2dbc = dependencies.some((dependency) => dependency.includes('spring-boot-starter-data-r2dbc') || dependency.includes(':r2dbc-'));
+  if (hasJpa && hasJdbc) {
+    return 'JPA + JDBC';
+  }
+  if (hasJpa) {
+    return 'JPA';
+  }
+  if (hasJdbc) {
+    return 'JDBC';
+  }
+  if (hasR2dbc) {
+    return 'R2DBC';
+  }
+  return 'Not confirmed statically';
+}
+
+function inferDatabaseSignal(result: AnalyzeRepositoryResponse, profiles: string[]): string | null {
+  const properties = result.configurationAnalysis?.properties ?? [];
+  const matchingProperties = properties.filter((property) => profiles.includes(normalizedProfile(property.profile ?? 'default')));
+  const datasourceProperty = matchingProperties.find((property) => property.name === 'spring.datasource.url');
+  const driverProperty = matchingProperties.find((property) => property.name === 'spring.datasource.driver-class-name');
+  const values = [datasourceProperty?.value ?? null, driverProperty?.value ?? null];
+  for (const value of values) {
+    const inferred = inferDatabaseNameFromValue(value);
+    if (inferred) {
+      return inferred;
+    }
+  }
+  const dependencies = collectDependencyNotations(result);
+  const fromDependency = inferDatabaseNameFromDependencies(dependencies, profiles.includes('test'));
+  return fromDependency;
+}
+
+function inferDatabaseNameFromValue(value: string | null): string | null {
+  const normalized = defaultText(value).toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (normalized.includes('postgresql')) {
+    return 'PostgreSQL (inferred)';
+  }
+  if (normalized.includes('h2')) {
+    return 'H2 (inferred)';
+  }
+  if (normalized.includes('mysql')) {
+    return 'MySQL (inferred)';
+  }
+  if (normalized.includes('mariadb')) {
+    return 'MariaDB (inferred)';
+  }
+  if (normalized.includes('sqlserver')) {
+    return 'SQL Server (inferred)';
+  }
+  if (normalized.includes('oracle')) {
+    return 'Oracle (inferred)';
+  }
+  return null;
+}
+
+function inferDatabaseNameFromDependencies(dependencies: string[], testProfile: boolean): string | null {
+  const checks: Array<[string, string]> = [
+    ['org.postgresql:postgresql', 'PostgreSQL (inferred)'],
+    ['com.h2database:h2', 'H2 (inferred)'],
+    ['mysql:mysql-connector', 'MySQL (inferred)'],
+    ['org.mariadb.jdbc:mariadb-java-client', 'MariaDB (inferred)'],
+    ['com.microsoft.sqlserver:mssql-jdbc', 'SQL Server (inferred)'],
+    ['com.oracle.database.jdbc', 'Oracle (inferred)']
+  ];
+  for (const [needle, label] of checks) {
+    if (dependencies.some((dependency) => dependency.includes(needle))) {
+      if (testProfile && !label.startsWith('H2')) {
+        continue;
+      }
+      return label;
+    }
+  }
+  return null;
+}
+
+function springBootCompatibilityNote(result: AnalyzeRepositoryResponse): string {
+  const boot = defaultText(result.runtimeStackAnalysis?.springBootVersion);
+  const javaVersion = defaultText(result.runtimeStackAnalysis?.javaVersion, result.javaVersionHint ?? undefined);
+  if (!boot || !javaVersion) {
+    return 'No obvious compatibility mismatch confirmed statically.';
+  }
+  const javaMajor = parseInt(javaVersion, 10);
+  if (!Number.isFinite(javaMajor)) {
+    return 'No obvious compatibility mismatch confirmed statically.';
+  }
+  if (boot.startsWith('3.') && javaMajor >= 17) {
+    return `Spring Boot ${boot} and Java ${javaVersion} do not show an obvious static compatibility mismatch. Verify production JVM and dependency support.`;
+  }
+  if (boot.startsWith('3.') && javaMajor < 17) {
+    return `Spring Boot ${boot} usually expects a newer Java baseline than ${javaVersion}. Review the build and runtime toolchain configuration.`;
+  }
+  return 'Verify the final production JVM and dependency compatibility for this Spring Boot / Java combination.';
+}
+
+function countDuplicateMajorVersions(resolved: GradleResolvedDependencyModel[]): number {
+  const versionsByModule = new Map<string, Set<string>>();
+  for (const dependency of resolved) {
+    const module = `${dependency.group ?? ''}:${dependency.artifact ?? ''}`;
+    const version = dependency.version ?? '';
+    if (!module.trim() || !version.trim()) {
+      continue;
+    }
+    const set = versionsByModule.get(module) ?? new Set<string>();
+    const major = version.split('.')[0];
+    if (major) {
+      set.add(major);
+      versionsByModule.set(module, set);
+    }
+  }
+  return [...versionsByModule.values()].filter((majors) => majors.size > 1).length;
+}
+
+function summarizeJavaToolchain(toolchains: GradleJavaToolchainModel[]): string {
+  const languages = uniqueValues(toolchains.map((toolchain) => toolchain.languageVersion));
+  if (languages.length === 0) {
+    return 'Not confirmed statically';
+  }
+  const vendors = uniqueValues(toolchains.map((toolchain) => toolchain.vendor));
+  return vendors.length > 0 ? `${languages.join(', ')} (${vendors.join(', ')})` : languages.join(', ');
 }
 
 function appendBuildModelTable<T>(
@@ -2055,63 +2835,138 @@ function outboundUrlCell(endpoint: OutboundEndpoint): HTMLTableCellElement {
   return cell;
 }
 
-function groupedFindingLocation(group: GroupedPresentedFinding): string {
-  const locations = [...new Set(group.items.map((item) => item.location).filter(Boolean))];
-  if (locations.length <= 1) {
-    return locations[0] ?? '—';
-  }
-  return `${locations[0]} (+${locations.length - 1} more)`;
-}
-
 function findingSummaryCell(
   finding: GroupedPresentedFinding | PresentedFinding,
-  detailsId: string
+  _detailsId: string
 ): HTMLTableCellElement {
   const cell = document.createElement('td');
-  cell.className = 'finding-summary-cell';
+  cell.className = 'finding-main-cell';
   const grouped = 'occurrences' in finding;
-  const summaryText = finding.message || 'No summary available';
-  const wrapper = element('div', { className: 'finding-summary-content' });
-  const copy = element('div', { className: 'finding-summary-copy' });
-  copy.appendChild(
+  const summaryText = finding.summary || finding.message || 'No summary available';
+  const wrapper = element('div', { className: 'finding-summary-block' });
+  wrapper.appendChild(
+    element('div', {
+      className: 'finding-summary-title cell-wrap-two',
+      text: finding.title || finding.ruleType,
+      attributes: { title: finding.title || finding.ruleType }
+    })
+  );
+  if (finding.target && finding.target !== '—') {
+    wrapper.appendChild(
+      element('div', {
+        className: 'finding-summary-target property-detail-value',
+        text: finding.target,
+        attributes: { title: finding.target }
+      })
+    );
+  }
+  wrapper.appendChild(
     element('div', {
       className: 'finding-summary-text cell-wrap-two',
       text: summaryText,
       attributes: { title: summaryText }
     })
   );
+  const meta = element('div', { className: 'finding-summary-meta-row' });
+  meta.append(
+    element('span', {
+      className: 'badge badge-confidence',
+      text: finding.confidence,
+      attributes: { title: `Confidence: ${finding.confidence}` }
+    }),
+    element('span', {
+      className: 'badge badge-runtime',
+      text: finding.runtimeDetection,
+      attributes: { title: `Runtime detection: ${finding.runtimeDetection}` }
+    })
+  );
   if (grouped && finding.occurrences > 1) {
-    copy.appendChild(
-      element('div', {
-        className: 'finding-summary-meta',
-        text: `(${finding.occurrences} occurrences)`
+    meta.appendChild(
+      element('span', {
+        className: 'finding-summary-count',
+        text: `${finding.occurrences} occurrences`
       })
     );
   }
-  const button = element('button', {
-    className: 'secondary-button finding-expand-button',
-    text: 'Show details',
-    attributes: {
-      type: 'button',
-      'aria-expanded': 'false',
-      'aria-controls': detailsId,
-      'aria-label': `Show details for ${finding.ruleType}${finding.target && finding.target !== '—' ? ` — ${finding.target}` : ''}`
-    }
-  });
-  wrapper.append(copy, button);
+  if (finding.heuristic) {
+    meta.appendChild(
+      element('span', {
+        className: 'badge badge-heuristic',
+        text: 'Review manually',
+        attributes: { title: 'This finding is heuristic and should be reviewed manually.' }
+      })
+    );
+  }
+  wrapper.appendChild(meta);
   cell.appendChild(wrapper);
   cell.title = grouped
-    ? finding.items.map((item) => `${item.location} — ${item.message}`).join('\n')
-    : `${finding.location} — ${finding.message}`;
+    ? finding.items.map((item) => `${item.location} — ${item.summary}`).join('\n')
+    : `${finding.location} — ${finding.summary}`;
+  return cell;
+}
+
+function findingLocationCell(finding: GroupedPresentedFinding | PresentedFinding): HTMLTableCellElement {
+  const cell = document.createElement('td');
+  cell.className = 'finding-location-cell';
+  const fullLocation = 'occurrences' in finding
+    ? uniqueValues(finding.items.map((item) => item.location)).join('; ')
+    : finding.location;
+  cell.appendChild(
+    element('div', {
+      className: 'cell-truncate finding-location-path',
+      text: finding.locationShort || finding.location || '—',
+      attributes: { title: fullLocation || '—' }
+    })
+  );
+  return cell;
+}
+
+function findingActionsCell(
+  finding: GroupedPresentedFinding | PresentedFinding,
+  detailsId: string,
+  codeButtonId: string
+): HTMLTableCellElement {
+  const cell = document.createElement('td');
+  cell.className = 'finding-actions-cell';
+  const actions = element('div', { className: 'finding-summary-actions' });
+  const hasRepresentativeCodeLocation = Boolean(primaryFindingLocation(finding.finding)?.filePath);
+  actions.appendChild(
+    element('button', {
+      className: 'secondary-button finding-row-action finding-expand-button',
+      text: 'Details',
+      attributes: {
+        type: 'button',
+        'aria-expanded': 'false',
+        'aria-controls': detailsId,
+        'aria-label': `Show details for ${finding.title || finding.ruleType}${finding.target && finding.target !== '—' ? ` — ${finding.target}` : ''}`
+      }
+    })
+  );
+  if (hasRepresentativeCodeLocation) {
+    actions.appendChild(
+      element('button', {
+        className: 'secondary-button finding-row-action finding-code-button',
+        text: 'View code',
+        attributes: {
+          id: codeButtonId,
+          type: 'button',
+          'aria-label': `View code for ${finding.title || finding.ruleType}${finding.target && finding.target !== '—' ? ` — ${finding.target}` : ''}`
+        }
+      })
+    );
+  }
+  cell.appendChild(actions);
   return cell;
 }
 
 function renderFindingDetailsCard(
   finding: GroupedPresentedFinding | PresentedFinding,
-  detailsId: string
+  detailsId: string,
+  actions: ResultsViewActions
 ): HTMLElement {
   const grouped = 'occurrences' in finding;
-  const primary = grouped ? finding.items[0] : finding;
+  const primary = finding;
+  const mixedSeverity = grouped && uniqueValues(finding.items.map((item) => item.severity)).length > 1;
   const card = element('div', {
     className: 'finding-detail-card',
     attributes: { id: detailsId }
@@ -2121,7 +2976,7 @@ function renderFindingDetailsCard(
   headerCopy.append(
     element('div', {
       className: 'finding-detail-title',
-      text: primary.finding.title?.trim() || primary.ruleType
+      text: primary.title || primary.finding.title?.trim() || primary.ruleType
     }),
     element('div', {
       className: 'finding-detail-subtitle',
@@ -2141,6 +2996,22 @@ function renderFindingDetailsCard(
   ] as Array<[string, string]>) {
     badgeRow.appendChild(element('span', { className, text }));
   }
+  if (mixedSeverity) {
+    badgeRow.appendChild(
+      element('span', {
+        className: 'badge badge-heuristic',
+        text: 'Mixed severity'
+      })
+    );
+  }
+  if (primary.heuristic) {
+    badgeRow.appendChild(
+      element('span', {
+        className: 'badge badge-heuristic',
+        text: 'Review manually'
+      })
+    );
+  }
   header.append(headerCopy, badgeRow);
   card.append(header, renderFindingExplanationSections(primary.finding));
 
@@ -2150,27 +3021,339 @@ function renderFindingDetailsCard(
       element('div', { className: 'property-detail-section-title', text: 'Occurrences' })
     );
     const list = element('ul', { className: 'simple-list compact-list finding-occurrence-list' });
-    for (const item of finding.items) {
-      list.appendChild(
-        element(
-          'li',
-          { className: 'finding-occurrence-item' },
-          element('div', {
-            className: 'property-detail-value',
-            text: item.location || '—'
-          }),
+    finding.items.forEach((item, index) => {
+      const occurrence = element('li', { className: 'finding-occurrence-item' });
+      const occurrenceCopy = element('div', { className: 'finding-occurrence-copy' });
+      occurrenceCopy.appendChild(
+        element('div', {
+          className: 'property-detail-value',
+          text: item.location || '—',
+          attributes: { title: item.location || '—' }
+        })
+      );
+      if (item.target && item.target !== '—') {
+        occurrenceCopy.appendChild(
           element('div', {
             className: 'muted-text',
-            text: item.message
+            text: item.target
           })
-        )
+        );
+      }
+      occurrenceCopy.appendChild(
+        element('div', {
+          className: 'muted-text',
+          text: `${item.severity} · ${item.confidence}`
+        })
       );
-    }
+      occurrenceCopy.appendChild(
+        element('div', {
+          className: 'muted-text',
+          text: item.summary
+        })
+      );
+      if (item.finding.evidence?.trim()) {
+        occurrenceCopy.appendChild(
+          element('div', {
+            className: 'muted-text finding-occurrence-evidence',
+            text: item.finding.evidence,
+            attributes: { title: item.finding.evidence }
+          })
+        );
+      }
+      occurrence.appendChild(occurrenceCopy);
+      if (hasFindingCodeLocation(item)) {
+        const occurrenceButtonId = `${createFindingCodeButtonId(item)}-${index}`;
+        const button = element('button', {
+          className: 'secondary-button finding-row-action finding-occurrence-code-button',
+          text: 'View code',
+          attributes: {
+            id: occurrenceButtonId,
+            type: 'button',
+            'aria-label': `View code for occurrence ${index + 1} of ${primary.title || primary.ruleType}`
+          }
+        });
+        button.addEventListener('click', () => {
+          actions.onOpenFindingCode(
+            primary.finding,
+            finding.items.map((entry) => entry.finding),
+            occurrenceButtonId,
+            index
+          );
+        });
+        occurrence.appendChild(button);
+      }
+      list.appendChild(occurrence);
+    });
     occurrenceSection.appendChild(list);
     card.appendChild(occurrenceSection);
   }
 
   return card;
+}
+
+function renderCodeSnippetModal(
+  modalState: CodeSnippetModalState,
+  actions: ResultsViewActions
+): HTMLElement {
+  const overlay = element('div', {
+    className: 'code-snippet-modal-overlay',
+    attributes: {
+      role: 'dialog',
+      'aria-modal': 'true',
+      'aria-labelledby': 'code-snippet-modal-title'
+    }
+  });
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) {
+      actions.onCloseFindingCode();
+    }
+  });
+  overlay.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      actions.onCloseFindingCode();
+    }
+  });
+
+  const modal = element('div', {
+    className: 'code-snippet-modal',
+    attributes: { tabindex: '-1' }
+  });
+  const currentOccurrence = modalState.occurrences[modalState.selectedOccurrenceIndex];
+
+  const closeButton = element('button', {
+    className: 'secondary-button modal-close-button',
+    text: 'Close',
+    attributes: {
+      id: 'code-snippet-modal-close',
+      type: 'button',
+      'aria-label': 'Close code snippet dialog'
+    }
+  });
+  closeButton.addEventListener('click', () => actions.onCloseFindingCode());
+
+  const header = element('div', { className: 'code-snippet-modal-header' });
+  const headerCopy = element('div', { className: 'code-snippet-modal-copy' });
+  headerCopy.appendChild(
+    element('div', {
+      className: 'code-snippet-modal-title',
+      text: modalState.title,
+      attributes: { id: 'code-snippet-modal-title' }
+    })
+  );
+  headerCopy.appendChild(
+    element('div', {
+      className: 'code-snippet-modal-subtitle property-detail-value',
+      text: currentOccurrence?.location?.filePath ?? 'Source unavailable'
+    })
+  );
+  headerCopy.appendChild(
+    element('div', {
+      className: 'code-snippet-modal-subtitle',
+      text: currentOccurrence?.location ? lineRangeLabel(currentOccurrence.location) : 'Line range: —'
+    })
+  );
+  if (currentOccurrence?.location?.symbol) {
+    headerCopy.appendChild(
+      element('div', {
+        className: 'code-snippet-modal-subtitle',
+        text: `Symbol: ${currentOccurrence.location.symbol}`
+      })
+    );
+  }
+
+  const badgeRow = element('div', { className: 'finding-detail-badges' });
+  for (const [text, className] of [
+    [modalState.severity, `badge badge-${modalState.severity.toLowerCase()}`],
+    [findingCategoryLabel(normalizeFindingCategory(modalState.category)), 'badge badge-category'],
+    [confidenceLabel(normalizeConfidence(modalState.confidence)), 'badge badge-confidence'],
+    [runtimeDetectionLabel(normalizeRuntimeDetection(modalState.runtimeDetection)), 'badge badge-runtime']
+  ] as Array<[string, string]>) {
+    badgeRow.appendChild(element('span', { className, text }));
+  }
+
+  const actionRow = element('div', { className: 'code-snippet-modal-actions' });
+  const copyPathButton = element('button', {
+    className: 'secondary-button',
+    text: 'Copy path',
+    attributes: { type: 'button' }
+  });
+  copyPathButton.addEventListener('click', async () => {
+    const path = currentOccurrence?.location?.filePath;
+    if (!path) {
+      return;
+    }
+    await navigator.clipboard.writeText(path);
+    copyPathButton.textContent = 'Copied';
+    window.setTimeout(() => {
+      copyPathButton.textContent = 'Copy path';
+    }, 1200);
+  });
+  actionRow.appendChild(copyPathButton);
+
+  const copySummaryButton = element('button', {
+    className: 'secondary-button',
+    text: 'Copy finding summary',
+    attributes: { type: 'button' }
+  });
+  copySummaryButton.addEventListener('click', async () => {
+    await navigator.clipboard.writeText(`${modalState.title}: ${modalState.summary}`);
+    copySummaryButton.textContent = 'Copied';
+    window.setTimeout(() => {
+      copySummaryButton.textContent = 'Copy finding summary';
+    }, 1200);
+  });
+  actionRow.appendChild(copySummaryButton);
+
+  const githubUrl = modalState.snippet?.githubUrl ?? currentOccurrence?.location?.githubUrl;
+  if (githubUrl) {
+    actionRow.appendChild(
+      element('a', {
+        className: 'secondary-button code-snippet-link-button',
+        text: 'Open in GitHub',
+        attributes: {
+          href: githubUrl,
+          target: '_blank',
+          rel: 'noreferrer noopener'
+        }
+      })
+    );
+  }
+  actionRow.appendChild(closeButton);
+
+  header.append(headerCopy, element('div', { className: 'code-snippet-modal-meta' }, badgeRow, actionRow));
+  modal.appendChild(header);
+
+  if (modalState.occurrences.length > 1) {
+    modal.appendChild(renderCodeOccurrenceSelector(modalState, actions));
+  }
+
+  if (modalState.loading) {
+    modal.appendChild(element('div', { className: 'code-snippet-status', text: 'Loading source snippet...' }));
+  } else if (modalState.errorMessage) {
+    modal.appendChild(element('div', { className: 'code-snippet-status error-note', text: modalState.errorMessage }));
+  } else if (modalState.snippet) {
+    modal.appendChild(renderCodeSnippetViewer(modalState.snippet));
+  }
+
+  overlay.appendChild(modal);
+  window.setTimeout(() => {
+    (document.getElementById('code-snippet-modal-close') as HTMLButtonElement | null)?.focus();
+  }, 0);
+  return overlay;
+}
+
+function renderCodeOccurrenceSelector(
+  modalState: CodeSnippetModalState,
+  actions: ResultsViewActions
+): HTMLElement {
+  const section = element('div', { className: 'code-occurrence-selector' });
+  section.appendChild(element('div', { className: 'property-detail-section-title', text: 'Occurrences' }));
+  const list = element('div', { className: 'code-occurrence-list' });
+  modalState.occurrences.forEach((occurrence, index) => {
+    const button = element('button', {
+      className: index === modalState.selectedOccurrenceIndex
+        ? 'code-occurrence-button active'
+        : 'code-occurrence-button',
+      attributes: {
+        type: 'button',
+        'aria-pressed': index === modalState.selectedOccurrenceIndex ? 'true' : 'false'
+      }
+    });
+    button.append(
+      element('div', {
+        className: 'property-detail-value',
+        text: occurrence.location.filePath ?? 'Source unavailable'
+      }),
+      element('div', {
+        className: 'muted-text',
+        text: lineRangeLabel(occurrence.location)
+      }),
+      element('div', {
+        className: 'muted-text',
+        text: occurrence.summary
+      })
+    );
+    button.addEventListener('click', () => actions.onSelectFindingCodeOccurrence(index));
+    list.appendChild(button);
+  });
+  section.appendChild(list);
+  return section;
+}
+
+function renderCodeSnippetViewer(snippet: SourceSnippetResponse): HTMLElement {
+  const viewer = element('div', { className: 'code-snippet-viewer' });
+  const scroller = element('div', { className: 'code-snippet-scroll' });
+  const pre = element('pre', { className: 'code-snippet-pre' });
+  const code = element('code', { className: 'code-snippet-code' });
+  const lines = snippet.lines ?? [];
+  const tokenized = (snippet.language ?? 'text') === 'java'
+    ? tokenizeJavaLines(lines.map((line) => line.text))
+    : null;
+  const highlightRanges = expandSnippetHighlightRanges(snippet.language, lines, snippet.highlightRanges);
+
+  lines.forEach((line, index) => {
+    const row = element('div', {
+      className: `code-snippet-line ${lineClassName(line.lineNumber, highlightRanges)}`.trim()
+    });
+    row.appendChild(
+      element('span', {
+        className: 'code-snippet-line-number',
+        text: String(line.lineNumber)
+      })
+    );
+    const content = element('span', { className: 'code-snippet-line-content' });
+    const tokens = tokenized?.[index]?.tokens;
+    if (tokens && tokens.length > 0) {
+      for (const token of tokens) {
+        content.appendChild(
+          element('span', {
+            className: `token-${token.type}`,
+            text: token.text
+          })
+        );
+      }
+    } else {
+      content.textContent = line.text;
+    }
+    row.appendChild(content);
+    code.appendChild(row);
+  });
+
+  pre.appendChild(code);
+  scroller.appendChild(pre);
+  viewer.appendChild(scroller);
+  return viewer;
+}
+
+function lineClassName(lineNumber: number, ranges: HighlightRange[]): string {
+  const range = ranges.find((candidate) =>
+    lineNumber >= (candidate.startLine ?? lineNumber) && lineNumber <= (candidate.endLine ?? lineNumber)
+  );
+  if (!range) {
+    return '';
+  }
+  return range.kind === 'related' ? 'code-line-related' : 'code-line-highlight';
+}
+
+function hasFindingCodeLocation(finding: GroupedPresentedFinding | PresentedFinding): boolean {
+  const findings = 'occurrences' in finding ? finding.items.map((item) => item.finding) : [finding.finding];
+  return findings.some((item) => Boolean(primaryFindingLocation(item)?.filePath));
+}
+
+function createFindingCodeButtonId(finding: GroupedPresentedFinding | PresentedFinding): string {
+  const seed = `${finding.ruleType}|${finding.target}|${finding.location}|${finding.message}`;
+  return `finding-code-${hashString(seed)}`;
+}
+
+function lineRangeLabel(location: SourceLocation | undefined): string {
+  if (!location?.startLine) {
+    return 'Exact line not resolved statically';
+  }
+  if (!location.endLine || location.endLine <= location.startLine) {
+    return `Line ${location.startLine}`;
+  }
+  return `Lines ${location.startLine}-${location.endLine}`;
 }
 
 function findingMetaLine(finding: PresentedFinding): HTMLElement {
@@ -2494,9 +3677,10 @@ function sortableHeader(
   sort: TableSortState,
   onSort: (key: string) => void
 ): HTMLElement {
+  const sortIndicator = sort.key === key ? (sort.direction === 'asc' ? '↑' : '↓') : '';
   const button = element('button', {
     className: 'table-sort-button',
-    text: sort.key === key ? `${label} ${sort.direction === 'asc' ? '↑' : '↓'}` : label,
+    text: sortIndicator ? `${label} ${sortIndicator}` : label,
     attributes: { type: 'button', 'aria-label': `Sort by ${label}` }
   });
   button.addEventListener('click', () => onSort(key));
@@ -2930,59 +4114,137 @@ function summarizeFindings(findings: Finding[]): string | null {
 
 function deriveFindingPresentation(finding: Finding): PresentedFinding {
   const message = finding.message ?? 'No message';
+  const shortMessage = finding.shortMessage?.trim() || message;
   const normalized = message.toLowerCase();
   let ruleType = finding.title || finding.ruleId || finding.rule || finding.category || 'Analyzer finding';
+  let title = finding.title?.trim() || ruleType;
   let target = finding.target || finding.location || '—';
 
   const riskyMatch = message.match(/^(?<property>[\w.-]+)=.+ is risky in production\./i);
   if (riskyMatch?.groups?.property) {
     ruleType = 'Risky production config';
+    title = 'Risky production config';
     target = riskyMatch.groups.property;
   } else if (normalized.startsWith('sensitive configuration property appears to use a literal value')) {
     ruleType = 'Sensitive literal value';
+    title = 'Sensitive literal value';
     const propertyMatch = message.match(/:\s*([\w.-]+)\s*$/);
     target = propertyMatch?.[1] ?? target;
   } else if (normalized.startsWith('profile-specific configuration files')) {
     ruleType = 'Profile-specific config';
+    title = 'Profile-specific config';
     target = 'profiles';
   } else if (normalized.includes('@configurationproperties prefix was found')) {
     ruleType = 'Orphan configuration prefix';
+    title = 'Orphan configuration prefix';
     const prefixMatch = message.match(/prefix\s+"([^"]+)"/i);
     target = prefixMatch?.[1] ?? target;
   } else if (normalized.includes('management.endpoint.health.show-details=always')) {
     ruleType = 'Health details exposure';
+    title = 'Health details exposure';
     target = 'management.endpoint.health.show-details';
   } else if (normalized.includes('management.endpoints.web.exposure.include=*')
     || normalized.includes("actuator web exposure includes '*'")) {
     ruleType = 'Actuator exposure';
+    title = 'Actuator exposure';
     target = 'management.endpoints.web.exposure.include';
   } else if (normalized.startsWith('gradle executed successfully, but no dependency-bearing configuration resolved a dependency graph')) {
     ruleType = 'Gradle model incomplete';
+    title = 'Gradle model incomplete';
     target = 'dependency graph';
   } else if (normalized.startsWith('dependency resolution failed for ')) {
     ruleType = 'Gradle dependency resolution';
+    title = 'Gradle dependency resolution';
     const configurationMatch = message.match(/^Dependency resolution failed for\s+([^:.]+)(?:[:.].*)?$/i);
     target = configurationMatch?.[1]?.trim() ?? target;
   } else if (normalized.includes('plain http://')) {
     ruleType = 'Plain HTTP endpoint';
+    title = 'Plain HTTP endpoint';
     target = target === '—' ? 'external endpoint' : target;
+  } else if (normalized.startsWith('reactive apis were detected in code')) {
+    ruleType = 'Reactive API usage in Servlet application';
+    title = 'Reactive API usage in Servlet application';
+    target = 'reactive APIs';
   } else if (normalized.startsWith('build-aware analysis disabled')
     || normalized.startsWith('gradle model analysis was requested, but analyzer.gradle.enabled=false')) {
     ruleType = 'Build-aware analysis disabled';
+    title = 'Build-aware analysis disabled';
     target = 'Gradle model';
   }
 
+  const location = buildFindingLocation(finding);
   return {
     severity: normalizeSeverity(finding.severity),
+    title,
     category: findingCategoryLabel(normalizeFindingCategory(finding.category)),
     confidence: confidenceLabel(normalizeConfidence(finding.confidence)),
     runtimeDetection: runtimeDetectionLabel(normalizeRuntimeDetection(finding.runtimeDetection)),
+    heuristic: isHeuristicFinding(finding),
     ruleType,
     target,
-    location: buildFindingLocation(finding),
+    location,
+    locationShort: middleEllipsis(location, 56),
     message,
+    summary: shortMessage,
     finding
   };
+}
+
+function primaryFindingLocation(finding: Finding): SourceLocation | null {
+  if (finding.primaryLocation?.filePath) {
+    return finding.primaryLocation;
+  }
+  if (finding.sourceFile) {
+    return {
+      filePath: finding.sourceFile,
+      startLine: finding.line ?? undefined,
+      endLine: finding.line ?? undefined,
+      symbol: finding.target ?? undefined,
+      language: inferCodeLanguage(finding.sourceFile),
+      githubUrl: null
+    };
+  }
+  return null;
+}
+
+function isHeuristicFinding(finding: Finding): boolean {
+  const ruleId = (finding.ruleId ?? '').trim();
+  return [
+    'CONFIG_CODE_REFERENCE_MISSING',
+    'SPRING_REACTIVE_API_IN_SERVLET_APP',
+    'SPRING_TRANSACTION_MISSING_BOUNDARY',
+    'SPRING_SIDE_EFFECT_ORCHESTRATION_NO_BOUNDARY',
+    'SPRING_REPEATED_FALLBACK_PARSING_PATTERN',
+    'SPRING_BROAD_EXCEPTION_HANDLER'
+  ].includes(ruleId);
+}
+
+function inferCodeLanguage(filePath: string): string {
+  const normalized = filePath.toLowerCase();
+  if (normalized.endsWith('.java')) {
+    return 'java';
+  }
+  if (normalized.endsWith('.properties')) {
+    return 'properties';
+  }
+  if (normalized.endsWith('.yaml') || normalized.endsWith('.yml')) {
+    return 'yaml';
+  }
+  if (normalized.endsWith('.xml')) {
+    return 'xml';
+  }
+  if (normalized.endsWith('.gradle') || normalized.endsWith('.gradle.kts')) {
+    return 'gradle';
+  }
+  return 'text';
+}
+
+function hashString(value: string): string {
+  let hash = 0;
+  for (let index = 0; index < value.length; index++) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash.toString(36);
 }
 
 function groupFindings(findings: Finding[]): GroupedPresentedFinding[] {
@@ -2991,30 +4253,90 @@ function groupFindings(findings: Finding[]): GroupedPresentedFinding[] {
     const derived = deriveFindingPresentation(finding);
     const key = [
       finding.ruleId ?? derived.ruleType,
-      normalizeGroupingText(derived.target),
       normalizeFindingCategory(finding.category),
-      normalizeSeverity(finding.severity),
       normalizeRuntimeDetection(finding.runtimeDetection),
-      finding.title ?? derived.ruleType,
-      normalizeGroupingText(finding.whyBadPractice ?? '')
+      findingGroupingTargetKind(finding),
+      normalizeGroupingText(finding.title ?? derived.title ?? derived.ruleType),
+      normalizeGroupingText(derived.ruleType)
     ].join('|');
     const bucket = grouped.get(key) ?? [];
     bucket.push(derived);
     grouped.set(key, bucket);
   }
-  return [...grouped.values()].map((bucket) => ({
-    severity: bucket[0].severity,
-    category: bucket[0].category,
-    confidence: bucket[0].confidence,
-    runtimeDetection: bucket[0].runtimeDetection,
-    ruleType: bucket[0].ruleType,
-    target: bucket[0].target,
-    message: bucket[0].message,
-    location: [...new Set(bucket.map((item) => item.location))].join('; '),
-    occurrences: bucket.length,
-    items: bucket,
-    finding: bucket[0].finding
-  }));
+  return [...grouped.values()].map((bucket) => {
+    const representative = chooseFindingGroupRepresentative(bucket);
+    const uniqueTargets = uniqueValues(bucket.map((item) => item.target).filter((value) => value && value !== '—'));
+    const target = uniqueTargets.length <= 1
+      ? (uniqueTargets[0] ?? representative.target)
+      : groupedTargetSummary(representative, uniqueTargets.length);
+    return {
+      severity: representative.severity,
+      title: representative.title,
+      category: representative.category,
+      confidence: representative.confidence,
+      runtimeDetection: representative.runtimeDetection,
+      heuristic: representative.heuristic,
+      ruleType: representative.ruleType,
+      target,
+      message: representative.message,
+      summary: representative.summary,
+      location: representative.location,
+      locationShort: middleEllipsis(representative.location, 56),
+      occurrences: bucket.length,
+      items: bucket,
+      finding: representative.finding
+    };
+  });
+}
+
+function chooseFindingGroupRepresentative(bucket: PresentedFinding[]): PresentedFinding {
+  return [...bucket].sort((left, right) => {
+    const severity = findingPriority(left.severity, ['ERROR', 'WARNING', 'INFO'])
+      - findingPriority(right.severity, ['ERROR', 'WARNING', 'INFO']);
+    if (severity !== 0) {
+      return severity;
+    }
+    const confidence = findingPriority(left.confidence, ['High', 'Medium', 'Low'])
+      - findingPriority(right.confidence, ['High', 'Medium', 'Low']);
+    if (confidence !== 0) {
+      return confidence;
+    }
+    return compareValues(left.location, right.location, 'asc');
+  })[0];
+}
+
+function findingPriority(value: string, ranking: string[]): number {
+  const normalized = value.toLowerCase();
+  const index = ranking.findIndex((candidate) => candidate.toLowerCase() === normalized);
+  return index < 0 ? ranking.length : index;
+}
+
+function findingGroupingTargetKind(finding: Finding): string {
+  const target = defaultText(finding.target).toLowerCase();
+  const why = defaultText(finding.whyBadPractice).toLowerCase();
+  if (target.includes('#parse') || target.includes('#tryparse') || target.includes('#extract') || target.includes('#decode') || target.includes('#convert') || target.includes('#normalize') || why.includes('best-effort parsing')) {
+    return 'parser-helper';
+  }
+  if (target.includes('controller#')) {
+    return 'controller';
+  }
+  if (target.includes('service#')) {
+    return 'service';
+  }
+  if (target.includes('repository#')) {
+    return 'repository';
+  }
+  if (target.includes('#')) {
+    return 'method';
+  }
+  return 'general';
+}
+
+function groupedTargetSummary(representative: PresentedFinding, targetCount: number): string {
+  if (representative.category === 'Exception handling') {
+    return targetCount > 1 ? 'Multiple methods' : representative.target;
+  }
+  return targetCount > 1 ? 'Multiple targets' : representative.target;
 }
 
 function sortFindingGroups(findings: GroupedPresentedFinding[], sort: TableSortState): GroupedPresentedFinding[] {
@@ -3074,11 +4396,11 @@ function findingCategoryLabel(value: string): string {
 function runtimeDetectionLabel(value: string): string {
   switch (value) {
     case 'NOT_NORMALLY_DETECTED':
-      return 'Static-only';
+      return 'Detected statically';
     case 'ACTIVE_PROFILE_RUNTIME_MAY_DETECT':
-      return 'Active profile only';
+      return 'Depends on active profile';
     case 'RUNTIME_REQUIRED':
-      return 'Runtime required';
+      return 'Requires runtime verification';
     default:
       return value;
   }
@@ -3177,20 +4499,37 @@ function displayPropertyValue(property: ApplicationProperty): string {
   return property.value;
 }
 
-function sourceLabel(sourceFile?: string | null, line?: number | null): string {
+function sourceLabel(sourceFile?: string | null, line?: number | null, endLine?: number | null): string {
   if (sourceFile && line) {
+    if (endLine && endLine > line) {
+      return `${sourceFile}:${line}-${endLine}`;
+    }
     return `${sourceFile}:${line}`;
   }
-  return sourceFile ?? 'Code reference';
+  return sourceFile ?? 'Source reference';
 }
 
 function buildFindingLocation(finding: Finding): string {
-  const source = sourceLabel(finding.sourceFile, finding.line);
+  const primaryLocation = primaryFindingLocation(finding);
+  if (primaryLocation?.filePath) {
+    return sourceLabel(primaryLocation.filePath, primaryLocation.startLine ?? null, primaryLocation.endLine ?? null);
+  }
+  const source = sourceLabel(finding.sourceFile, finding.line, finding.line);
   if (source !== '—') {
     return source;
   }
   const locationParts = [finding.location, finding.target].filter((value): value is string => Boolean(value));
   return locationParts.join(' | ') || '—';
+}
+
+function middleEllipsis(value: string, maxLength: number): string {
+  if (!value || value.length <= maxLength) {
+    return value;
+  }
+  const visible = Math.max(maxLength - 1, 6);
+  const head = Math.ceil(visible / 2);
+  const tail = Math.floor(visible / 2);
+  return `${value.slice(0, head)}…${value.slice(value.length - tail)}`;
 }
 
 function configurationRowKey(property: ApplicationProperty): string {
@@ -3200,6 +4539,19 @@ function configurationRowKey(property: ApplicationProperty): string {
 
 function uniqueValues(values: Array<string | null | undefined>): string[] {
   return [...new Set(values.filter((value): value is string => Boolean(value)).sort((left, right) => left.localeCompare(right)))];
+}
+
+function defaultText(...values: Array<string | null | undefined>): string {
+  for (const value of values) {
+    if (value && value.trim()) {
+      return value;
+    }
+  }
+  return '';
+}
+
+function normalizedProfile(value: string | null | undefined): string {
+  return value && value.trim() ? value.trim().toLowerCase() : 'default';
 }
 
 function formatReferences(references: PropertyReference[]): string {
@@ -3269,7 +4621,7 @@ function compareFindings(left: PresentedFinding, right: PresentedFinding, sort: 
     const runtimeResult = rankedCompare(
       left.runtimeDetection,
       right.runtimeDetection,
-      ['Static-only', 'Active profile only', 'Runtime required'],
+      ['Detected statically', 'Depends on active profile', 'Requires runtime verification'],
       sort.direction
     );
     if (runtimeResult !== 0) {
@@ -3488,4 +4840,6 @@ function urlKindLabel(value: string | null | undefined): string {
       return 'Unknown';
   }
 }
+
+
 

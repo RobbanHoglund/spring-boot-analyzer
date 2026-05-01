@@ -787,6 +787,10 @@ public class ConfigurationAnalyzer {
                 || propertyName.startsWith("file.")
                 || propertyName.startsWith("awt.")
                 || propertyName.startsWith("jdk.")
+                || propertyName.startsWith("org.gradle.")
+                || propertyName.startsWith("systemprop.")
+                || propertyName.equals("distributionurl")
+                || propertyName.equals("distribution-url")
                 || propertyName.equals("path.separator")
                 || propertyName.equals("line.separator")
                 || propertyName.equals("native.encoding");

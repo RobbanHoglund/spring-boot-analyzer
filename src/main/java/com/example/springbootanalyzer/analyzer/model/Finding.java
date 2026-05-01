@@ -1,5 +1,7 @@
 package com.example.springbootanalyzer.analyzer.model;
 
+import java.util.List;
+
 public record Finding(
         FindingSeverity severity,
         String message,
@@ -16,8 +18,16 @@ public record Finding(
         String limitations,
         String sourceFile,
         Integer line,
-        String target
+        String target,
+        SourceLocation primaryLocation,
+        List<HighlightRange> highlightRanges,
+        List<FindingOccurrence> occurrences
 ) {
+
+    public Finding {
+        highlightRanges = highlightRanges == null ? List.of() : List.copyOf(highlightRanges);
+        occurrences = occurrences == null ? List.of() : List.copyOf(occurrences);
+    }
 
     public Finding(FindingSeverity severity, String message, String location) {
         this(
@@ -36,7 +46,38 @@ public record Finding(
                 null,
                 location,
                 null,
-                null
+                null,
+                null,
+                List.of(),
+                List.of()
+        );
+    }
+
+    public Finding withSourceDetails(
+            SourceLocation primaryLocation,
+            List<HighlightRange> highlightRanges,
+            List<FindingOccurrence> occurrences
+    ) {
+        return new Finding(
+                severity,
+                message,
+                location,
+                ruleId,
+                title,
+                category,
+                runtimeDetection,
+                confidence,
+                whyBadPractice,
+                possibleImpact,
+                recommendation,
+                evidence,
+                limitations,
+                sourceFile,
+                line,
+                target,
+                primaryLocation,
+                highlightRanges,
+                occurrences
         );
     }
 }

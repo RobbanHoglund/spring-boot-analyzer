@@ -1,5 +1,7 @@
 package com.example.springbootanalyzer.error;
 
+import com.example.springbootanalyzer.application.InvalidSourceSnippetRequestException;
+import com.example.springbootanalyzer.application.SourceSnippetNotFoundException;
 import com.example.springbootanalyzer.git.GitCloneException;
 import com.example.springbootanalyzer.git.InvalidRepositoryReferenceException;
 import com.example.springbootanalyzer.git.UnsupportedRepositoryProtocolException;
@@ -50,6 +52,22 @@ public class GlobalExceptionHandler {
         LOGGER.warn("Repository clone failed: {}", exception.getMessage(), exception);
         ProblemDetail problemDetail = ProblemDetail.forStatus(HttpStatus.BAD_GATEWAY);
         problemDetail.setTitle("Repository clone failed");
+        problemDetail.setDetail(exception.getMessage());
+        return problemDetail;
+    }
+
+    @ExceptionHandler(InvalidSourceSnippetRequestException.class)
+    public ProblemDetail handleInvalidSourceSnippetRequest(InvalidSourceSnippetRequestException exception) {
+        ProblemDetail problemDetail = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problemDetail.setTitle("Invalid source snippet request");
+        problemDetail.setDetail(exception.getMessage());
+        return problemDetail;
+    }
+
+    @ExceptionHandler(SourceSnippetNotFoundException.class)
+    public ProblemDetail handleSourceSnippetNotFound(SourceSnippetNotFoundException exception) {
+        ProblemDetail problemDetail = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        problemDetail.setTitle("Source snippet unavailable");
         problemDetail.setDetail(exception.getMessage());
         return problemDetail;
     }

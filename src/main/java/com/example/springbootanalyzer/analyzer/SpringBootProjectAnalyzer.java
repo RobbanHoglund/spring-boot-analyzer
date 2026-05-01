@@ -106,6 +106,8 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
                 repositoryReference.repositoryUrl(),
                 repositoryReference.branch(),
                 workspaceId,
+                workspaceId,
+                null,
                 buildInfo,
                 mainApplicationClasses,
                 detectedClasses,

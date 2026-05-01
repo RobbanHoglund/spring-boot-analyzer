@@ -3,6 +3,10 @@ package com.example.springbootanalyzer.analyzer.runtime;
 import com.example.springbootanalyzer.analyzer.model.BuildInfo;
 import com.example.springbootanalyzer.analyzer.model.DetectedClass;
 import com.example.springbootanalyzer.analyzer.model.Finding;
+import com.example.springbootanalyzer.analyzer.model.FindingCategory;
+import com.example.springbootanalyzer.analyzer.model.FindingConfidence;
+import com.example.springbootanalyzer.analyzer.model.FindingFactory;
+import com.example.springbootanalyzer.analyzer.model.FindingRuntimeDetection;
 import com.example.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.example.springbootanalyzer.analyzer.model.configuration.ApplicationProperty;
 import com.example.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
@@ -11,6 +15,10 @@ import com.example.springbootanalyzer.analyzer.model.gradle.GradleResolvedDepend
 import com.example.springbootanalyzer.analyzer.model.runtime.RuntimeStackAnalysis;
 import com.example.springbootanalyzer.analyzer.model.runtime.VirtualThreadAnalysis;
 import com.example.springbootanalyzer.analyzer.model.runtime.WebStack;
+import com.github.javaparser.JavaParser;
+import com.github.javaparser.ParserConfiguration;
+import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.expr.AnnotationExpr;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -26,6 +34,9 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class RuntimeStackAnalyzer {
+    private final JavaParser javaParser = new JavaParser(new ParserConfiguration()
+            .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
+            .setCharacterEncoding(StandardCharsets.UTF_8));
 
     public Result analyze(
             Path repositoryRoot,
@@ -84,11 +95,12 @@ public class RuntimeStackAnalyzer {
                 String content = Files.readString(file, StandardCharsets.UTF_8);
                 String relativePath = repositoryRoot.relativize(file).toString().replace('\\', '/');
 
-                if (content.contains("@Scheduled")) {
+                CompilationUnit compilationUnit = parseCompilationUnit(file);
+                if (hasAnnotation(compilationUnit, "Scheduled")) {
                     scheduledDetected = true;
                     evidence.add("@Scheduled in " + relativePath);
                 }
-                if (content.contains("@EnableScheduling")) {
+                if (hasAnnotation(compilationUnit, "EnableScheduling")) {
                     enableSchedulingDetected = true;
                     evidence.add("@EnableScheduling in " + relativePath);
                 }
@@ -129,6 +141,23 @@ public class RuntimeStackAnalyzer {
                 routerFunctionDetected || controllerDetected,
                 List.copyOf(evidence)
         );
+    }
+
+    private CompilationUnit parseCompilationUnit(Path file) {
+        try {
+            return javaParser.parse(file).getResult().orElse(null);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to parse Java source for runtime stack analysis: " + file, exception);
+        }
+    }
+
+    private boolean hasAnnotation(CompilationUnit compilationUnit, String annotationSimpleName) {
+        if (compilationUnit == null) {
+            return false;
+        }
+        return compilationUnit.findAll(AnnotationExpr.class).stream()
+                .map(annotation -> annotation.getName().getIdentifier())
+                .anyMatch(annotationSimpleName::equals);
     }
 
     private WebStack determineWebStack(
@@ -295,11 +324,27 @@ public class RuntimeStackAnalyzer {
             ));
         }
         if (webStack == WebStack.SERVLET_MVC && evidence.reactiveSignalDetected()) {
-            findings.add(new Finding(
-                    FindingSeverity.INFO,
-                    "Reactive APIs were detected in code, but the build currently looks like a Servlet/MVC application.",
-                    null
-            ));
+            String reactiveEvidence = evidence.evidence().stream()
+                    .filter(item -> item.startsWith("Reactive types in ") || item.startsWith("WebFlux routing API in "))
+                    .limit(4)
+                    .reduce((left, right) -> left + ", " + right)
+                    .orElse("Reactive types or routing APIs were detected in source code.");
+            findings.add(FindingFactory.builder(
+                            "SPRING_REACTIVE_API_IN_SERVLET_APP",
+                            "Reactive API usage in Servlet application",
+                            FindingSeverity.INFO,
+                            FindingCategory.API_SURFACE,
+                            FindingRuntimeDetection.NOT_NORMALLY_DETECTED,
+                            FindingConfidence.MEDIUM
+                    )
+                    .shortMessage("Reactive APIs were detected in code, but the build currently looks like a Servlet/MVC application.")
+                    .whyBadPractice("Mixing reactive APIs into a primarily Servlet/MVC application can make execution and error-handling assumptions harder to follow during review.")
+                    .possibleImpact("Developers may assume reactive behavior or shared infrastructure where the deployed application still behaves like a traditional Servlet stack.")
+                    .recommendation("Review whether the reactive usage is intentional, documented, and compatible with the application's main web stack.")
+                    .evidence(reactiveEvidence)
+                    .limitations("Static analysis can infer API usage from source and dependencies, but runtime behavior may still differ by profile, classpath, and configuration.")
+                    .target("reactive APIs")
+                    .build());
         }
         if (webStack == WebStack.NON_WEB && dependencyCoordinates.stream().anyMatch(this::isServletDependency)) {
             findings.add(new Finding(

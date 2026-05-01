@@ -1,6 +1,7 @@
 import './styles.css';
 
-import { analyzeRepository, ApiError } from './api';
+import { analyzeRepository, ApiError, fetchSourceSnippet } from './api';
+import { buildGitHubBlobUrl } from './code/githubLink';
 import { clear, element } from './dom';
 import {
   addOrUpdateRepositoryProfile,
@@ -24,11 +25,16 @@ import type {
   AnalysisMode,
   AnalyzeRepositoryRequest,
   AnalyzeRepositoryResponse,
+  Finding,
+  FindingOccurrence,
+  HighlightRange,
   RepositoryProfile,
+  SourceLocation,
+  SourceSnippetResponse,
   TokenProfile
 } from './types';
 import { renderAnalyzeView } from './views/analyzeView';
-import { type ResultsViewState } from './views/resultsView';
+import { type CodeSnippetModalState, type FindingCodeOccurrence, type ResultsViewState } from './views/resultsView';
 import { renderSettingsView, type RepositoryFormModel, type TokenFormModel } from './views/settingsView';
 
 const DEFAULT_REPOSITORY_URL = 'https://github.com/RobbanHoglund/tradingbot.git';
@@ -73,6 +79,8 @@ const systemThemeMedia = typeof window !== 'undefined'
 
 let state: AppState = createInitialState();
 let analysisProgressTimer: number | null = null;
+let pendingFocusElementId: string | null = null;
+let codeModalRequestToken = 0;
 applyThemePreference(state.themePreference);
 systemThemeMedia?.addEventListener('change', handleSystemThemeChange);
 render();
@@ -136,8 +144,30 @@ function createInitialState(): AppState {
       httpInboundExpanded: false,
       httpOutboundExpanded: false,
       httpConfiguredExpanded: false,
-      httpActuatorExpanded: false
+      httpActuatorExpanded: false,
+      codeModal: createClosedCodeModalState()
     }
+  };
+}
+
+function createClosedCodeModalState(): CodeSnippetModalState {
+  return {
+    open: false,
+    title: '',
+    summary: '',
+    ruleType: '',
+    target: '—',
+    severity: 'INFO',
+    category: 'MAINTAINABILITY',
+    confidence: 'MEDIUM',
+    runtimeDetection: 'NOT_NORMALLY_DETECTED',
+    analysisId: null,
+    occurrences: [],
+    selectedOccurrenceIndex: 0,
+    snippet: null,
+    loading: false,
+    errorMessage: '',
+    returnFocusId: null
   };
 }
 
@@ -377,6 +407,15 @@ function render(): void {
             state.resultsViewState.httpActuatorExpanded = !state.resultsViewState.httpActuatorExpanded;
             render();
           },
+          onOpenFindingCode: (finding, groupedFindings, triggerId, selectedOccurrenceIndex) => {
+            void openFindingCodeModal(finding, groupedFindings, triggerId, selectedOccurrenceIndex);
+          },
+          onCloseFindingCode: () => {
+            closeFindingCodeModal();
+          },
+          onSelectFindingCodeOccurrence: (index) => {
+            void selectFindingCodeOccurrence(index);
+          },
           onToggleSidebarCollapsed: () => {
             state.sidebarCollapsed = !state.sidebarCollapsed;
             render();
@@ -447,6 +486,16 @@ function render(): void {
 
   root.appendChild(shell);
   restoreFocusSnapshot(focusSnapshot);
+  restorePendingFocus();
+}
+
+function restorePendingFocus(): void {
+  if (!pendingFocusElementId) {
+    return;
+  }
+  const elementToFocus = document.getElementById(pendingFocusElementId) as HTMLElement | null;
+  pendingFocusElementId = null;
+  elementToFocus?.focus();
 }
 
 async function analyzeSavedRepository(): Promise<void> {
@@ -551,6 +600,7 @@ async function runAnalysis(request: AnalyzeRepositoryRequest): Promise<void> {
   state.analysisProgressIndex = 0;
   state.statusMessage = 'Preparing analysis workspace...';
   state.errorMessage = '';
+  state.resultsViewState.codeModal = createClosedCodeModalState();
   startAnalysisProgressTimer();
   render();
 
@@ -567,6 +617,235 @@ async function runAnalysis(request: AnalyzeRepositoryRequest): Promise<void> {
     state.analysisProgressIndex = 0;
     render();
   }
+}
+
+async function openFindingCodeModal(
+  finding: Finding,
+  groupedFindings: Finding[],
+  triggerId: string,
+  selectedOccurrenceIndex = 0
+): Promise<void> {
+  const analysisId = state.result?.analysisId ?? state.result?.workspaceId ?? null;
+  const occurrences = buildFindingCodeOccurrences(groupedFindings.length > 0 ? groupedFindings : [finding]);
+  if (!analysisId || occurrences.length === 0) {
+    return;
+  }
+  const clampedOccurrenceIndex = Math.min(Math.max(selectedOccurrenceIndex, 0), occurrences.length - 1);
+  state.resultsViewState.codeModal = {
+    open: true,
+    title: finding.title ?? finding.ruleId ?? finding.rule ?? 'Finding',
+    summary: finding.message ?? 'No summary available.',
+    ruleType: finding.ruleId ?? finding.rule ?? '',
+    target: finding.target ?? '—',
+    severity: finding.severity ?? 'INFO',
+    category: finding.category ?? 'MAINTAINABILITY',
+    confidence: finding.confidence ?? 'MEDIUM',
+    runtimeDetection: finding.runtimeDetection ?? 'NOT_NORMALLY_DETECTED',
+    analysisId,
+    occurrences,
+    selectedOccurrenceIndex: clampedOccurrenceIndex,
+    snippet: null,
+    loading: true,
+    errorMessage: '',
+    returnFocusId: triggerId
+  };
+  pendingFocusElementId = 'code-snippet-modal-close';
+  render();
+  await loadCodeSnippetForSelection();
+}
+
+function closeFindingCodeModal(): void {
+  const returnFocusId = state.resultsViewState.codeModal.returnFocusId;
+  state.resultsViewState.codeModal = createClosedCodeModalState();
+  pendingFocusElementId = returnFocusId;
+  render();
+}
+
+async function selectFindingCodeOccurrence(index: number): Promise<void> {
+  const modal = state.resultsViewState.codeModal;
+  if (!modal.open || index < 0 || index >= modal.occurrences.length) {
+    return;
+  }
+  modal.selectedOccurrenceIndex = index;
+  modal.loading = true;
+  modal.errorMessage = '';
+  modal.snippet = null;
+  render();
+  await loadCodeSnippetForSelection();
+}
+
+async function loadCodeSnippetForSelection(): Promise<void> {
+  const modal = state.resultsViewState.codeModal;
+  if (!modal.open || !modal.analysisId) {
+    return;
+  }
+  const occurrence = modal.occurrences[modal.selectedOccurrenceIndex];
+  const filePath = occurrence?.location?.filePath;
+  const startLine = occurrence?.location?.startLine;
+  const endLine = occurrence?.location?.endLine ?? startLine;
+  if (!filePath) {
+    modal.loading = false;
+    modal.errorMessage = 'Source location is unavailable for this finding.';
+    render();
+    return;
+  }
+
+  const requestToken = ++codeModalRequestToken;
+  try {
+    const snippet = await fetchSourceSnippet(
+      modal.analysisId,
+      filePath,
+      typeof startLine === 'number' ? startLine : null,
+      typeof startLine === 'number' ? (endLine ?? startLine) : null,
+      6
+    );
+    if (requestToken !== codeModalRequestToken || !state.resultsViewState.codeModal.open) {
+      return;
+    }
+    state.resultsViewState.codeModal.snippet = mergeSnippetHighlights(snippet, occurrence.highlightRanges);
+    state.resultsViewState.codeModal.loading = false;
+    state.resultsViewState.codeModal.errorMessage = '';
+    pendingFocusElementId = 'code-snippet-modal-close';
+    render();
+  } catch (error) {
+    if (requestToken !== codeModalRequestToken || !state.resultsViewState.codeModal.open) {
+      return;
+    }
+    state.resultsViewState.codeModal.snippet = null;
+    state.resultsViewState.codeModal.loading = false;
+    state.resultsViewState.codeModal.errorMessage =
+      error instanceof ApiError ? error.message : 'Source snippet could not be loaded.';
+    pendingFocusElementId = 'code-snippet-modal-close';
+    render();
+  }
+}
+
+function buildFindingCodeOccurrences(findings: Finding[]): FindingCodeOccurrence[] {
+  const occurrences: FindingCodeOccurrence[] = [];
+  findings.forEach((finding, findingIndex) => {
+    const explicitOccurrences = finding.occurrences ?? [];
+    if (explicitOccurrences.length > 0) {
+      explicitOccurrences.forEach((occurrence, occurrenceIndex) => {
+        const location = withGitHubUrl(normalizeSourceLocation(occurrence.location ?? undefined, finding));
+        if (!location?.filePath) {
+          return;
+        }
+        occurrences.push({
+          key: `${findingIndex}-${occurrenceIndex}-${location.filePath}-${location.startLine ?? 'file'}`,
+          label: sourceLocationLabel(location),
+          summary: occurrence.message ?? finding.message ?? 'No summary available.',
+          location,
+          highlightRanges: normalizeHighlightRanges(occurrence.highlightRanges, location)
+        });
+      });
+      return;
+    }
+
+    const location = withGitHubUrl(normalizeSourceLocation(finding.primaryLocation, finding));
+    if (!location?.filePath) {
+      return;
+    }
+    occurrences.push({
+      key: `${findingIndex}-primary-${location.filePath}-${location.startLine ?? 'file'}`,
+      label: sourceLocationLabel(location),
+      summary: finding.message ?? 'No summary available.',
+      location,
+      highlightRanges: normalizeHighlightRanges(finding.highlightRanges, location)
+    });
+  });
+  return occurrences;
+}
+
+function normalizeSourceLocation(location: SourceLocation | undefined, finding: Finding): SourceLocation | null {
+  if (location?.filePath) {
+    return {
+      ...location,
+      endLine: location.endLine ?? location.startLine,
+      language: location.language ?? inferSourceLanguage(location.filePath)
+    };
+  }
+  if (!finding.sourceFile) {
+    return null;
+  }
+  return {
+    filePath: finding.sourceFile,
+    startLine: finding.line ?? undefined,
+    endLine: finding.line ?? undefined,
+    symbol: finding.target ?? undefined,
+    language: inferSourceLanguage(finding.sourceFile)
+  };
+}
+
+function withGitHubUrl(location: SourceLocation | null): SourceLocation | null {
+  if (!location?.filePath) {
+    return location;
+  }
+  if (location.githubUrl) {
+    return location;
+  }
+  const githubUrl = buildGitHubBlobUrl(
+    state.result?.repositoryUrl,
+    state.result?.commitSha ?? state.result?.branch ?? null,
+    location.filePath,
+    location.startLine,
+    location.endLine
+  );
+  return githubUrl ? { ...location, githubUrl } : location;
+}
+
+function normalizeHighlightRanges(ranges: HighlightRange[] | undefined, location: SourceLocation): HighlightRange[] {
+  if (ranges && ranges.length > 0) {
+    return ranges;
+  }
+  if (!location.startLine) {
+    return [];
+  }
+  const startLine = location.startLine;
+  const endLine = location.endLine ?? startLine;
+  return [{ startLine, endLine, kind: 'issue' }];
+}
+
+function sourceLocationLabel(location: SourceLocation): string {
+  if (!location.filePath) {
+    return 'Source unavailable';
+  }
+  if (!location.startLine) {
+    return location.filePath;
+  }
+  if (!location.endLine || location.endLine <= location.startLine) {
+    return `${location.filePath}:${location.startLine}`;
+  }
+  return `${location.filePath}:${location.startLine}-${location.endLine}`;
+}
+
+function mergeSnippetHighlights(
+  snippet: SourceSnippetResponse,
+  ranges: HighlightRange[]
+): SourceSnippetResponse {
+  return {
+    ...snippet,
+    highlightRanges: ranges.length > 0 ? ranges : snippet.highlightRanges
+  };
+}
+
+function inferSourceLanguage(filePath: string): string {
+  const normalized = filePath.toLowerCase();
+  if (normalized.endsWith('.java')) {
+    return 'java';
+  }
+  if (normalized.endsWith('.properties')) {
+    return 'properties';
+  }
+  if (normalized.endsWith('.yaml') || normalized.endsWith('.yml')) {
+    return 'yaml';
+  }
+  if (normalized.endsWith('.xml')) {
+    return 'xml';
+  }
+  if (normalized.endsWith('.gradle') || normalized.endsWith('.gradle.kts')) {
+    return 'gradle';
+  }
+  return 'text';
 }
 
 function startAnalysisProgressTimer(): void {
@@ -895,7 +1174,8 @@ function resetResultsViewState(): void {
     httpInboundExpanded: false,
     httpOutboundExpanded: false,
     httpConfiguredExpanded: false,
-    httpActuatorExpanded: false
+    httpActuatorExpanded: false,
+    codeModal: createClosedCodeModalState()
   };
 }
 

@@ -16,6 +16,8 @@ export interface AnalyzeRepositoryResponse {
   repositoryUrl?: string;
   branch?: string | null;
   workspaceId?: string;
+  analysisId?: string;
+  commitSha?: string | null;
   clonedPath?: string;
   buildTool?: string;
   springBootDetected?: boolean;
@@ -63,7 +65,51 @@ export interface Finding {
   sourceFile?: string;
   line?: number | null;
   target?: string;
+  primaryLocation?: SourceLocation;
+  highlightRanges?: HighlightRange[];
+  occurrences?: FindingOccurrence[];
   [key: string]: unknown;
+}
+
+export interface SourceLocation {
+  filePath?: string;
+  startLine?: number;
+  endLine?: number;
+  startColumn?: number | null;
+  endColumn?: number | null;
+  symbol?: string | null;
+  language?: string | null;
+  githubUrl?: string | null;
+}
+
+export interface HighlightRange {
+  startLine?: number;
+  endLine?: number;
+  startColumn?: number | null;
+  endColumn?: number | null;
+  kind?: string | null;
+}
+
+export interface FindingOccurrence {
+  message?: string | null;
+  location?: SourceLocation | null;
+  highlightRanges?: HighlightRange[];
+}
+
+export interface SourceSnippetLine {
+  lineNumber: number;
+  text: string;
+  highlight?: boolean;
+}
+
+export interface SourceSnippetResponse {
+  filePath?: string;
+  language?: string | null;
+  startLine?: number;
+  endLine?: number;
+  githubUrl?: string | null;
+  lines?: SourceSnippetLine[];
+  highlightRanges?: HighlightRange[];
 }
 
 export type TokenProvider = 'github' | 'gitlab' | 'bitbucket' | 'other';

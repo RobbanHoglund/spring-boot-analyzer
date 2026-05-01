@@ -6,6 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import org.eclipse.jgit.api.CloneCommand;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.errors.GitAPIException;
@@ -69,6 +70,15 @@ public class GitCloneService {
             throw new GitCloneException(buildCloneFailureMessage(repositoryReference, exception), exception);
         } catch (Exception exception) {
             throw new GitCloneException("Failed to prepare workspace for repository clone.", exception);
+        }
+    }
+
+    public Optional<String> resolveHeadCommit(Path repositoryDirectory) {
+        try (Git git = Git.open(repositoryDirectory.toFile())) {
+            return Optional.ofNullable(git.getRepository().resolve("HEAD"))
+                    .map(objectId -> objectId.name());
+        } catch (Exception exception) {
+            return Optional.empty();
         }
     }
 

@@ -13,6 +13,8 @@ public record AnalyzeRepositoryResponse(
         String repositoryUrl,
         String branch,
         String workspaceId,
+        String analysisId,
+        String commitSha,
         BuildTool buildTool,
         String javaVersionHint,
         boolean springBootDetected,

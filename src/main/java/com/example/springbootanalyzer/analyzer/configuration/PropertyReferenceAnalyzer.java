@@ -7,8 +7,10 @@ import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.Expression;
+import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.MemberValuePair;
 import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.expr.NameExpr;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -172,6 +174,9 @@ public class PropertyReferenceAnalyzer {
                 && !methodName.equals("containsProperty")) {
             return Optional.empty();
         }
+        if (!looksLikeSpringEnvironmentLookup(methodCallExpr)) {
+            return Optional.empty();
+        }
         if (methodCallExpr.getArguments().isEmpty()) {
             return Optional.empty();
         }
@@ -196,6 +201,29 @@ public class PropertyReferenceAnalyzer {
                 null,
                 null
         ));
+    }
+
+    private boolean looksLikeSpringEnvironmentLookup(MethodCallExpr methodCallExpr) {
+        Expression scope = methodCallExpr.getScope().orElse(null);
+        if (scope == null) {
+            return false;
+        }
+        if (scope instanceof NameExpr nameExpr) {
+            String normalized = nameExpr.getNameAsString().toLowerCase();
+            return normalized.equals("environment")
+                    || normalized.equals("env")
+                    || normalized.endsWith("environment");
+        }
+        if (scope instanceof FieldAccessExpr fieldAccessExpr) {
+            String normalized = fieldAccessExpr.toString().toLowerCase();
+            return normalized.endsWith(".environment") || normalized.contains("environment");
+        }
+        if (scope instanceof MethodCallExpr scopeCall) {
+            String normalized = scopeCall.getNameAsString().toLowerCase();
+            return normalized.equals("getenvironment") || normalized.endsWith("environment");
+        }
+        String normalized = scope.toString().toLowerCase();
+        return normalized.contains("environment");
     }
 
     private Optional<List<PropertyReference>> collectScheduledReferences(
