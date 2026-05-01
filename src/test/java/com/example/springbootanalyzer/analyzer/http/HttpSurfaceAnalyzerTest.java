@@ -152,6 +152,15 @@ class HttpSurfaceAnalyzerTest {
         assertThat(result.findings()).extracting(finding -> finding.message())
                 .anyMatch(message -> message.contains("plain http://"))
                 .anyMatch(message -> message.contains("publishes every endpoint"));
+        assertThat(result.findings()).filteredOn(finding -> "SPRING_HTTP_PLAIN_URL".equals(finding.ruleId()))
+                .singleElement()
+                .satisfies(finding -> {
+                    assertThat(finding.primaryLocation()).isNotNull();
+                    assertThat(finding.occurrences()).isNotEmpty();
+                    assertThat(finding.occurrences())
+                            .anyMatch(occurrence -> occurrence.location() != null
+                                    && "src/main/java/com/example/demo/ApiClient.java".equals(occurrence.location().filePath()));
+                });
     }
 
     @Test
@@ -338,7 +347,10 @@ class HttpSurfaceAnalyzerTest {
                         && finding.message() != null
                         && finding.message().contains("plain http://"));
         assertThat(result.findings()).filteredOn(finding -> "SPRING_HTTP_PLAIN_URL".equals(finding.ruleId()))
-                .hasSize(1);
+                .singleElement()
+                .satisfies(finding -> assertThat(finding.occurrences())
+                        .allMatch(occurrence -> occurrence.message() != null
+                                && !occurrence.message().contains("localhost/mock-listing")));
     }
 
     private ApplicationProperty property(String name, String value) {

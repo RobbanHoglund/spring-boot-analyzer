@@ -400,6 +400,8 @@ describe('renderResultsView findings UI', () => {
     expect(document.body.textContent).toContain('Top concerns');
     expect(document.body.textContent).toContain('Security posture');
     expect(document.body.textContent).toContain('Persistence');
+    expect(document.body.textContent).toContain('Errors / blocking');
+    expect(document.body.textContent).toContain('Warnings are prioritized static review items.');
     expect(document.body.textContent).toContain('Detected statically');
     expect(document.body.textContent).toContain('Depends on active profile');
     expect(document.body.textContent).toContain('Requires runtime verification');

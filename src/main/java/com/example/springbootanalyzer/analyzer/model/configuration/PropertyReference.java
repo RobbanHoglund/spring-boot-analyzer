@@ -4,6 +4,7 @@ public record PropertyReference(
         String propertyName,
         String referenceType,
         String sourceFile,
+        Integer line,
         String className,
         String defaultValue,
         boolean required,

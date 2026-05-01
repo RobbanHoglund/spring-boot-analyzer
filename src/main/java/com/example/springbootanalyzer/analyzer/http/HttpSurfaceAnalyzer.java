@@ -4,8 +4,11 @@ import com.example.springbootanalyzer.analyzer.model.BuildInfo;
 import com.example.springbootanalyzer.analyzer.model.Finding;
 import com.example.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.example.springbootanalyzer.analyzer.model.FindingFactory;
+import com.example.springbootanalyzer.analyzer.model.FindingOccurrence;
 import com.example.springbootanalyzer.analyzer.model.FindingRules;
 import com.example.springbootanalyzer.analyzer.model.FindingSeverity;
+import com.example.springbootanalyzer.analyzer.model.HighlightRange;
+import com.example.springbootanalyzer.analyzer.model.SourceLocation;
 import com.example.springbootanalyzer.analyzer.model.configuration.ApplicationProperty;
 import com.example.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
 import com.example.springbootanalyzer.analyzer.model.http.ActuatorEndpointExposure;
@@ -476,7 +479,21 @@ public class HttpSurfaceAnalyzer {
                 .filter(value -> value.startsWith("http://"))
                 .count();
         if (insecureUrlCount > 0) {
-            findings.add(FindingFactory.builder(FindingRules.SPRING_HTTP_PLAIN_URL, FindingConfidence.HIGH)
+            List<FindingOccurrence> occurrences = new ArrayList<>();
+            configuredUrls.stream()
+                    .filter(this::isReportablePlainHttpConfiguredUrl)
+                    .forEach(url -> occurrences.add(configuredUrlOccurrence(
+                            url,
+                            "Configured plain HTTP URL: " + url.propertyName() + "=" + sanitizeUrlValue(url.value())
+                    )));
+            outboundEndpoints.stream()
+                    .filter(this::isReportablePlainHttpOutbound)
+                    .forEach(endpoint -> occurrences.add(outboundEndpointOccurrence(
+                            endpoint,
+                            "Outbound plain HTTP call: " + endpoint.method() + " " + sanitizeUrlValue(endpoint.urlOrTemplate())
+                    )));
+
+            FindingFactory.Builder builder = FindingFactory.builder(FindingRules.SPRING_HTTP_PLAIN_URL, FindingConfidence.HIGH)
                     .shortMessage(insecureUrlCount + " external HTTP endpoints use plain http:// instead of https://.")
                     .whyBadPractice("Plain HTTP can expose traffic to interception or modification outside trusted local environments.")
                     .possibleImpact("Credentials, tokens, and business data can cross the network without transport security when these endpoints are used outside local or tightly controlled environments.")
@@ -485,7 +502,11 @@ public class HttpSurfaceAnalyzer {
                     .limitations("Static analysis cannot prove the full network topology or whether an internal transport layer adds encryption outside the application configuration.")
                     .target("external HTTP URLs")
                     .location("HTTP surface")
-                    .build());
+                    .occurrences(occurrences);
+            if (!occurrences.isEmpty()) {
+                builder.sourceLocation(occurrences.get(0).location());
+            }
+            findings.add(builder.build());
         }
 
         long querySecretCount = Stream.concat(
@@ -1022,6 +1043,45 @@ public class HttpSurfaceAnalyzer {
     private String simpleName(String value) {
         int separatorIndex = value.lastIndexOf('.');
         return separatorIndex < 0 ? value : value.substring(separatorIndex + 1);
+    }
+
+    private FindingOccurrence configuredUrlOccurrence(ConfiguredUrl configuredUrl, String message) {
+        Integer line = configuredUrl.line();
+        SourceLocation location = new SourceLocation(
+                configuredUrl.sourceFile(),
+                line != null && line > 0 ? line : 0,
+                line != null && line > 0 ? line : 0,
+                null,
+                null,
+                configuredUrl.propertyName(),
+                SourceLocation.inferLanguage(configuredUrl.sourceFile()),
+                null
+        );
+        List<HighlightRange> ranges = line != null && line > 0
+                ? List.of(new HighlightRange(line, line, null, null, "issue"))
+                : List.of();
+        return new FindingOccurrence(message, location, ranges);
+    }
+
+    private FindingOccurrence outboundEndpointOccurrence(OutboundEndpoint endpoint, String message) {
+        Integer line = endpoint.line();
+        String symbol = Stream.of(endpoint.className(), endpoint.methodName())
+                .filter(Objects::nonNull)
+                .collect(Collectors.joining("#"));
+        SourceLocation location = new SourceLocation(
+                endpoint.sourceFile(),
+                line != null && line > 0 ? line : 0,
+                line != null && line > 0 ? line : 0,
+                null,
+                null,
+                symbol.isBlank() ? null : symbol,
+                SourceLocation.inferLanguage(endpoint.sourceFile()),
+                null
+        );
+        List<HighlightRange> ranges = line != null && line > 0
+                ? List.of(new HighlightRange(line, line, null, null, "issue"))
+                : List.of();
+        return new FindingOccurrence(message, location, ranges);
     }
 
     public record Result(

@@ -328,6 +328,14 @@ class ConfigurationAnalyzerTest {
                 .noneMatch(message -> message != null && message.contains("java.vm.name"))
                 .noneMatch(message -> message != null && message.contains("java.runtime.version"))
                 .anyMatch(message -> message != null && message.contains("my.application.setting"));
+        assertThat(result.findings()).filteredOn(finding -> "CONFIG_CODE_REFERENCE_MISSING".equals(finding.ruleId()))
+                .singleElement()
+                .satisfies(finding -> {
+                    assertThat(finding.primaryLocation()).isNotNull();
+                    assertThat(finding.primaryLocation().filePath()).isEqualTo("src/main/java/com/example/demo/ConfigReferences.java");
+                    assertThat(finding.primaryLocation().startLine()).isGreaterThan(0);
+                    assertThat(finding.occurrences()).hasSize(2);
+                });
     }
 
     @Test
@@ -367,6 +375,31 @@ class ConfigurationAnalyzerTest {
                 .extracting(Finding::target)
                 .contains("spring.application.name")
                 .doesNotContain("distributionurl", "org.gradle.jvmargs", "java_version");
+    }
+
+    @Test
+    void attachesProfileSpecificFilesAsOccurrencesWithoutFakeLineNumbers() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.writeString(tempDir.resolve("src/main/resources/application.properties"), "app.mode=default");
+        Files.writeString(tempDir.resolve("src/main/resources/application-prod.properties"), "app.mode=prod");
+        Files.writeString(tempDir.resolve("src/main/resources/application-dev.yml"), """
+                app:
+                  mode: dev
+                """);
+
+        var result = analyzer.analyze(tempDir, emptyBuildInfo());
+
+        assertThat(result.findings()).filteredOn(finding -> "SPRING_PROFILE_SPECIFIC_CONFIG".equals(finding.ruleId()))
+                .singleElement()
+                .satisfies(finding -> {
+                    assertThat(finding.primaryLocation()).isNotNull();
+                    assertThat(finding.primaryLocation().filePath()).isEqualTo("src/main/resources/application-dev.yml");
+                    assertThat(finding.primaryLocation().startLine()).isZero();
+                    assertThat(finding.occurrences()).extracting(occurrence -> occurrence.location().filePath())
+                            .contains("src/main/resources/application-dev.yml", "src/main/resources/application-prod.properties");
+                    assertThat(finding.occurrences()).allSatisfy(occurrence ->
+                            assertThat(occurrence.location().startLine()).isZero());
+                });
     }
 
     @Test

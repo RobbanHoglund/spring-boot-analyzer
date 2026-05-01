@@ -214,6 +214,7 @@ export interface PropertyReference {
   propertyName?: string;
   referenceType?: string;
   sourceFile?: string;
+  line?: number | null;
   className?: string;
   defaultValue?: string | null;
   required?: boolean;

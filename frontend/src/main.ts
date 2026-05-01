@@ -758,9 +758,12 @@ function buildFindingCodeOccurrences(findings: Finding[]): FindingCodeOccurrence
 
 function normalizeSourceLocation(location: SourceLocation | undefined, finding: Finding): SourceLocation | null {
   if (location?.filePath) {
+    const startLine = location.startLine && location.startLine > 0 ? location.startLine : undefined;
+    const endLine = location.endLine && location.endLine > 0 ? location.endLine : startLine;
     return {
       ...location,
-      endLine: location.endLine ?? location.startLine,
+      startLine,
+      endLine,
       language: location.language ?? inferSourceLanguage(location.filePath)
     };
   }

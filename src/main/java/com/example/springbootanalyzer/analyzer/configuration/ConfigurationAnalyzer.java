@@ -5,8 +5,11 @@ import com.example.springbootanalyzer.analyzer.model.Finding;
 import com.example.springbootanalyzer.analyzer.model.FindingCategory;
 import com.example.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.example.springbootanalyzer.analyzer.model.FindingFactory;
+import com.example.springbootanalyzer.analyzer.model.FindingOccurrence;
 import com.example.springbootanalyzer.analyzer.model.FindingRules;
 import com.example.springbootanalyzer.analyzer.model.FindingSeverity;
+import com.example.springbootanalyzer.analyzer.model.HighlightRange;
+import com.example.springbootanalyzer.analyzer.model.SourceLocation;
 import com.example.springbootanalyzer.analyzer.model.configuration.ApplicationProperty;
 import com.example.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
 import com.example.springbootanalyzer.analyzer.model.configuration.ConfigurationFile;
@@ -564,8 +567,14 @@ public class ConfigurationAnalyzer {
             List<ConfigurationPropertiesClass> configurationPropertiesClasses,
             List<Finding> findings
     ) {
-        if (files.stream().anyMatch(file -> !"default".equals(file.profile()) && !"bootstrap".equals(file.profile()))) {
-            findings.add(FindingFactory.builder(
+        List<ConfigurationFile> profileSpecificFiles = files.stream()
+                .filter(file -> !"default".equals(file.profile()) && !"bootstrap".equals(file.profile()))
+                .toList();
+        if (!profileSpecificFiles.isEmpty()) {
+            List<FindingOccurrence> occurrences = profileSpecificFiles.stream()
+                    .map(this::profileConfigurationOccurrence)
+                    .toList();
+            FindingFactory.Builder builder = FindingFactory.builder(
                             "SPRING_PROFILE_SPECIFIC_CONFIG",
                             "Profile-specific configuration files were found",
                             FindingSeverity.INFO,
@@ -581,7 +590,11 @@ public class ConfigurationAnalyzer {
                     .limitations("Static analysis cannot prove which profiles are active in production or how deployment systems inject additional properties.")
                     .target("profiles")
                     .location("Configuration")
-                    .build());
+                    .occurrences(occurrences);
+            if (!occurrences.isEmpty()) {
+                builder.sourceLocation(occurrences.get(0).location());
+            }
+            findings.add(builder.build());
         }
 
         long unknownCount = configuredProperties.stream().filter(property -> property.kind() == PropertyKind.UNKNOWN).count();
@@ -638,9 +651,32 @@ public class ConfigurationAnalyzer {
             }
         }
 
+        Map<String, List<PropertyReference>> missingReferencesByProperty = new LinkedHashMap<>();
         for (PropertyReference reference : referencedOnly) {
             if (missingReferencedProperties.add(reference.propertyName())) {
-                findings.add(FindingFactory.builder(
+                missingReferencesByProperty.put(reference.propertyName(), new ArrayList<>());
+            }
+            List<PropertyReference> bucket = missingReferencesByProperty.get(reference.propertyName());
+            if (bucket != null) {
+                bucket.add(reference);
+            }
+        }
+
+        for (Map.Entry<String, List<PropertyReference>> entry : missingReferencesByProperty.entrySet()) {
+            String propertyName = entry.getKey();
+            List<PropertyReference> references = entry.getValue();
+            if (references.isEmpty()) {
+                continue;
+            }
+            PropertyReference representative = references.get(0);
+            List<FindingOccurrence> occurrences = references.stream()
+                    .map(reference -> propertyReferenceOccurrence(
+                            reference,
+                            reference.referenceType() + " references " + reference.propertyName()
+                                    + (reference.className() != null ? " in " + reference.className() : "")
+                    ))
+                    .toList();
+            FindingFactory.Builder builder = FindingFactory.builder(
                                 "CONFIG_CODE_REFERENCE_MISSING",
                                 "Referenced property is not configured",
                                 FindingSeverity.WARNING,
@@ -648,16 +684,21 @@ public class ConfigurationAnalyzer {
                                 com.example.springbootanalyzer.analyzer.model.FindingRuntimeDetection.NOT_NORMALLY_DETECTED,
                                 FindingConfidence.MEDIUM
                         )
-                        .shortMessage("Property is referenced in code but no matching configured property was found in scanned files: " + reference.propertyName())
+                        .shortMessage("Property is referenced in code but no matching configured property was found in scanned files: " + propertyName)
                         .whyBadPractice("A property that is only referenced in code can silently fall back to defaults, null-like behavior, or environment-only wiring that is hard to see in code review.")
                         .possibleImpact("Behavior may differ between local development, CI, and production depending on environment variables, deployment secrets, or missing profile files.")
                         .recommendation("Either configure the property explicitly, document that it must come from the environment, or remove the unused reference if it is stale.")
-                        .evidence(reference.referenceType() + " references " + reference.propertyName() + " in " + reference.sourceFile() + ".")
+                        .evidence(missingPropertyEvidence(propertyName, references))
                         .limitations("Static analysis cannot see higher-precedence environment variables, deployment platform secrets, or late-bound property sources that may satisfy the reference at runtime.")
-                        .source(reference.sourceFile(), null)
-                        .target(reference.propertyName())
-                        .build());
+                        .target(propertyName)
+                        .occurrences(occurrences);
+            SourceLocation representativeLocation = occurrenceLocation(occurrences);
+            if (representativeLocation != null) {
+                builder.sourceLocation(representativeLocation);
+            } else {
+                builder.source(representative.sourceFile(), representative.line());
             }
+            findings.add(builder.build());
         }
 
         for (ConfigurationPropertiesClass configurationPropertiesClass : configurationPropertiesClasses) {
@@ -762,6 +803,68 @@ public class ConfigurationAnalyzer {
 
     private boolean isPlaceholder(String value) {
         return value != null && value.trim().startsWith("${") && value.trim().endsWith("}");
+    }
+
+    private FindingOccurrence profileConfigurationOccurrence(ConfigurationFile configurationFile) {
+        SourceLocation location = new SourceLocation(
+                configurationFile.path(),
+                0,
+                0,
+                null,
+                null,
+                configurationFile.profile(),
+                SourceLocation.inferLanguage(configurationFile.path()),
+                null
+        );
+        String profile = configurationFile.profile() == null || configurationFile.profile().isBlank()
+                ? "default"
+                : configurationFile.profile();
+        return new FindingOccurrence(
+                "Profile-specific configuration file detected for profile '" + profile + "'.",
+                location,
+                List.of()
+        );
+    }
+
+    private FindingOccurrence propertyReferenceOccurrence(PropertyReference reference, String message) {
+        Integer line = reference.line();
+        SourceLocation location = new SourceLocation(
+                reference.sourceFile(),
+                line != null && line > 0 ? line : 0,
+                line != null && line > 0 ? line : 0,
+                null,
+                null,
+                reference.className(),
+                SourceLocation.inferLanguage(reference.sourceFile()),
+                null
+        );
+        List<HighlightRange> ranges = line != null && line > 0
+                ? List.of(new HighlightRange(line, line, null, null, "issue"))
+                : List.of();
+        return new FindingOccurrence(message, location, ranges);
+    }
+
+    private SourceLocation occurrenceLocation(List<FindingOccurrence> occurrences) {
+        return occurrences.stream()
+                .map(FindingOccurrence::location)
+                .filter(location -> location != null && location.filePath() != null)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private String missingPropertyEvidence(String propertyName, List<PropertyReference> references) {
+        List<String> examples = references.stream()
+                .map(reference -> {
+                    String location = reference.sourceFile();
+                    if (reference.line() != null && reference.line() > 0) {
+                        location += ":" + reference.line();
+                    }
+                    return reference.referenceType() + " in " + location;
+                })
+                .distinct()
+                .limit(5)
+                .toList();
+        return propertyName + " was referenced from " + String.join(", ", examples) + ".";
     }
 
     private boolean hasDirectSensitiveLiteral(String rawValue) {

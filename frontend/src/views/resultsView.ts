@@ -601,7 +601,11 @@ function renderTopConcernsCard(result: AnalyzeRepositoryResponse): HTMLElement {
       element(
         'div',
         { className: 'top-concern-meta' },
-        element('span', { className: `badge badge-${concern.severity.toLowerCase()}`, text: concern.severity }),
+        element('span', {
+          className: `badge badge-${concern.severity.toLowerCase()}`,
+          text: concern.severity,
+          attributes: { title: severityExplanation(concern.severity), 'aria-label': severityExplanation(concern.severity) }
+        }),
         element('span', { className: 'badge badge-category', text: concern.category }),
         element('span', { className: 'badge badge-runtime', text: concern.runtimeDetection }),
         concern.occurrences > 1
@@ -707,7 +711,7 @@ function renderFindingsSection(
     'results-findings',
     'Prioritized static findings from configuration, code patterns, HTTP usage, and profile drift.',
     [
-      sectionChip(`${warningCount} warnings`, warningCount > 0 ? 'warning' : 'default'),
+      sectionChip(`${warningCount} warnings to review`, warningCount > 0 ? 'warning' : 'default'),
       sectionChip(`${staticOnlyCount} detected statically`, 'info')
     ]
   );
@@ -721,7 +725,7 @@ function renderFindingsSection(
   const summary = element('div', { className: 'stat-grid compact' });
   const summaryStats: Array<{ label: string; value: number; className?: string }> = [
     { label: 'Total findings', value: findings.length },
-    { label: 'Errors', value: findings.filter((finding) => normalizeSeverity(finding.severity) === 'ERROR').length, className: 'severity-error' },
+    { label: 'Errors / blocking', value: findings.filter((finding) => normalizeSeverity(finding.severity) === 'ERROR').length, className: 'severity-error' },
     { label: 'Warnings', value: findings.filter((finding) => normalizeSeverity(finding.severity) === 'WARNING').length, className: 'severity-warning' },
     { label: 'Info', value: findings.filter((finding) => normalizeSeverity(finding.severity) === 'INFO').length, className: 'severity-info' },
     {
@@ -751,6 +755,12 @@ function renderFindingsSection(
     );
   }
   section.appendChild(summary);
+  section.appendChild(
+    element('p', {
+      className: 'muted-text findings-severity-note',
+      text: 'Warnings are prioritized static review items. Errors are reserved for analyzer failures or other blocking conditions.'
+    })
+  );
 
   const primaryControls = element('div', { className: 'filter-row compact-filter-row' });
   primaryControls.append(
@@ -2994,7 +3004,8 @@ function renderFindingDetailsCard(
     [primary.confidence, 'badge badge-confidence'],
     [primary.runtimeDetection, 'badge badge-runtime']
   ] as Array<[string, string]>) {
-    badgeRow.appendChild(element('span', { className, text }));
+    const title = className.includes(`badge-${primary.severity.toLowerCase()}`) ? severityExplanation(text) : text;
+    badgeRow.appendChild(element('span', { className, text, attributes: { title } }));
   }
   if (mixedSeverity) {
     badgeRow.appendChild(
@@ -3169,7 +3180,8 @@ function renderCodeSnippetModal(
     [confidenceLabel(normalizeConfidence(modalState.confidence)), 'badge badge-confidence'],
     [runtimeDetectionLabel(normalizeRuntimeDetection(modalState.runtimeDetection)), 'badge badge-runtime']
   ] as Array<[string, string]>) {
-    badgeRow.appendChild(element('span', { className, text }));
+    const title = className.includes(`badge-${modalState.severity.toLowerCase()}`) ? severityExplanation(text) : text;
+    badgeRow.appendChild(element('span', { className, text, attributes: { title } }));
   }
 
   const actionRow = element('div', { className: 'code-snippet-modal-actions' });
@@ -3386,10 +3398,11 @@ function renderFindingExplanationSections(finding: Finding): HTMLElement {
 function badgeCell(text: string, badgeClass: string): HTMLTableCellElement {
   const cell = document.createElement('td');
   cell.className = 'cell-badge';
+  const title = severityExplanation(text);
   const badge = element('span', {
     className: badgeClass,
     text,
-    attributes: { title: text, 'aria-label': text }
+    attributes: { title, 'aria-label': title }
   });
   cell.appendChild(badge);
   return cell;
@@ -3649,6 +3662,19 @@ function severityLabel(value: string): string {
       return 'Warnings';
     case 'INFO':
       return 'Info';
+    default:
+      return value;
+  }
+}
+
+function severityExplanation(value: string): string {
+  switch (normalizeSeverity(value)) {
+    case 'ERROR':
+      return 'Error — reserved for analyzer failures or other blocking conditions.';
+    case 'WARNING':
+      return 'Warning — prioritized static finding to review.';
+    case 'INFO':
+      return 'Info — lower-severity or heuristic finding.';
     default:
       return value;
   }
