@@ -261,6 +261,90 @@ public final class FindingRules {
             FindingCategory.MAINTAINABILITY,
             FindingRuntimeDetection.NOT_NORMALLY_DETECTED
     );
+    public static final FindingRule SPRING_MODIFYING_NO_TRANSACTION = rule(
+            "SPRING_MODIFYING_NO_TRANSACTION",
+            "@Modifying query has no transaction boundary",
+            FindingSeverity.ERROR,
+            FindingCategory.PERSISTENCE,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_DDL_AUTO_DESTRUCTIVE_PROD = rule(
+            "SPRING_DDL_AUTO_DESTRUCTIVE_PROD",
+            "Destructive Hibernate DDL-auto setting in production-oriented profile",
+            FindingSeverity.ERROR,
+            FindingCategory.PERSISTENCE,
+            FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT
+    );
+    public static final FindingRule SPRING_JPA_SHOW_SQL_PROD = rule(
+            "SPRING_JPA_SHOW_SQL_PROD",
+            "spring.jpa.show-sql=true in production-oriented profile",
+            FindingSeverity.WARNING,
+            FindingCategory.CONFIGURATION,
+            FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT
+    );
+    public static final FindingRule SPRING_JPA_OPEN_IN_VIEW = rule(
+            "SPRING_JPA_OPEN_IN_VIEW",
+            "Open-session-in-view is not explicitly disabled",
+            FindingSeverity.WARNING,
+            FindingCategory.PERSISTENCE,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_TRANSACTIONAL_ON_SCHEDULED = rule(
+            "SPRING_TRANSACTIONAL_ON_SCHEDULED",
+            "@Transactional and @Scheduled on the same method",
+            FindingSeverity.WARNING,
+            FindingCategory.TRANSACTION,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_CSRF_DISABLED = rule(
+            "SPRING_CSRF_DISABLED",
+            "CSRF protection is disabled",
+            FindingSeverity.WARNING,
+            FindingCategory.SECURITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_CORS_ALLOW_ALL = rule(
+            "SPRING_CORS_ALLOW_ALL",
+            "CORS configuration allows all origins",
+            FindingSeverity.WARNING,
+            FindingCategory.SECURITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_REQUEST_PARAM_SENSITIVE_NAME = rule(
+            "SPRING_REQUEST_PARAM_SENSITIVE_NAME",
+            "Sensitive value passed as URL parameter or path variable",
+            FindingSeverity.WARNING,
+            FindingCategory.SECURITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_VALUE_NO_DEFAULT = rule(
+            "SPRING_VALUE_NO_DEFAULT",
+            "@Value property reference has no default value",
+            FindingSeverity.WARNING,
+            FindingCategory.CONFIGURATION,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_FIELD_INJECTION = rule(
+            "SPRING_FIELD_INJECTION",
+            "@Autowired field injection used instead of constructor injection",
+            FindingSeverity.INFO,
+            FindingCategory.MAINTAINABILITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_REQUEST_MAPPING_NO_METHOD = rule(
+            "SPRING_REQUEST_MAPPING_NO_METHOD",
+            "@RequestMapping method has no HTTP method constraint",
+            FindingSeverity.INFO,
+            FindingCategory.API_SURFACE,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_CONFIGURATION_PROPERTIES_NOT_VALIDATED = rule(
+            "SPRING_CONFIGURATION_PROPERTIES_NOT_VALIDATED",
+            "@ConfigurationProperties class has no @Validated annotation",
+            FindingSeverity.INFO,
+            FindingCategory.VALIDATION,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
 
     private FindingRules() {
     }

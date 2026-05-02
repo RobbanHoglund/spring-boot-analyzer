@@ -102,6 +102,13 @@ public class StaticPracticeFindingAnalyzer {
     );
     private static final Pattern FLYWAY_MIGRATION_PATTERN = Pattern.compile("V(?<version>[0-9][^_]+)__.+\\.sql", Pattern.CASE_INSENSITIVE);
     private static final Set<String> MESSAGING_LISTENER_ANNOTATIONS = Set.of("KafkaListener", "RabbitListener", "JmsListener", "SqsListener");
+    private static final Set<String> SENSITIVE_PARAM_NAMES = Set.of(
+            "password", "passwd", "secret", "token", "apikey", "api_key", "api-key",
+            "credential", "credentials", "authorization", "private_key", "private-key",
+            "access_token", "access-token", "refresh_token", "refresh-token",
+            "client_secret", "client-secret", "jwt", "jwt_secret", "jwt-secret"
+    );
+    private static final Pattern VALUE_NO_DEFAULT_PATTERN = Pattern.compile("\\$\\{[^}:]+\\}");
     private final JavaParser javaParser;
 
     public StaticPracticeFindingAnalyzer() {
@@ -126,6 +133,7 @@ public class StaticPracticeFindingAnalyzer {
         detectConditionalBeanMatrixIssues(configurationAnalysis, findings);
         detectFlywaySchemaRisks(repositoryRoot, buildInfo, configurationAnalysis, gradleModelAnalysis, findings);
         detectMissingSecurityStarter(buildInfo, findings);
+        detectOpenInViewNotDisabled(configurationAnalysis, findings);
         detectSourcePractices(repositoryRoot, httpSurfaceAnalysis, detectedClasses, findings);
         detectRepeatedFallbackParsingPattern(findings);
         return dedupe(findings);
@@ -249,6 +257,39 @@ public class StaticPracticeFindingAnalyzer {
                         name,
                         FindingConfidence.HIGH
                 ));
+            } else if (prodLike && "spring.jpa.hibernate.ddl-auto".equals(name)
+                    && (value.equalsIgnoreCase("create") || value.equalsIgnoreCase("create-drop"))) {
+                findings.add(FindingFactory.builder(FindingRules.SPRING_DDL_AUTO_DESTRUCTIVE_PROD, FindingConfidence.HIGH)
+                        .shortMessage("spring.jpa.hibernate.ddl-auto=" + value + " can destroy the database schema on startup in a production-oriented profile.")
+                        .whyBadPractice("create and create-drop both drop and recreate tables at application startup. In production this destroys all existing data unconditionally.")
+                        .possibleImpact("Every deployment will wipe the database. This is almost certainly unintended in a production or staging environment and cannot be undone.")
+                        .recommendation("Use validate or none in production profiles. Manage schema changes through Flyway or Liquibase migrations.")
+                        .evidence("spring.jpa.hibernate.ddl-auto=" + value + " was found in " + property.sourceFile() + ".")
+                        .limitations("Static analysis cannot determine whether the target database is disposable or whether the profile is always active in deployment.")
+                        .source(property.sourceFile(), property.line())
+                        .target(name)
+                        .build());
+            } else if (prodLike && "spring.jpa.show-sql".equals(name) && "true".equalsIgnoreCase(value)) {
+                findings.add(configFinding(
+                        "spring.jpa.show-sql=true prints all SQL statements to stdout in a production-oriented profile.",
+                        "SQL logging at the JPA layer bypasses the application logging framework, writes directly to stdout, and cannot be controlled by log-level configuration.",
+                        "Production logs become noisy, schema details and query structures are exposed in log aggregation systems, and performance overhead is added on every query.",
+                        "Use logging.level.org.hibernate.SQL=DEBUG or a query profiling tool instead, and keep it disabled in production profiles.",
+                        property,
+                        name,
+                        FindingConfidence.HIGH
+                ));
+            } else if ("spring.jpa.open-in-view".equals(name) && "true".equalsIgnoreCase(value)) {
+                findings.add(FindingFactory.builder(FindingRules.SPRING_JPA_OPEN_IN_VIEW, FindingConfidence.HIGH)
+                        .shortMessage("spring.jpa.open-in-view=true is explicitly enabled.")
+                        .whyBadPractice("Open-session-in-view keeps the Hibernate session open through the entire HTTP request, including the view rendering phase. This silently enables lazy loading outside the service layer and masks N+1 query problems.")
+                        .possibleImpact("Unexpected database queries fire during serialization or view rendering, making performance problems hard to diagnose and reproduce. Transactions may hold database connections longer than necessary.")
+                        .recommendation("Set spring.jpa.open-in-view=false and load all required data explicitly in the service layer using DTO projections, JOIN FETCH, or entity graphs.")
+                        .evidence("spring.jpa.open-in-view=true was found in " + property.sourceFile() + ".")
+                        .limitations("Some applications intentionally use open-in-view for simplicity in read-heavy screens. Verify whether lazy loading outside the service layer is an intentional design choice.")
+                        .source(property.sourceFile(), property.line())
+                        .target(name)
+                        .build());
             }
         }
     }
@@ -494,14 +535,25 @@ public class StaticPracticeFindingAnalyzer {
         boolean repositoryLike = hasAnyAnnotation(declaration.getAnnotations(), Set.of("Repository"));
         boolean entityLike = hasAnnotation(declaration.getAnnotations(), "Entity");
         boolean configurationLike = hasAnnotation(declaration.getAnnotations(), "Configuration");
+        boolean configPropertiesLike = hasAnnotation(declaration.getAnnotations(), "ConfigurationProperties");
+        boolean classTransactional = hasAnnotation(declaration.getAnnotations(), "Transactional");
         boolean startupInterface = implementsAny(declaration, Set.of("CommandLineRunner", "ApplicationRunner", "InitializingBean", "SmartLifecycle"));
         Set<String> transactionalMethods = declaration.getMethods().stream()
-                .filter(method -> hasAnnotation(method.getAnnotations(), "Transactional") || hasAnnotation(declaration.getAnnotations(), "Transactional"))
+                .filter(method -> hasAnnotation(method.getAnnotations(), "Transactional") || classTransactional)
                 .map(MethodDeclaration::getNameAsString)
                 .collect(Collectors.toSet());
 
         if (!outboundEndpoints.isEmpty()) {
             detectHttpClientGaps(relativePath, fileContent, outboundEndpoints, findings);
+        }
+
+        for (FieldDeclaration field : declaration.getFields()) {
+            if (hasAnnotation(field.getAnnotations(), "Autowired") && !field.isStatic()) {
+                detectFieldInjection(relativePath, declaration, field, findings);
+            }
+            if (hasAnnotation(field.getAnnotations(), "Value")) {
+                detectValueWithoutDefault(relativePath, declaration, field, findings);
+            }
         }
 
         for (ConstructorDeclaration constructor : declaration.getConstructors()) {
@@ -570,6 +622,21 @@ public class StaticPracticeFindingAnalyzer {
             if (hasAnyAnnotation(method.getAnnotations(), MESSAGING_LISTENER_ANNOTATIONS)) {
                 detectMessagingListenerRisks(relativePath, declaration, method, findings);
             }
+
+            if (hasAnnotation(method.getAnnotations(), "Modifying")
+                    && !hasAnnotation(method.getAnnotations(), "Transactional")
+                    && !classTransactional) {
+                detectModifyingNoTransaction(relativePath, declaration, method, findings);
+            }
+
+            if (scheduled && hasAnnotation(method.getAnnotations(), "Transactional")) {
+                detectTransactionalOnScheduled(relativePath, declaration, method, findings);
+            }
+
+            if (controllerLike) {
+                detectRequestMappingNoMethod(relativePath, declaration, method, findings);
+                detectSensitiveRequestParams(relativePath, declaration, method, findings);
+            }
         }
 
         if (entityLike) {
@@ -579,6 +646,13 @@ public class StaticPracticeFindingAnalyzer {
         if (!configurationLike) {
             detectBeanInNonConfigurationClass(relativePath, declaration, findings);
         }
+
+        if (configPropertiesLike && !hasAnnotation(declaration.getAnnotations(), "Validated")) {
+            detectConfigPropertiesNotValidated(relativePath, declaration, findings);
+        }
+
+        detectCsrfDisabled(relativePath, declaration, findings);
+        detectCorsAllowAll(relativePath, declaration, findings);
     }
 
     private void detectExceptionHandlingInConstructor(
@@ -958,6 +1032,30 @@ public class StaticPracticeFindingAnalyzer {
         }
     }
 
+    private void detectOpenInViewNotDisabled(ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {
+        if (configurationAnalysis == null) {
+            return;
+        }
+        boolean jpaConfigured = configurationAnalysis.properties().stream()
+                .anyMatch(p -> p.name() != null && p.name().startsWith("spring.datasource."));
+        if (!jpaConfigured) {
+            return;
+        }
+        boolean openInViewExplicit = configurationAnalysis.properties().stream()
+                .anyMatch(p -> "spring.jpa.open-in-view".equals(p.name()));
+        if (!openInViewExplicit) {
+            findings.add(FindingFactory.builder(FindingRules.SPRING_JPA_OPEN_IN_VIEW, FindingConfidence.MEDIUM)
+                    .shortMessage("spring.jpa.open-in-view is not explicitly set and defaults to true.")
+                    .whyBadPractice("Spring Boot defaults open-in-view to true, keeping the Hibernate session open across the entire HTTP request including serialization. This silently enables lazy loading outside the service layer and masks N+1 query problems.")
+                    .possibleImpact("Unexpected queries fire during JSON serialization or view rendering. Transactions hold connections longer than needed. Performance problems are hard to diagnose.")
+                    .recommendation("Add spring.jpa.open-in-view=false to your application.properties or application.yml and load all required data explicitly in the service layer.")
+                    .evidence("A datasource configuration was detected but spring.jpa.open-in-view was not explicitly set, leaving it at the Spring Boot default of true.")
+                    .limitations("If the project uses Spring Data REST or a view layer that depends on lazy loading, disabling open-in-view requires explicit fetch strategies to be added.")
+                    .location("Configuration")
+                    .build());
+        }
+    }
+
     private void detectMissingSecurityStarter(BuildInfo buildInfo, List<Finding> findings) {
         if (buildInfo == null || buildInfo.dependencies() == null) {
             return;
@@ -1118,6 +1216,254 @@ public class StaticPracticeFindingAnalyzer {
                     .source(relativePath, line)
                     .target(target)
                     .build());
+        }
+    }
+
+    private void detectFieldInjection(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            FieldDeclaration field,
+            List<Finding> findings
+    ) {
+        String fieldName = field.getVariables().isEmpty() ? "?" : field.getVariables().get(0).getNameAsString();
+        String target = declaration.getNameAsString() + "." + fieldName;
+        Integer line = field.getBegin().map(position -> position.line).orElse(null);
+        findings.add(FindingFactory.builder(FindingRules.SPRING_FIELD_INJECTION, FindingConfidence.HIGH)
+                .shortMessage("Field injection via @Autowired in " + target + ".")
+                .whyBadPractice("Field injection hides dependencies from the class API, makes the class harder to instantiate in tests without a Spring context, and can enable circular dependency wiring that would fail with constructor injection.")
+                .possibleImpact("Tests require a full Spring context or reflection tricks to inject mocks. Circular dependencies may be silently resolved in an order that is hard to reason about.")
+                .recommendation("Use constructor injection instead. Declare dependencies as final fields and inject them via a constructor. This makes dependencies explicit, enables immutability, and fails fast on circular dependencies.")
+                .evidence("@Autowired found on field " + fieldName + " in " + relativePath + ".")
+                .limitations("Field injection is sometimes intentional in test code or legacy classes. Some Spring-specific injection points such as @Value on fields require field access.")
+                .source(relativePath, line)
+                .target(target)
+                .build());
+    }
+
+    private void detectValueWithoutDefault(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            FieldDeclaration field,
+            List<Finding> findings
+    ) {
+        field.getAnnotationByName("Value").ifPresent(annotation -> {
+            String expr = annotation.isSingleMemberAnnotationExpr()
+                    ? annotation.asSingleMemberAnnotationExpr().getMemberValue().toString()
+                    : annotation.isNormalAnnotationExpr()
+                            ? annotation.asNormalAnnotationExpr().getPairs().stream()
+                                    .filter(p -> "value".equals(p.getNameAsString()))
+                                    .map(p -> p.getValue().toString())
+                                    .findFirst().orElse("")
+                            : "";
+            if (expr.contains("${") && VALUE_NO_DEFAULT_PATTERN.matcher(expr).find()) {
+                String fieldName = field.getVariables().isEmpty() ? "?" : field.getVariables().get(0).getNameAsString();
+                String target = declaration.getNameAsString() + "." + fieldName;
+                Integer line = field.getBegin().map(position -> position.line).orElse(null);
+                findings.add(FindingFactory.builder(FindingRules.SPRING_VALUE_NO_DEFAULT, FindingConfidence.MEDIUM)
+                        .shortMessage("@Value(\"" + expr.replace("\"", "") + "\") on " + target + " has no default value.")
+                        .whyBadPractice("@Value expressions without a default cause an immediate startup failure with a BeanCreationException if the property is not present in the environment, regardless of whether the bean is actually used.")
+                        .possibleImpact("A missing property in any environment causes a hard startup failure. This is unforgiving in environments where not all properties are always provided.")
+                        .recommendation("Add a default with the colon syntax: @Value(\"${property.name:defaultValue}\"). Use an empty string or null default only if the absent case is handled explicitly in the code.")
+                        .evidence("@Value without default found on " + fieldName + " in " + relativePath + ".")
+                        .limitations("Static analysis cannot determine whether the property is guaranteed to be present in all target environments.")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+            }
+        });
+    }
+
+    private void detectModifyingNoTransaction(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            MethodDeclaration method,
+            List<Finding> findings
+    ) {
+        Integer line = method.getBegin().map(position -> position.line).orElse(null);
+        String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+        findings.add(FindingFactory.builder(FindingRules.SPRING_MODIFYING_NO_TRANSACTION, FindingConfidence.HIGH)
+                .shortMessage("@Modifying query " + target + " has no @Transactional boundary.")
+                .whyBadPractice("Spring Data JPA requires a transaction for @Modifying queries. Without one, the repository throws TransactionRequiredException at runtime on every invocation.")
+                .possibleImpact("Every call to this method fails with a runtime exception. The absence of a transaction is not detectable at compile time or startup.")
+                .recommendation("Add @Transactional to the repository method or to the service method that calls it.")
+                .evidence("@Modifying found without @Transactional on " + method.getNameAsString() + " in " + relativePath + ".")
+                .limitations("Static analysis cannot track whether the calling service supplies a transaction boundary, but the @Modifying method itself must be within a transaction context.")
+                .source(relativePath, line)
+                .target(target)
+                .build());
+    }
+
+    private void detectTransactionalOnScheduled(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            MethodDeclaration method,
+            List<Finding> findings
+    ) {
+        Integer line = method.getBegin().map(position -> position.line).orElse(null);
+        String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+        findings.add(FindingFactory.builder(FindingRules.SPRING_TRANSACTIONAL_ON_SCHEDULED, FindingConfidence.HIGH)
+                .shortMessage("@Transactional and @Scheduled are both present on " + target + ".")
+                .whyBadPractice("@Scheduled methods run in a dedicated scheduler thread that has no existing transaction. @Transactional on the same method may create a transaction, but it cannot be propagated or rolled back by an outer caller because there is none.")
+                .possibleImpact("Transaction behaviour becomes implicit and hard to reason about. Failures in the scheduled method may not roll back as expected, and long transactions in the scheduler thread can hold database connections for the full scheduled interval.")
+                .recommendation("Extract the transactional work into a separate service method annotated with @Transactional, and call it from the @Scheduled method. This makes the transaction boundary explicit and keeps the scheduler method a thin orchestration layer.")
+                .evidence("Both @Transactional and @Scheduled found on method " + method.getNameAsString() + " in " + relativePath + ".")
+                .limitations("Static analysis cannot determine whether the transaction actually causes problems in the specific scheduler thread pool configuration used at runtime.")
+                .source(relativePath, line)
+                .target(target)
+                .build());
+    }
+
+    private void detectRequestMappingNoMethod(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            MethodDeclaration method,
+            List<Finding> findings
+    ) {
+        method.getAnnotationByName("RequestMapping").ifPresent(annotation -> {
+            boolean hasMethodAttr = annotation.isNormalAnnotationExpr()
+                    && annotation.asNormalAnnotationExpr().getPairs().stream()
+                            .anyMatch(pair -> "method".equals(pair.getNameAsString()));
+            if (!hasMethodAttr) {
+                Integer line = method.getBegin().map(position -> position.line).orElse(null);
+                String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+                findings.add(FindingFactory.builder(FindingRules.SPRING_REQUEST_MAPPING_NO_METHOD, FindingConfidence.HIGH)
+                        .shortMessage("@RequestMapping on " + target + " has no HTTP method constraint.")
+                        .whyBadPractice("@RequestMapping without a method attribute matches all HTTP verbs (GET, POST, PUT, DELETE, PATCH, etc.). This is broader than almost any endpoint actually needs.")
+                        .possibleImpact("Mutation endpoints can be called with GET (and thus by browsers navigating a URL). Read endpoints can receive POSTs with bodies. This makes the API surface wider than intended.")
+                        .recommendation("Replace @RequestMapping with a specific annotation such as @GetMapping, @PostMapping, @PutMapping, @PatchMapping, or @DeleteMapping, or add method = RequestMethod.GET to the existing annotation.")
+                        .evidence("@RequestMapping with no method attribute found on " + method.getNameAsString() + " in " + relativePath + ".")
+                        .limitations("Static analysis cannot determine whether the broad method mapping is intentional, for example for CORS preflight or protocol negotiation.")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+            }
+        });
+    }
+
+    private void detectSensitiveRequestParams(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            MethodDeclaration method,
+            List<Finding> findings
+    ) {
+        for (Parameter parameter : method.getParameters()) {
+            String sensitiveAnnotation = null;
+            String paramValue = null;
+            for (AnnotationExpr annotation : parameter.getAnnotations()) {
+                String annotationName = simpleName(annotation.getNameAsString());
+                if (!annotationName.equals("RequestParam") && !annotationName.equals("PathVariable")) {
+                    continue;
+                }
+                String nameValue = annotation.isSingleMemberAnnotationExpr()
+                        ? annotation.asSingleMemberAnnotationExpr().getMemberValue().toString().replace("\"", "")
+                        : annotation.isNormalAnnotationExpr()
+                                ? annotation.asNormalAnnotationExpr().getPairs().stream()
+                                        .filter(p -> "value".equals(p.getNameAsString()) || "name".equals(p.getNameAsString()))
+                                        .map(p -> p.getValue().toString().replace("\"", ""))
+                                        .findFirst().orElse(parameter.getNameAsString())
+                                : parameter.getNameAsString();
+                if (SENSITIVE_PARAM_NAMES.contains(nameValue.toLowerCase(Locale.ROOT))) {
+                    sensitiveAnnotation = annotationName;
+                    paramValue = nameValue;
+                    break;
+                }
+            }
+            if (sensitiveAnnotation != null) {
+                Integer line = method.getBegin().map(position -> position.line).orElse(null);
+                String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+                findings.add(FindingFactory.builder(FindingRules.SPRING_REQUEST_PARAM_SENSITIVE_NAME, FindingConfidence.HIGH)
+                        .shortMessage("Sensitive value '" + paramValue + "' passed as @" + sensitiveAnnotation + " in " + target + ".")
+                        .whyBadPractice("Passwords, tokens, and secrets passed as URL parameters or path variables appear in server access logs, browser history, proxy logs, and referrer headers in plaintext.")
+                        .possibleImpact("Credentials are exposed in any log aggregation system that captures request URLs, making them visible to operators and making log-based security audits harder.")
+                        .recommendation("Pass sensitive values in the request body (POST/PUT) or in an Authorization or custom header, never in the URL.")
+                        .evidence("@" + sensitiveAnnotation + "(\"" + paramValue + "\") found in " + method.getNameAsString() + " in " + relativePath + ".")
+                        .limitations("Static analysis cannot determine whether the URL is only ever called over HTTPS, but even encrypted URLs are logged in plaintext on the server side.")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+            }
+        }
+    }
+
+    private void detectConfigPropertiesNotValidated(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            List<Finding> findings
+    ) {
+        String className = declaration.getNameAsString();
+        Integer line = declaration.getBegin().map(position -> position.line).orElse(null);
+        findings.add(FindingFactory.builder(FindingRules.SPRING_CONFIGURATION_PROPERTIES_NOT_VALIDATED, FindingConfidence.HIGH)
+                .shortMessage("@ConfigurationProperties class " + className + " has no @Validated annotation.")
+                .whyBadPractice("Without @Validated, constraint annotations such as @NotNull, @Min, @Max, and @Pattern on the properties class fields are silently ignored. Invalid configuration is not caught at startup.")
+                .possibleImpact("A misconfigured value (null, out of range, wrong format) reaches the application logic instead of failing fast at startup, potentially causing hard-to-diagnose runtime errors.")
+                .recommendation("Add @Validated to the @ConfigurationProperties class and annotate fields with appropriate Bean Validation constraints.")
+                .evidence("@ConfigurationProperties without @Validated found on class " + className + " in " + relativePath + ".")
+                .limitations("Static analysis cannot determine whether validation is performed elsewhere, or whether the configuration is always guaranteed to be valid by deployment tooling.")
+                .source(relativePath, line)
+                .target(className)
+                .build());
+    }
+
+    private void detectCsrfDisabled(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            List<Finding> findings
+    ) {
+        for (MethodDeclaration method : declaration.getMethods()) {
+            List<MethodCallExpr> allCalls = method.findAll(MethodCallExpr.class);
+            for (MethodCallExpr call : allCalls) {
+                boolean isDisableCall = "disable".equals(call.getNameAsString())
+                        && call.getScope().map(Object::toString).orElse("").contains("csrf");
+                boolean isCsrfLambdaDisable = "csrf".equals(call.getNameAsString())
+                        && call.getArguments().stream().anyMatch(arg -> arg.toString().contains("disable"));
+                if (isDisableCall || isCsrfLambdaDisable) {
+                    Integer line = call.getName().getBegin().map(position -> position.line).orElse(null);
+                    findings.add(FindingFactory.builder(FindingRules.SPRING_CSRF_DISABLED, FindingConfidence.HIGH)
+                            .shortMessage("CSRF protection is disabled in " + declaration.getNameAsString() + "#" + method.getNameAsString() + ".")
+                            .whyBadPractice("CSRF protection prevents forged cross-origin requests from tricking authenticated users into performing unintended actions. Disabling it removes this protection for all browser-based clients.")
+                            .possibleImpact("State-changing endpoints can be invoked by malicious sites using an authenticated user's session without their knowledge.")
+                            .recommendation("Keep CSRF enabled. If the application is a stateless REST API using token-based authentication (JWT/Bearer) and has no browser session, CSRF protection is unnecessary — but document that decision explicitly.")
+                            .evidence("csrf().disable() or equivalent pattern found in " + relativePath + ".")
+                            .limitations("Static analysis cannot determine whether the application uses stateless token authentication that makes CSRF irrelevant.")
+                            .source(relativePath, line)
+                            .target(declaration.getNameAsString() + "#" + method.getNameAsString())
+                            .build());
+                    return;
+                }
+            }
+        }
+    }
+
+    private void detectCorsAllowAll(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            List<Finding> findings
+    ) {
+        for (MethodDeclaration method : declaration.getMethods()) {
+            for (MethodCallExpr call : method.findAll(MethodCallExpr.class)) {
+                boolean isAllowedOrigins = call.getNameAsString().equals("allowedOrigins")
+                        || call.getNameAsString().equals("setAllowedOrigins")
+                        || call.getNameAsString().equals("allowedOriginPatterns");
+                if (!isAllowedOrigins) {
+                    continue;
+                }
+                boolean hasWildcard = call.getArguments().stream()
+                        .anyMatch(arg -> arg.toString().contains("\"*\""));
+                if (hasWildcard) {
+                    Integer line = call.getName().getBegin().map(position -> position.line).orElse(null);
+                    findings.add(FindingFactory.builder(FindingRules.SPRING_CORS_ALLOW_ALL, FindingConfidence.HIGH)
+                            .shortMessage("CORS wildcard allowedOrigins(\"*\") found in " + declaration.getNameAsString() + "#" + method.getNameAsString() + ".")
+                            .whyBadPractice("Allowing all origins removes the same-origin protection that browsers enforce by default. Any website can make cross-origin requests to the API on behalf of a user.")
+                            .possibleImpact("Browser-based attacks can read API responses from any origin. Combined with cookie-based authentication, this can expose user data to third-party sites.")
+                            .recommendation("Restrict allowedOrigins to an explicit allowlist of trusted domains. If the API is public and stateless, a wildcard may be acceptable but should be an explicit decision.")
+                            .evidence("allowedOrigins(\"*\") or equivalent found in " + relativePath + ".")
+                            .limitations("Static analysis cannot determine whether the API uses stateless authentication that makes the wildcard safe, or whether this is an internal-only endpoint.")
+                            .source(relativePath, line)
+                            .target(declaration.getNameAsString() + "#" + method.getNameAsString())
+                            .build());
+                    return;
+                }
+            }
         }
     }
 
