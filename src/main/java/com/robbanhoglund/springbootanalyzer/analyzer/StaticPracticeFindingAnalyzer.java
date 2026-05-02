@@ -5,6 +5,7 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.DetectedClass;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingOccurrence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.HighlightRange;
@@ -156,7 +157,11 @@ public class StaticPracticeFindingAnalyzer {
                     .collect(Collectors.joining(", "));
             boolean anyLiteralOrWeakDefault = configured.stream()
                     .anyMatch(property -> property.valueRedacted() && !property.placeholderValue());
-            findings.add(FindingFactory.builder(
+            ApplicationProperty primary = configured.stream()
+                    .filter(p -> p.valueRedacted() && !p.placeholderValue())
+                    .findFirst()
+                    .orElse(configured.get(0));
+            FindingFactory.Builder builder = FindingFactory.builder(
                             FindingRules.SPRING_SECRET_MULTI_PROFILE.ruleId(),
                             FindingRules.SPRING_SECRET_MULTI_PROFILE.title(),
                             anyLiteralOrWeakDefault ? com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity.WARNING : FindingRules.SPRING_SECRET_MULTI_PROFILE.defaultSeverity(),
@@ -171,8 +176,17 @@ public class StaticPracticeFindingAnalyzer {
                     .evidence("Sensitive property definitions were found in multiple configuration sources: " + evidence + ".")
                     .limitations("Static analysis cannot prove whether the values are identical because sensitive values are redacted before presentation.")
                     .target(entry.getKey())
-                    .location("Configuration")
-                    .build());
+                    .source(primary.sourceFile(), primary.line());
+            for (ApplicationProperty prop : configured) {
+                int lineNum = prop.line() != null ? prop.line() : 0;
+                String profileLabel = prop.profile() != null ? " [" + prop.profile() + "]" : "";
+                builder.addOccurrence(new FindingOccurrence(
+                        prop.sourceFile() + profileLabel,
+                        new SourceLocation(prop.sourceFile(), lineNum, lineNum, null, null, entry.getKey(), null, null),
+                        null
+                ));
+            }
+            findings.add(builder.build());
         }
     }
 
@@ -335,16 +349,35 @@ public class StaticPracticeFindingAnalyzer {
                 String evidence = properties.stream()
                         .map(property -> normalizedProfile(property.profile()) + "=" + renderedValue(property))
                         .collect(Collectors.joining(", "));
-                findings.add(FindingFactory.builder(FindingRules.SPRING_PROFILE_DRIFT, FindingConfidence.HIGH)
+                ApplicationProperty driftPrimary = properties.stream()
+                        .filter(p -> p.sourceFile() != null)
+                        .findFirst()
+                        .orElse(null);
+                FindingFactory.Builder driftBuilder = FindingFactory.builder(FindingRules.SPRING_PROFILE_DRIFT, FindingConfidence.HIGH)
                         .shortMessage("Configuration differs across profiles for " + entry.getKey())
                         .whyBadPractice("Spring evaluates only the active profile at runtime, so static drift between profile files is easy to miss during local startup checks.")
                         .possibleImpact("Different profiles may call different external services, expose different diagnostics, or enable different scheduling behavior after deployment.")
                         .recommendation("Review profile overrides together, document the intended environment-specific behavior, and add tests or smoke checks for critical profile combinations.")
                         .evidence("Profile values detected: " + evidence + ".")
                         .limitations("Static analysis cannot prove which profile is active in production or whether higher-precedence environment variables override these files.")
-                        .target(entry.getKey())
-                        .location("Configuration")
-                        .build());
+                        .target(entry.getKey());
+                if (driftPrimary != null) {
+                    driftBuilder.source(driftPrimary.sourceFile(), driftPrimary.line());
+                } else {
+                    driftBuilder.location("Configuration");
+                }
+                for (ApplicationProperty prop : properties) {
+                    if (prop.sourceFile() != null) {
+                        int lineNum = prop.line() != null ? prop.line() : 0;
+                        String label = normalizedProfile(prop.profile()) + "=" + renderedValue(prop);
+                        driftBuilder.addOccurrence(new FindingOccurrence(
+                                label,
+                                new SourceLocation(prop.sourceFile(), lineNum, lineNum, null, null, entry.getKey(), null, null),
+                                null
+                        ));
+                    }
+                }
+                findings.add(driftBuilder.build());
             }
         }
     }
@@ -1961,16 +1994,31 @@ public class StaticPracticeFindingAnalyzer {
         if (parserFallbacks.size() > 6) {
             evidence = evidence + ", ...";
         }
-        findings.add(FindingFactory.builder(FindingRules.SPRING_REPEATED_FALLBACK_PARSING_PATTERN, FindingConfidence.MEDIUM)
+        SourceLocation firstFallbackLocation = parserFallbacks.stream()
+                .map(Finding::primaryLocation)
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElse(null);
+        FindingFactory.Builder patternBuilder = FindingFactory.builder(FindingRules.SPRING_REPEATED_FALLBACK_PARSING_PATTERN, FindingConfidence.MEDIUM)
                 .shortMessage("Similar parse/fallback exception handling appears in multiple classes.")
                 .whyBadPractice("Repeated parser helpers that silently fall back on exceptions spread data-loss behavior across the codebase and make failure handling harder to reason about consistently.")
                 .possibleImpact("Unexpected input can be dropped in slightly different ways across parsing paths, which makes data quality issues harder to diagnose and operational behavior harder to compare.")
                 .recommendation("Consider centralizing parsing rules and making fallback behavior explicit with typed parse results, comments, metrics, or targeted debug logging where the behavior matters operationally.")
                 .evidence("Parser-like fallback handling was detected in multiple locations: " + evidence + ".")
                 .limitations("Static analysis cannot prove whether every fallback is wrong, but repeated silent parsing fallbacks are worth reviewing together.")
-                .target("Multiple parsing helpers")
-                .location("Exception handling")
-                .build());
+                .target("Multiple parsing helpers");
+        if (firstFallbackLocation != null) {
+            patternBuilder.sourceLocation(firstFallbackLocation);
+        } else {
+            patternBuilder.location("Exception handling");
+        }
+        for (Finding fallback : parserFallbacks) {
+            if (fallback.primaryLocation() != null) {
+                String occMsg = defaultString(fallback.target(), fallback.sourceFile());
+                patternBuilder.addOccurrence(new FindingOccurrence(occMsg, fallback.primaryLocation(), null));
+            }
+        }
+        findings.add(patternBuilder.build());
     }
 
     private boolean isParserLikeFallbackFinding(Finding finding) {
