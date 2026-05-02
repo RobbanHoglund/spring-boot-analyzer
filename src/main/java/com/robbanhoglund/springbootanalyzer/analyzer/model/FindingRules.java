@@ -212,6 +212,55 @@ public final class FindingRules {
             FindingCategory.VALIDATION,
             FindingRuntimeDetection.NOT_NORMALLY_DETECTED
     );
+    public static final FindingRule SPRING_ASYNC_PROXY_BYPASS = rule(
+            "SPRING_ASYNC_PROXY_BYPASS",
+            "@Async on private method will not be intercepted by proxy",
+            FindingSeverity.WARNING,
+            FindingCategory.MAINTAINABILITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_ASYNC_VOID_SWALLOWED_EXCEPTION = rule(
+            "SPRING_ASYNC_VOID_SWALLOWED_EXCEPTION",
+            "@Async void method has no exception handling",
+            FindingSeverity.INFO,
+            FindingCategory.EXCEPTION_HANDLING,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_MESSAGING_LISTENER_NO_ERROR_HANDLER = rule(
+            "SPRING_MESSAGING_LISTENER_NO_ERROR_HANDLER",
+            "Messaging listener has no visible exception handling",
+            FindingSeverity.INFO,
+            FindingCategory.EXCEPTION_HANDLING,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_SECURITY_STARTER_MISSING = rule(
+            "SPRING_SECURITY_STARTER_MISSING",
+            "Web application has no Spring Security dependency",
+            FindingSeverity.INFO,
+            FindingCategory.SECURITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_JPA_MANYTOONE_EAGER_DEFAULT = rule(
+            "SPRING_JPA_MANYTOONE_EAGER_DEFAULT",
+            "@ManyToOne or @OneToOne uses eager loading by default",
+            FindingSeverity.INFO,
+            FindingCategory.PERSISTENCE,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_JPA_ONETOMANY_MISSING_MAPPED_BY = rule(
+            "SPRING_JPA_ONETOMANY_MISSING_MAPPED_BY",
+            "@OneToMany or @ManyToMany has no mappedBy attribute",
+            FindingSeverity.WARNING,
+            FindingCategory.PERSISTENCE,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_BEAN_ON_NON_CONFIGURATION = rule(
+            "SPRING_BEAN_ON_NON_CONFIGURATION",
+            "@Bean method in class without @Configuration uses lite mode",
+            FindingSeverity.WARNING,
+            FindingCategory.MAINTAINABILITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
 
     private FindingRules() {
     }

@@ -13,6 +13,7 @@ function defaultState(): ResultsViewState {
     findingsExpanded: false,
     findingsGrouped: true,
     configurationSearch: '',
+    configurationFocus: 'ALL',
     configurationProfile: 'ALL',
     configurationSource: 'ALL',
     configurationKind: 'ALL',
@@ -71,6 +72,7 @@ function defaultActions(overrides: Partial<ResultsViewActions> = {}): ResultsVie
     onToggleFindingsExpanded: noop,
     onFindingsGroupedChange: noop,
     onConfigurationSearchChange: noop,
+    onConfigurationFocusChange: noop,
     onConfigurationProfileChange: noop,
     onConfigurationSourceChange: noop,
     onConfigurationKindChange: noop,
@@ -251,6 +253,7 @@ describe('renderResultsView findings UI', () => {
     expect(document.querySelector('.finding-summary-title')?.textContent).toBe('Empty catch block');
     expect(document.querySelector('.finding-summary-count')?.textContent).toContain('2 occurrences');
     expect(document.querySelector('.finding-summary-target')?.textContent).toBe('Multiple methods');
+    expect(document.querySelector('.finding-summary-kicker')?.textContent).toContain('Grouped pattern');
 
     const detailsButton = document.querySelector('.finding-expand-button') as HTMLButtonElement;
     detailsButton.click();
@@ -265,6 +268,32 @@ describe('renderResultsView findings UI', () => {
       expect.stringContaining('finding-code-'),
       1
     );
+  });
+
+  it('keeps the row-level View code action for grouped findings when any occurrence has a source location', () => {
+    const unresolvedRepresentative = baseFinding({
+      sourceFile: undefined,
+      line: null,
+      primaryLocation: undefined,
+      location: 'Source reference',
+      target: 'ParserA#parse'
+    });
+    const locatedOccurrence = baseFinding({
+      sourceFile: 'src/main/java/com/example/ParserB.java',
+      line: 18,
+      primaryLocation: {
+        filePath: 'src/main/java/com/example/ParserB.java',
+        startLine: 18,
+        endLine: 20,
+        language: 'java'
+      },
+      target: 'ParserB#parse'
+    });
+
+    const view = renderResultsView(baseResult([unresolvedRepresentative, locatedOccurrence]), defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    expect(document.querySelector('.finding-code-button')).not.toBeNull();
   });
 
   it('does not group unrelated findings and never renders question-mark sort indicators', () => {
@@ -377,10 +406,15 @@ describe('renderResultsView findings UI', () => {
     const view = renderResultsView(baseResult([emptyCatchA, rawHttp, emptyCatchB]), defaultState(), defaultActions());
     document.body.appendChild(view);
 
-    const topConcernLinks = [...document.querySelectorAll('.top-concern-link')].map((node) => node.textContent?.trim());
+    const topConcernNodes = [...document.querySelectorAll('.top-concern-link')] as HTMLAnchorElement[];
+    const topConcernLinks = topConcernNodes.map((node) => node.textContent?.trim());
     expect(topConcernLinks.filter((text) => text === 'Empty catch block')).toHaveLength(1);
     expect(topConcernLinks[0]).toBe('Raw exception message exposed through HTTP response');
     expect(document.querySelector('.top-concern-item:last-child .finding-summary-count')?.textContent).toContain('2 occurrences');
+    const firstConcernTarget = topConcernNodes[0].getAttribute('href');
+    expect(firstConcernTarget).toMatch(/^#finding-concern-/);
+    expect(document.querySelector(firstConcernTarget as string)?.querySelector('.finding-summary-title')?.textContent)
+      .toBe('Raw exception message exposed through HTTP response');
   });
 
   it('renders overview summaries and updated runtime-detection wording', () => {
@@ -426,6 +460,218 @@ describe('renderResultsView findings UI', () => {
     expect(document.body.textContent).toContain('Review manually');
     expect(document.querySelector('.finding-location-path')?.textContent).toBe('src/main/java/com/example/ConfigReader.java');
     expect(document.body.textContent).not.toContain(':1');
+    expect(document.querySelector('.finding-location-meta')?.textContent).toContain('Exact line not resolved statically');
+  });
+
+  it('replaces vague analyzer titles with a specific UI title and structured location meta', () => {
+    const vagueFinding = baseFinding({
+      title: undefined,
+      ruleId: undefined,
+      rule: undefined,
+      category: 'MAINTAINABILITY',
+      message: 'Detected component appears outside the main application package. This may cause component scanning issues.',
+      shortMessage: 'Detected component appears outside the main application package. This may cause component scanning issues.',
+      target: 'Multiple targets',
+      sourceFile: 'src/main/java/com/example/baddesigned/BadDesigned.java',
+      line: 12,
+      primaryLocation: {
+        filePath: 'src/main/java/com/example/baddesigned/BadDesigned.java',
+        startLine: 12,
+        endLine: 12,
+        language: 'java'
+      }
+    });
+
+    const view = renderResultsView(baseResult([vagueFinding]), defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    expect(document.querySelector('.finding-summary-title')?.textContent).toBe('Component outside main package');
+    expect(document.querySelector('.finding-location-meta')?.textContent).toContain('Line 12');
+  });
+
+  it('renders HTTP surface tables with specialized layouts and unclipped technical text', () => {
+    const result = baseResult([baseFinding()]);
+    result.httpSurfaceAnalysis = {
+      summary: {
+        inboundEndpointCount: 1,
+        outboundEndpointCount: 1,
+        configuredUrlCount: 1,
+        actuatorExposureCount: 1,
+        externalHosts: ['plugins.gradle.org']
+      },
+      inboundEndpoints: [
+        {
+          httpMethod: 'POST',
+          path: '/api/analyses/{analysisId}/source-snippet',
+          controllerClass: 'com.robbanhoglund.springbootanalyzer.api.AnalysisController',
+          handlerMethod: 'sourceSnippet',
+          sourceFile: 'src/main/java/com/robbanhoglund/springbootanalyzer/api/AnalysisController.java',
+          line: 144,
+          parameters: ['@PathVariable analysisId', '@RequestParam path', '@RequestParam startLine']
+        }
+      ],
+      outboundEndpoints: [
+        {
+          clientType: 'HttpClient',
+          method: 'POST',
+          fullUrlPreview: 'https://example.invalid/bootstrap',
+          urlOrTemplate: 'https://example.invalid/bootstrap',
+          host: 'example.invalid',
+          sourceFile: 'src/main/java/com/example/baddesigned/BadDesigned.java',
+          line: 57,
+          configurationPropertyName: 'resend.base-url'
+        }
+      ],
+      configuredUrls: [
+        {
+          propertyName: 'analyzer.gradle.plugin-resolution-bridge.repository-urls',
+          value: 'https://plugins.gradle.org/m2/,https://repo.maven.apache.org/maven2/',
+          host: 'plugins.gradle.org',
+          profile: 'default',
+          sourceFile: 'src/main/resources/application.properties',
+          line: 78,
+          kind: 'HTTP_URL'
+        }
+      ],
+      actuatorExposures: [
+        {
+          propertyName: 'management.endpoints.web.exposure.include',
+          value: 'health,info',
+          profile: 'default',
+          sourceFile: 'src/main/resources/application.properties',
+          line: 4,
+          exposedEndpoints: ['health', 'info']
+        }
+      ]
+    };
+
+    const view = renderResultsView(result, defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    expect(document.querySelector('.http-table-inbound')).not.toBeNull();
+    expect(document.querySelector('.http-table-outbound')).not.toBeNull();
+    expect(document.querySelector('.http-table-configured')).not.toBeNull();
+    expect(document.querySelector('.http-table-actuator')).not.toBeNull();
+    expect(document.querySelector('.http-cell-controller .cell-technical-wrap')?.textContent)
+      .toBe('com.robbanhoglund.springbootanalyzer.api.AnalysisController');
+    expect(document.querySelector('.http-cell-source .cell-technical-wrap')?.textContent)
+      .toContain('src/main/java/com/robbanhoglund/springbootanalyzer/api/AnalysisController.java:144');
+    expect(document.querySelector('.http-cell-value .cell-technical-wrap')?.textContent)
+      .toContain('https://plugins.gradle.org/m2/');
+  });
+
+  it('assigns stable ids to results filter controls so focus can be restored across rerenders', () => {
+    const view = renderResultsView(baseResult([baseFinding()]), defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    expect((document.getElementById('results-findings-text') as HTMLInputElement | null)?.placeholder).toBe('Filter findings');
+    expect(document.getElementById('results-findings-category')).not.toBeNull();
+    expect(document.getElementById('results-configuration-search')).not.toBeNull();
+    expect(document.getElementById('results-configuration-focus')).not.toBeNull();
+    expect(document.getElementById('results-components-text')).not.toBeNull();
+    expect(document.getElementById('results-dependencies-search')).not.toBeNull();
+  });
+
+  it('renders a configuration review overview and compact custom-property meanings', () => {
+    const result = baseResult([baseFinding()]);
+    result.configurationAnalysis = {
+      files: [{ path: 'src/main/resources/application.properties', profile: 'default', propertyCount: 3 }],
+      properties: [
+        {
+          name: 'analyzer.gradle.enabled',
+          value: 'true',
+          sourceFile: 'src/main/resources/application.properties',
+          line: 26,
+          profile: 'default',
+          kind: 'CUSTOM_CONFIGURATION_PROPERTIES',
+          documentation: {
+            type: 'boolean',
+            description: 'Custom property defined by com.robbanhoglund.springbootanalyzer.config.AnalyzerProperties'
+          }
+        },
+        {
+          name: 'management.endpoint.health.show-details',
+          value: 'always',
+          sourceFile: 'src/main/resources/application.properties',
+          line: 4,
+          profile: 'default',
+          kind: 'SPRING_BOOT',
+          documentation: { type: 'string', description: 'Whether to show health details.' }
+        },
+        {
+          name: 'app.password',
+          value: '[redacted]',
+          valueRedacted: true,
+          sourceFile: 'src/main/resources/application.properties',
+          line: 8,
+          profile: 'default',
+          kind: 'CUSTOM_CONFIGURATION_PROPERTIES',
+          documentation: { type: 'string' }
+        }
+      ],
+      codeReferences: [{ propertyName: 'missing.value', sourceFile: 'src/main/java/com/example/Demo.java' }],
+      configurationPropertiesClasses: [],
+      summary: {
+        configuredPropertyCount: 3,
+        knownSpringBootPropertyCount: 1,
+        customPropertyCount: 2,
+        unknownPropertyCount: 0,
+        codeReferenceCount: 1,
+        sensitiveValueCount: 1,
+        profiles: ['default']
+      }
+    };
+
+    const view = renderResultsView(result, defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    expect(document.body.textContent).toContain('Configuration review');
+    expect(document.body.textContent).toContain('review signals surfaced statically');
+    expect(document.body.textContent).toContain('Mixed configuration namespaces');
+    expect(document.body.textContent).toContain('Custom analyzer.gradle property.');
+  });
+
+  it('renders components with simple class name first and qualified name as secondary context', () => {
+    const result = baseResult([baseFinding()]);
+    result.detectedComponents = [
+      {
+        fullyQualifiedClassName: 'com.robbanhoglund.springbootanalyzer.api.AnalysisController',
+        simpleClassName: 'AnalysisController',
+        packageName: 'com.robbanhoglund.springbootanalyzer.api',
+        componentType: 'REST_CONTROLLER',
+        annotationNames: ['RestController', 'RequestMapping'],
+        filePath: 'src/main/java/com/robbanhoglund/springbootanalyzer/api/AnalysisController.java'
+      }
+    ];
+
+    const view = renderResultsView(result, defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    expect(document.querySelector('.component-class-primary')?.textContent).toBe('AnalysisController');
+    expect(document.querySelector('.component-class-secondary')?.textContent)
+      .toBe('com.robbanhoglund.springbootanalyzer.api.AnalysisController');
+    expect(document.querySelector('.component-source-cell .cell-technical-wrap')?.textContent)
+      .toContain('src/main/java/com/robbanhoglund/springbootanalyzer/api/AnalysisController.java');
+  });
+
+  it('de-emphasizes redundant component annotations when the type badge already conveys the stereotype', () => {
+    const result = baseResult([baseFinding()]);
+    result.detectedComponents = [
+      {
+        fullyQualifiedClassName: 'com.robbanhoglund.springbootanalyzer.analyzer.configuration.ConfigurationAnalyzer',
+        simpleClassName: 'ConfigurationAnalyzer',
+        packageName: 'com.robbanhoglund.springbootanalyzer.analyzer.configuration',
+        componentType: 'COMPONENT',
+        annotationNames: ['Component'],
+        filePath: 'src/main/java/com/robbanhoglund/springbootanalyzer/analyzer/configuration/ConfigurationAnalyzer.java'
+      }
+    ];
+
+    const view = renderResultsView(result, defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    expect(document.querySelector('.component-annotations-cell')?.classList.contains('is-redundant')).toBe(true);
+    expect(document.querySelector('.component-annotations-cell .cell-technical-wrap')?.textContent).toBe('Component');
   });
 
   it('renders the code modal with multi-line highlights and safe text rendering', () => {

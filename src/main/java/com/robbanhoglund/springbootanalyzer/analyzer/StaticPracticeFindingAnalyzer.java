@@ -101,6 +101,7 @@ public class StaticPracticeFindingAnalyzer {
             "safe to ignore", "cleanup only", "best effort", "close failure"
     );
     private static final Pattern FLYWAY_MIGRATION_PATTERN = Pattern.compile("V(?<version>[0-9][^_]+)__.+\\.sql", Pattern.CASE_INSENSITIVE);
+    private static final Set<String> MESSAGING_LISTENER_ANNOTATIONS = Set.of("KafkaListener", "RabbitListener", "JmsListener", "SqsListener");
     private final JavaParser javaParser;
 
     public StaticPracticeFindingAnalyzer() {
@@ -124,6 +125,7 @@ public class StaticPracticeFindingAnalyzer {
         detectCrossProfileDrift(configurationAnalysis, findings);
         detectConditionalBeanMatrixIssues(configurationAnalysis, findings);
         detectFlywaySchemaRisks(repositoryRoot, buildInfo, configurationAnalysis, gradleModelAnalysis, findings);
+        detectMissingSecurityStarter(buildInfo, findings);
         detectSourcePractices(repositoryRoot, httpSurfaceAnalysis, detectedClasses, findings);
         detectRepeatedFallbackParsingPattern(findings);
         return dedupe(findings);
@@ -490,6 +492,8 @@ public class StaticPracticeFindingAnalyzer {
                 || hasAnyAnnotation(declaration.getAnnotations(), Set.of("RestController", "Controller", "ControllerAdvice", "RestControllerAdvice"));
         boolean serviceLike = hasAnyAnnotation(declaration.getAnnotations(), Set.of("Service", "Component"));
         boolean repositoryLike = hasAnyAnnotation(declaration.getAnnotations(), Set.of("Repository"));
+        boolean entityLike = hasAnnotation(declaration.getAnnotations(), "Entity");
+        boolean configurationLike = hasAnnotation(declaration.getAnnotations(), "Configuration");
         boolean startupInterface = implementsAny(declaration, Set.of("CommandLineRunner", "ApplicationRunner", "InitializingBean", "SmartLifecycle"));
         Set<String> transactionalMethods = declaration.getMethods().stream()
                 .filter(method -> hasAnnotation(method.getAnnotations(), "Transactional") || hasAnnotation(declaration.getAnnotations(), "Transactional"))
@@ -558,6 +562,22 @@ public class StaticPracticeFindingAnalyzer {
             if (controllerLike) {
                 detectValidationGap(relativePath, declaration, method, signals, findings);
             }
+
+            if (hasAnnotation(method.getAnnotations(), "Async")) {
+                detectAsyncMethodRisks(relativePath, declaration, method, findings);
+            }
+
+            if (hasAnyAnnotation(method.getAnnotations(), MESSAGING_LISTENER_ANNOTATIONS)) {
+                detectMessagingListenerRisks(relativePath, declaration, method, findings);
+            }
+        }
+
+        if (entityLike) {
+            detectJpaRelationshipRisks(relativePath, declaration, findings);
+        }
+
+        if (!configurationLike) {
+            detectBeanInNonConfigurationClass(relativePath, declaration, findings);
         }
     }
 
@@ -934,6 +954,169 @@ public class StaticPracticeFindingAnalyzer {
                     .limitations("Static analysis may miss resilience policies applied by shared client beans, infrastructure proxies, or external libraries.")
                     .source(relativePath, representative.line())
                     .target(representative.clientType())
+                    .build());
+        }
+    }
+
+    private void detectMissingSecurityStarter(BuildInfo buildInfo, List<Finding> findings) {
+        if (buildInfo == null || buildInfo.dependencies() == null) {
+            return;
+        }
+        boolean hasWebStarter = buildInfo.dependencies().stream()
+                .anyMatch(dep -> dep.contains("spring-boot-starter-web") || dep.contains("spring-boot-starter-webflux"));
+        boolean hasSecurityStarter = buildInfo.dependencies().stream()
+                .anyMatch(dep -> dep.contains("spring-boot-starter-security") || dep.contains("spring-security-core") || dep.contains("spring-security-web"));
+        if (hasWebStarter && !hasSecurityStarter) {
+            findings.add(FindingFactory.builder(FindingRules.SPRING_SECURITY_STARTER_MISSING, FindingConfidence.MEDIUM)
+                    .shortMessage("Web application has no Spring Security dependency.")
+                    .whyBadPractice("Web applications without a security dependency have no authentication or authorization protection enforced by the framework by default.")
+                    .possibleImpact("All endpoints are publicly accessible unless secured by an external gateway or custom filter not visible in the build file.")
+                    .recommendation("Add spring-boot-starter-security and configure appropriate authentication and authorization rules.")
+                    .evidence("spring-boot-starter-web or spring-boot-starter-webflux was detected but no Spring Security dependency was found in the build file.")
+                    .limitations("Security may be provided by an API gateway, service mesh, or custom filter chain not declared in the build file.")
+                    .location("Build configuration")
+                    .build());
+        }
+    }
+
+    private void detectAsyncMethodRisks(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            MethodDeclaration method,
+            List<Finding> findings
+    ) {
+        Integer line = method.getBegin().map(position -> position.line).orElse(null);
+        String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+        if (method.isPrivate()) {
+            findings.add(FindingFactory.builder(FindingRules.SPRING_ASYNC_PROXY_BYPASS, FindingConfidence.HIGH)
+                    .shortMessage("@Async on private method " + target + " will not be intercepted by the proxy.")
+                    .whyBadPractice("Spring @Async relies on proxy interception. Private methods are not visible to the proxy, so the async behaviour is silently dropped.")
+                    .possibleImpact("The method executes synchronously on the calling thread instead of asynchronously, potentially blocking callers and causing unexpected behaviour.")
+                    .recommendation("Make the method public or package-protected. If it must stay private, submit work explicitly via an ExecutorService instead.")
+                    .evidence("@Async was found on private method " + method.getNameAsString() + " in " + relativePath + ".")
+                    .limitations("Static analysis cannot determine whether AspectJ compile-time weaving is used instead of proxy-based interception.")
+                    .source(relativePath, line)
+                    .target(target)
+                    .build());
+        }
+        boolean returnsVoid = method.getType().asString().equals("void");
+        boolean hasExceptionHandling = !method.findAll(CatchClause.class).isEmpty();
+        if (returnsVoid && !hasExceptionHandling) {
+            findings.add(FindingFactory.builder(FindingRules.SPRING_ASYNC_VOID_SWALLOWED_EXCEPTION, FindingConfidence.MEDIUM)
+                    .shortMessage("@Async void method " + target + " has no exception handling.")
+                    .whyBadPractice("Exceptions thrown by @Async void methods are routed to AsyncUncaughtExceptionHandler, which by default only logs them. Callers have no way to observe failures.")
+                    .possibleImpact("Failures in async operations are silently lost unless a custom AsyncUncaughtExceptionHandler is configured, making the system appear healthy when it is not.")
+                    .recommendation("Add try/catch handling within the method, return CompletableFuture so callers can react to failures, or register a custom AsyncUncaughtExceptionHandler.")
+                    .evidence("@Async void method " + method.getNameAsString() + " found without exception handling in " + relativePath + ".")
+                    .limitations("Static analysis cannot verify whether a global AsyncUncaughtExceptionHandler is configured elsewhere in the application.")
+                    .source(relativePath, line)
+                    .target(target)
+                    .build());
+        }
+    }
+
+    private void detectMessagingListenerRisks(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            MethodDeclaration method,
+            List<Finding> findings
+    ) {
+        String presentAnnotation = MESSAGING_LISTENER_ANNOTATIONS.stream()
+                .filter(name -> hasAnnotation(method.getAnnotations(), name))
+                .findFirst()
+                .orElse(null);
+        if (presentAnnotation == null) {
+            return;
+        }
+        boolean hasExceptionHandling = !method.findAll(CatchClause.class).isEmpty();
+        if (!hasExceptionHandling) {
+            Integer line = method.getBegin().map(position -> position.line).orElse(null);
+            String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+            findings.add(FindingFactory.builder(FindingRules.SPRING_MESSAGING_LISTENER_NO_ERROR_HANDLER, FindingConfidence.MEDIUM)
+                    .shortMessage("@" + presentAnnotation + " method " + target + " has no visible exception handling.")
+                    .whyBadPractice("Unhandled exceptions in messaging listeners cause message redelivery or dead-letter routing depending on broker configuration. Without explicit handling, errors can cause repeated processing or silent message loss.")
+                    .possibleImpact("Poison messages can block consumption or flood the dead-letter queue. Retry storms may amplify load on downstream services.")
+                    .recommendation("Add try/catch to handle expected failures explicitly, configure a dead-letter topic or queue for unrecoverable messages, and log errors with enough context for investigation.")
+                    .evidence("@" + presentAnnotation + " method " + method.getNameAsString() + " found without exception handling in " + relativePath + ".")
+                    .limitations("Static analysis cannot verify whether a container-level error handler or retry policy is configured for this listener.")
+                    .source(relativePath, line)
+                    .target(target)
+                    .build());
+        }
+    }
+
+    private void detectJpaRelationshipRisks(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            List<Finding> findings
+    ) {
+        String className = declaration.getNameAsString();
+        for (FieldDeclaration field : declaration.getFields()) {
+            for (AnnotationExpr annotation : field.getAnnotations()) {
+                String annotationName = simpleName(annotation.getNameAsString());
+                if (!Set.of("OneToMany", "ManyToOne", "OneToOne", "ManyToMany").contains(annotationName)) {
+                    continue;
+                }
+                String fieldName = field.getVariables().isEmpty() ? "?" : field.getVariables().get(0).getNameAsString();
+                Integer line = field.getBegin().map(position -> position.line).orElse(null);
+                String target = className + "." + fieldName;
+                if (annotationName.equals("OneToMany") || annotationName.equals("ManyToMany")) {
+                    boolean hasMappedBy = annotation.isNormalAnnotationExpr()
+                            && annotation.asNormalAnnotationExpr().getPairs().stream()
+                                    .anyMatch(pair -> pair.getNameAsString().equals("mappedBy"));
+                    if (!hasMappedBy) {
+                        findings.add(FindingFactory.builder(FindingRules.SPRING_JPA_ONETOMANY_MISSING_MAPPED_BY, FindingConfidence.MEDIUM)
+                                .shortMessage("@" + annotationName + " on " + target + " has no mappedBy attribute.")
+                                .whyBadPractice("Without mappedBy, JPA treats this side as the owning side and creates an additional join table even when a foreign key column would suffice.")
+                                .possibleImpact("The schema contains an unexpected join table, resulting in extra writes on every save and a data model that is harder to query and maintain.")
+                                .recommendation("Add mappedBy referencing the owning side field to make the relationship bidirectional and avoid the unintended join table.")
+                                .evidence("@" + annotationName + " on field " + fieldName + " in " + relativePath + " has no mappedBy attribute.")
+                                .limitations("Static analysis cannot determine whether a unidirectional relationship and join table are intentional design choices.")
+                                .source(relativePath, line)
+                                .target(target)
+                                .build());
+                    }
+                } else {
+                    boolean hasFetchType = annotation.isNormalAnnotationExpr()
+                            && annotation.asNormalAnnotationExpr().getPairs().stream()
+                                    .anyMatch(pair -> pair.getNameAsString().equals("fetch"));
+                    if (!hasFetchType) {
+                        findings.add(FindingFactory.builder(FindingRules.SPRING_JPA_MANYTOONE_EAGER_DEFAULT, FindingConfidence.HIGH)
+                                .shortMessage("@" + annotationName + " on " + target + " uses eager loading by default.")
+                                .whyBadPractice("@ManyToOne and @OneToOne load the related entity eagerly by default, meaning every query for the owning entity also fetches the related entity even when it is not needed.")
+                                .possibleImpact("Unnecessary queries on every load can cause performance problems, especially when fetching collections of entities.")
+                                .recommendation("Add fetch = FetchType.LAZY explicitly and use JOIN FETCH in queries or entity graphs when the related entity is needed.")
+                                .evidence("@" + annotationName + " on field " + fieldName + " in " + relativePath + " has no fetch attribute.")
+                                .limitations("Static analysis cannot determine actual query patterns or whether eager loading is intentionally desired for this relationship.")
+                                .source(relativePath, line)
+                                .target(target)
+                                .build());
+                    }
+                }
+            }
+        }
+    }
+
+    private void detectBeanInNonConfigurationClass(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            List<Finding> findings
+    ) {
+        for (MethodDeclaration method : declaration.getMethods()) {
+            if (!hasAnnotation(method.getAnnotations(), "Bean")) {
+                continue;
+            }
+            Integer line = method.getBegin().map(position -> position.line).orElse(null);
+            String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+            findings.add(FindingFactory.builder(FindingRules.SPRING_BEAN_ON_NON_CONFIGURATION, FindingConfidence.HIGH)
+                    .shortMessage("@Bean method " + target + " is in a class without @Configuration (lite mode).")
+                    .whyBadPractice("In lite mode, Spring does not apply CGLIB proxying to the class. Direct calls to @Bean methods from within the same class create new instances rather than returning the managed singleton from the container.")
+                    .possibleImpact("Dependencies between beans defined in the same class can receive different instances than the Spring container manages, causing subtle wiring bugs that are hard to diagnose.")
+                    .recommendation("Annotate the class with @Configuration to enable full CGLIB proxy mode, or move the @Bean method to a dedicated @Configuration class.")
+                    .evidence("@Bean method " + method.getNameAsString() + " found in class " + declaration.getNameAsString() + " without @Configuration in " + relativePath + ".")
+                    .limitations("Lite mode may be intentional for simple factory methods that are never called directly from within the same class.")
+                    .source(relativePath, line)
+                    .target(target)
                     .build());
         }
     }

@@ -25,21 +25,24 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
+import static java.util.Map.entry;
 import org.springframework.stereotype.Component;
 
 @Component
 public class JavaSourceAnalyzer {
 
-    private static final Map<String, SpringComponentType> COMPONENT_TYPES = Map.of(
-            "SpringBootApplication", SpringComponentType.MAIN_APPLICATION,
-            "RestController", SpringComponentType.REST_CONTROLLER,
-            "Controller", SpringComponentType.CONTROLLER,
-            "Service", SpringComponentType.SERVICE,
-            "Repository", SpringComponentType.REPOSITORY,
-            "Component", SpringComponentType.COMPONENT,
-            "Configuration", SpringComponentType.CONFIGURATION,
-            "Entity", SpringComponentType.ENTITY,
-            "ConfigurationProperties", SpringComponentType.CONFIGURATION_PROPERTIES
+    private static final Map<String, SpringComponentType> COMPONENT_TYPES = Map.ofEntries(
+            entry("SpringBootApplication", SpringComponentType.MAIN_APPLICATION),
+            entry("RestController", SpringComponentType.REST_CONTROLLER),
+            entry("Controller", SpringComponentType.CONTROLLER),
+            entry("ControllerAdvice", SpringComponentType.CONTROLLER_ADVICE),
+            entry("RestControllerAdvice", SpringComponentType.CONTROLLER_ADVICE),
+            entry("Service", SpringComponentType.SERVICE),
+            entry("Repository", SpringComponentType.REPOSITORY),
+            entry("Component", SpringComponentType.COMPONENT),
+            entry("Configuration", SpringComponentType.CONFIGURATION),
+            entry("Entity", SpringComponentType.ENTITY),
+            entry("ConfigurationProperties", SpringComponentType.CONFIGURATION_PROPERTIES)
     );
 
     private final JavaParser javaParser;

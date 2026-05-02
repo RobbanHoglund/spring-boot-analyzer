@@ -4,6 +4,7 @@ public enum SpringComponentType {
     MAIN_APPLICATION,
     REST_CONTROLLER,
     CONTROLLER,
+    CONTROLLER_ADVICE,
     SERVICE,
     REPOSITORY,
     COMPONENT,

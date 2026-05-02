@@ -1,6 +1,7 @@
 import './styles.css';
 
 import { analyzeRepository, ApiError, fetchSourceSnippet } from './api';
+import { loadAnalysisSession, saveAnalysisSession } from './analysisSessionStore';
 import { buildGitHubBlobUrl } from './code/githubLink';
 import { clear, element } from './dom';
 import {
@@ -72,6 +73,11 @@ interface FocusSnapshot {
   selectionEnd: number | null;
 }
 
+interface ScrollSnapshot {
+  scrollX: number;
+  scrollY: number;
+}
+
 const root = requiredElement<HTMLDivElement>('app');
 const systemThemeMedia = typeof window !== 'undefined'
   ? window.matchMedia('(prefers-color-scheme: dark)')
@@ -89,64 +95,107 @@ function createInitialState(): AppState {
   const tokenProfiles = loadTokenProfiles();
   const repositoryProfiles = loadRepositoryProfiles();
   const defaultOneTimeTokenProfile = findMatchingTokenProfile(DEFAULT_REPOSITORY_URL, tokenProfiles);
+  const persistedSession = loadAnalysisSession();
+  const defaultResultsViewState = createDefaultResultsViewState();
+  const restoredSavedRepositoryId = persistedSession?.selectedSavedRepositoryId;
+  const selectedSavedRepositoryId = restoredSavedRepositoryId && repositoryProfiles.some((profile) => profile.id === restoredSavedRepositoryId)
+    ? restoredSavedRepositoryId
+    : repositoryProfiles[0]?.id ?? '';
+  const restoredOneTimeTokenProfileId = persistedSession?.oneTimeTokenProfileId;
+  const oneTimeTokenProfileId = restoredOneTimeTokenProfileId && tokenProfiles.some((profile) => profile.id === restoredOneTimeTokenProfileId)
+    ? restoredOneTimeTokenProfileId
+    : defaultOneTimeTokenProfile?.id ?? '';
 
   return {
-    currentTab: 'analyze',
+    currentTab: persistedSession?.currentTab === 'settings' ? 'settings' : 'analyze',
     themePreference: loadThemePreference(),
-    analyzeMode: 'saved',
+    analyzeMode: persistedSession?.analyzeMode === 'oneTime' ? 'oneTime' : 'saved',
     tokenProfiles,
     repositoryProfiles,
-    selectedSavedRepositoryId: repositoryProfiles[0]?.id ?? '',
-    oneTimeRepositoryUrl: DEFAULT_REPOSITORY_URL,
-    oneTimeBranch: '',
-    oneTimeTokenProfileId: defaultOneTimeTokenProfile?.id ?? '',
-    analysisMode: 'STATIC_ONLY',
-    statusMessage: '',
+    selectedSavedRepositoryId,
+    oneTimeRepositoryUrl: persistedSession?.oneTimeRepositoryUrl ?? DEFAULT_REPOSITORY_URL,
+    oneTimeBranch: persistedSession?.oneTimeBranch ?? '',
+    oneTimeTokenProfileId,
+    analysisMode: persistedSession?.analysisMode === 'STATIC_PLUS_GRADLE_MODEL' ? 'STATIC_PLUS_GRADLE_MODEL' : 'STATIC_ONLY',
+    statusMessage: persistedSession?.result ? 'Restored previous analysis from this browser tab.' : '',
     errorMessage: '',
     warningMessage: '',
     isAnalyzing: false,
     analysisProgressIndex: 0,
-    result: null,
-    sidebarCollapsed: false,
+    result: persistedSession?.result ?? null,
+    sidebarCollapsed: Boolean(persistedSession?.sidebarCollapsed),
     repositoryForm: createEmptyRepositoryForm(),
     tokenForm: createEmptyTokenForm(),
-    resultsViewState: {
-      findingsSeverity: 'ALL',
-      findingsCategory: 'ALL',
-      findingsRuntimeDetection: 'ALL',
-      findingsConfidence: 'ALL',
-      findingsText: '',
-      findingsExpanded: false,
-      findingsGrouped: true,
-      configurationSearch: '',
-      configurationProfile: 'ALL',
-      configurationSource: 'ALL',
-      configurationKind: 'ALL',
-      configurationSensitiveOnly: false,
-      configurationView: 'flat',
-      configurationChangedOnly: false,
-      configurationExpanded: false,
-      configurationExpandedRowKey: null,
-      findingsSort: { key: 'severity', direction: 'desc' },
-      inboundSort: { key: 'path', direction: 'asc' },
-      outboundSort: { key: 'host', direction: 'asc' },
-      configuredUrlsSort: { key: 'property', direction: 'asc' },
-      configurationSort: { key: 'property', direction: 'asc' },
-      componentsSort: { key: 'class', direction: 'asc' },
-      dependenciesSort: { key: 'group', direction: 'asc' },
-      componentType: 'ALL',
-      componentText: '',
-      componentsExpanded: false,
-      dependencyText: '',
-      resolvedDependencyConfiguration: 'ALL',
-      resolvedDependencyDirectOnly: false,
-      rawJsonExpanded: false,
-      httpInboundExpanded: false,
-      httpOutboundExpanded: false,
-      httpConfiguredExpanded: false,
-      httpActuatorExpanded: false,
-      codeModal: createClosedCodeModalState()
-    }
+    resultsViewState: mergeResultsViewState(defaultResultsViewState, persistedSession?.resultsViewState)
+  };
+}
+
+function createDefaultResultsViewState(): ResultsViewState {
+  return {
+    findingsSeverity: 'ALL',
+    findingsCategory: 'ALL',
+    findingsRuntimeDetection: 'ALL',
+    findingsConfidence: 'ALL',
+    findingsText: '',
+    findingsExpanded: false,
+    findingsGrouped: true,
+    configurationSearch: '',
+    configurationFocus: 'ALL',
+    configurationProfile: 'ALL',
+    configurationSource: 'ALL',
+    configurationKind: 'ALL',
+    configurationSensitiveOnly: false,
+    configurationView: 'flat',
+    configurationChangedOnly: false,
+    configurationExpanded: false,
+    configurationExpandedRowKey: null,
+    findingsSort: { key: 'severity', direction: 'desc' },
+    inboundSort: { key: 'path', direction: 'asc' },
+    outboundSort: { key: 'host', direction: 'asc' },
+    configuredUrlsSort: { key: 'property', direction: 'asc' },
+    configurationSort: { key: 'property', direction: 'asc' },
+    componentsSort: { key: 'class', direction: 'asc' },
+    dependenciesSort: { key: 'group', direction: 'asc' },
+    componentType: 'ALL',
+    componentText: '',
+    componentsExpanded: false,
+    dependencyText: '',
+    resolvedDependencyConfiguration: 'ALL',
+    resolvedDependencyDirectOnly: false,
+    rawJsonExpanded: false,
+    httpInboundExpanded: false,
+    httpOutboundExpanded: false,
+    httpConfiguredExpanded: false,
+    httpActuatorExpanded: false,
+    codeModal: createClosedCodeModalState()
+  };
+}
+
+function mergeResultsViewState(
+  defaults: ResultsViewState,
+  restored: Partial<Omit<ResultsViewState, 'codeModal'>> | undefined
+): ResultsViewState {
+  return {
+    ...defaults,
+    ...restored,
+    findingsSort: mergeSortState(defaults.findingsSort, restored?.findingsSort),
+    inboundSort: mergeSortState(defaults.inboundSort, restored?.inboundSort),
+    outboundSort: mergeSortState(defaults.outboundSort, restored?.outboundSort),
+    configuredUrlsSort: mergeSortState(defaults.configuredUrlsSort, restored?.configuredUrlsSort),
+    configurationSort: mergeSortState(defaults.configurationSort, restored?.configurationSort),
+    componentsSort: mergeSortState(defaults.componentsSort, restored?.componentsSort),
+    dependenciesSort: mergeSortState(defaults.dependenciesSort, restored?.dependenciesSort),
+    codeModal: createClosedCodeModalState()
+  };
+}
+
+function mergeSortState(
+  defaults: { key: string; direction: 'asc' | 'desc' },
+  restored: Partial<{ key: string; direction: 'asc' | 'desc' }> | undefined
+): { key: string; direction: 'asc' | 'desc' } {
+  return {
+    key: restored?.key ?? defaults.key,
+    direction: restored?.direction === 'asc' || restored?.direction === 'desc' ? restored.direction : defaults.direction
   };
 }
 
@@ -173,6 +222,7 @@ function createClosedCodeModalState(): CodeSnippetModalState {
 
 function render(): void {
   const focusSnapshot = captureFocusSnapshot();
+  const scrollSnapshot = captureScrollSnapshot();
   clear(root);
 
   const shell = element('div', { className: 'page-shell' });
@@ -298,14 +348,18 @@ function render(): void {
             state.resultsViewState.findingsGrouped = value;
             render();
           },
-          onConfigurationSearchChange: (value) => {
-            state.resultsViewState.configurationSearch = value;
-            render();
-          },
-          onConfigurationProfileChange: (value) => {
-            state.resultsViewState.configurationProfile = value;
-            render();
-          },
+            onConfigurationSearchChange: (value) => {
+              state.resultsViewState.configurationSearch = value;
+              render();
+            },
+            onConfigurationFocusChange: (value) => {
+              state.resultsViewState.configurationFocus = value;
+              render();
+            },
+            onConfigurationProfileChange: (value) => {
+              state.resultsViewState.configurationProfile = value;
+              render();
+            },
           onConfigurationSourceChange: (value) => {
             state.resultsViewState.configurationSource = value;
             render();
@@ -485,8 +539,10 @@ function render(): void {
   }
 
   root.appendChild(shell);
+  persistAnalysisSession();
   restoreFocusSnapshot(focusSnapshot);
   restorePendingFocus();
+  restoreScrollSnapshot(scrollSnapshot);
 }
 
 function restorePendingFocus(): void {
@@ -1143,43 +1199,22 @@ function repositoryFormFromProfile(profile: RepositoryProfile): RepositoryFormMo
 }
 
 function resetResultsViewState(): void {
-  state.resultsViewState = {
-    findingsSeverity: 'ALL',
-    findingsCategory: 'ALL',
-    findingsRuntimeDetection: 'ALL',
-    findingsConfidence: 'ALL',
-    findingsText: '',
-    findingsExpanded: false,
-    findingsGrouped: true,
-    configurationSearch: '',
-    configurationProfile: 'ALL',
-    configurationSource: 'ALL',
-    configurationKind: 'ALL',
-    configurationSensitiveOnly: false,
-    configurationView: 'flat',
-    configurationChangedOnly: false,
-    configurationExpanded: false,
-    configurationExpandedRowKey: null,
-    findingsSort: { key: 'severity', direction: 'desc' },
-    inboundSort: { key: 'path', direction: 'asc' },
-    outboundSort: { key: 'host', direction: 'asc' },
-    configuredUrlsSort: { key: 'property', direction: 'asc' },
-    configurationSort: { key: 'property', direction: 'asc' },
-    componentsSort: { key: 'class', direction: 'asc' },
-    dependenciesSort: { key: 'group', direction: 'asc' },
-    componentType: 'ALL',
-    componentText: '',
-    componentsExpanded: false,
-    dependencyText: '',
-    resolvedDependencyConfiguration: 'ALL',
-    resolvedDependencyDirectOnly: false,
-    rawJsonExpanded: false,
-    httpInboundExpanded: false,
-    httpOutboundExpanded: false,
-    httpConfiguredExpanded: false,
-    httpActuatorExpanded: false,
-    codeModal: createClosedCodeModalState()
-  };
+  state.resultsViewState = createDefaultResultsViewState();
+}
+
+function persistAnalysisSession(): void {
+  saveAnalysisSession({
+    currentTab: state.currentTab,
+    analyzeMode: state.analyzeMode,
+    selectedSavedRepositoryId: state.selectedSavedRepositoryId,
+    oneTimeRepositoryUrl: state.oneTimeRepositoryUrl,
+    oneTimeBranch: state.oneTimeBranch,
+    oneTimeTokenProfileId: state.oneTimeTokenProfileId,
+    analysisMode: state.analysisMode,
+    sidebarCollapsed: state.sidebarCollapsed,
+    result: state.result,
+    resultsViewState: state.resultsViewState
+  });
 }
 
 function toggleSort(sortState: { key: string; direction: 'asc' | 'desc' }, key: string): void {
@@ -1298,7 +1333,7 @@ function restoreFocusSnapshot(snapshot: FocusSnapshot | null): void {
     return;
   }
 
-  nextElement.focus();
+  focusWithoutScrolling(nextElement);
 
   if (
     (nextElement instanceof HTMLInputElement || nextElement instanceof HTMLTextAreaElement) &&
@@ -1306,6 +1341,31 @@ function restoreFocusSnapshot(snapshot: FocusSnapshot | null): void {
     snapshot.selectionEnd !== null
   ) {
     nextElement.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
+  }
+}
+
+function captureScrollSnapshot(): ScrollSnapshot {
+  return {
+    scrollX: typeof window !== 'undefined' ? window.scrollX : 0,
+    scrollY: typeof window !== 'undefined' ? window.scrollY : 0
+  };
+}
+
+function restoreScrollSnapshot(snapshot: ScrollSnapshot): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.scrollTo(snapshot.scrollX, snapshot.scrollY);
+  window.requestAnimationFrame(() => {
+    window.scrollTo(snapshot.scrollX, snapshot.scrollY);
+  });
+}
+
+function focusWithoutScrolling(element: HTMLElement): void {
+  try {
+    element.focus({ preventScroll: true });
+  } catch {
+    element.focus();
   }
 }
 

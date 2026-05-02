@@ -74,6 +74,7 @@ const CONFIGURATION_KINDS = [
   'THIRD_PARTY',
   'UNKNOWN'
 ] as const;
+const CONFIGURATION_FOCUS_OPTIONS = ['REVIEW', 'SPRING_BOOT', 'CUSTOM', 'PROFILE_DIFFS', 'ALL'] as const;
 const COMPONENT_TYPES = [
   'ALL',
   'MAIN_APPLICATION',
@@ -101,6 +102,8 @@ type PresentedFinding = {
   target: string;
   location: string;
   locationShort: string;
+  locationMeta: string;
+  locationKnown: boolean;
   message: string;
   summary: string;
   category: string;
@@ -156,6 +159,7 @@ export interface ResultsViewState {
   findingsExpanded: boolean;
   findingsGrouped: boolean;
   configurationSearch: string;
+  configurationFocus: string;
   configurationProfile: string;
   configurationSource: string;
   configurationKind: string;
@@ -194,6 +198,7 @@ export interface ResultsViewActions {
   onToggleFindingsExpanded: () => void;
   onFindingsGroupedChange: (value: boolean) => void;
   onConfigurationSearchChange: (value: string) => void;
+  onConfigurationFocusChange: (value: string) => void;
   onConfigurationProfileChange: (value: string) => void;
   onConfigurationSourceChange: (value: string) => void;
   onConfigurationKindChange: (value: string) => void;
@@ -356,7 +361,9 @@ function topConcernGroups(findings: Finding[]): GroupedPresentedFinding[] {
         message: representative.message,
         summary: representative.summary,
         location: representative.location,
-        locationShort: middleEllipsis(representative.location, 56),
+        locationShort: middleEllipsis(representative.location, 88),
+        locationMeta: representative.locationMeta,
+        locationKnown: representative.locationKnown,
         occurrences: bucket.length,
         items: bucket,
         finding: representative.finding
@@ -386,11 +393,23 @@ function topConcernGroups(findings: Finding[]): GroupedPresentedFinding[] {
 }
 
 function topConcernKey(finding: GroupedPresentedFinding): string {
-  const ruleId = (finding.finding.ruleId ?? '').trim();
+  return topConcernAnchorKeyFromFinding(finding.finding, finding.title, finding.ruleType);
+}
+
+function topConcernAnchorKeyFromPresented(finding: GroupedPresentedFinding | PresentedFinding): string {
+  return topConcernAnchorKeyFromFinding(finding.finding, finding.title, finding.ruleType);
+}
+
+function topConcernAnchorKeyFromFinding(finding: Finding, fallbackTitle?: string, fallbackRuleType?: string): string {
+  const ruleId = (finding.ruleId ?? '').trim();
   if (ruleId) {
     return ruleId;
   }
-  return normalizeGroupingText(finding.title || finding.ruleType);
+  return normalizeGroupingText(fallbackTitle || fallbackRuleType || finding.title || finding.ruleId || finding.rule || finding.category || 'static-finding');
+}
+
+function topConcernAnchorId(key: string): string {
+  return `finding-concern-${hashString(key)}`;
 }
 
 function topConcernPriority(finding: GroupedPresentedFinding): number {
@@ -584,11 +603,12 @@ function renderTopConcernsCard(result: AnalyzeRepositoryResponse): HTMLElement {
   const list = element('ol', { className: 'top-concern-list' });
   concerns.forEach((concern) => {
     const item = element('li', { className: 'top-concern-item' });
+    const concernAnchor = topConcernAnchorId(topConcernKey(concern));
     const link = element('a', {
       className: 'top-concern-link',
       text: concern.title,
       attributes: {
-        href: '#results-findings',
+        href: `#${concernAnchor}`,
         title: concern.summary || concern.message
       }
     });
@@ -769,7 +789,8 @@ function renderFindingsSection(
       selectInput(
         FINDING_SEVERITIES.map((value) => ({ value, label: value === 'ALL' ? 'All severities' : value })),
         state.findingsSeverity,
-        actions.onFindingsSeverityChange
+        actions.onFindingsSeverityChange,
+        'results-findings-severity'
       )
     ),
     labeledInlineField(
@@ -777,7 +798,8 @@ function renderFindingsSection(
       selectInput(
         FINDING_CATEGORIES.map((value) => ({ value, label: value === 'ALL' ? 'All categories' : findingCategoryLabel(value) })),
         state.findingsCategory,
-        actions.onFindingsCategoryChange
+        actions.onFindingsCategoryChange,
+        'results-findings-category'
       )
     ),
     labeledInlineField(
@@ -788,7 +810,8 @@ function renderFindingsSection(
           label: value === 'ALL' ? 'All runtime signals' : runtimeDetectionLabel(value)
         })),
         state.findingsRuntimeDetection,
-        actions.onFindingsRuntimeDetectionChange
+        actions.onFindingsRuntimeDetectionChange,
+        'results-findings-runtime-detection'
       )
     ),
     labeledInlineField(
@@ -799,7 +822,8 @@ function renderFindingsSection(
           label: value === 'ALL' ? 'All confidence levels' : confidenceLabel(value)
         })),
         state.findingsConfidence,
-        actions.onFindingsConfidenceChange
+        actions.onFindingsConfidenceChange,
+        'results-findings-confidence'
       )
     )
   );
@@ -807,8 +831,14 @@ function renderFindingsSection(
 
   const secondaryControls = element('div', { className: 'filter-row compact-filter-row' });
   secondaryControls.append(
-    labeledInlineField('Text', textInput(state.findingsText, 'Filter findings', actions.onFindingsTextChange)),
-    labeledInlineField('Grouping', checkboxField('Group similar findings', state.findingsGrouped, actions.onFindingsGroupedChange))
+    labeledInlineField(
+      'Text',
+      textInput(state.findingsText, 'Filter findings', actions.onFindingsTextChange, 'results-findings-text')
+    ),
+    labeledInlineField(
+      'Grouping',
+      checkboxField('Group similar findings', state.findingsGrouped, actions.onFindingsGroupedChange, 'results-findings-grouped')
+    )
   );
   section.appendChild(secondaryControls);
 
@@ -853,9 +883,10 @@ function renderFindingsSection(
   const grouped = state.findingsGrouped ? groupFindings(filtered) : [];
   const sortedGroups = state.findingsGrouped ? sortFindingGroups(grouped, state.findingsSort) : [];
   const sortedFindings: PresentedFinding[] = state.findingsGrouped
-    ? sortedGroups
-    : sortFindings(filtered, state.findingsSort).map(deriveFindingPresentation);
+      ? sortedGroups
+      : sortFindings(filtered, state.findingsSort).map(deriveFindingPresentation);
   const visible = state.findingsExpanded ? sortedFindings : sortedFindings.slice(0, 25);
+  const assignedConcernAnchors = new Set<string>();
   const table = createTable([
     sortableHeader('Severity', 'severity', state.findingsSort, actions.onSetFindingsSort),
     'Category',
@@ -868,6 +899,11 @@ function renderFindingsSection(
     const groupedFinding = state.findingsGrouped ? (derived as GroupedPresentedFinding) : null;
     const row = tbody.insertRow();
     row.className = 'data-row finding-summary-row';
+    const concernAnchorKey = topConcernAnchorKeyFromPresented(groupedFinding ?? derived);
+    if (!assignedConcernAnchors.has(concernAnchorKey)) {
+      row.id = topConcernAnchorId(concernAnchorKey);
+      assignedConcernAnchors.add(concernAnchorKey);
+    }
     const detailsId = `finding-details-${Math.random().toString(36).slice(2, 10)}`;
     const codeButtonId = createFindingCodeButtonId(groupedFinding ?? derived);
     appendCells(row, [
@@ -992,18 +1028,18 @@ function renderInboundEndpointsTable(
     'Handler',
     'Source',
     'Params'
-  ], 'http-table');
+  ], 'http-table http-table-inbound');
   const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
   for (const endpoint of visible) {
     const row = tbody.insertRow();
     row.className = 'data-row';
     appendCells(row, [
       badgeCell(endpoint.httpMethod ?? 'ANY', `badge badge-http`),
-      truncateCell(endpoint.path ?? '/'),
-      truncateCell(endpoint.controllerClass ?? 'Unknown'),
-      truncateCell(endpoint.handlerMethod ?? 'Unknown'),
-      truncateCell(sourceLabel(endpoint.sourceFile, endpoint.line)),
-      truncateCell((endpoint.parameters ?? []).join(', ') || '—')
+      truncateCell(endpoint.path ?? '/', 'http-cell-path'),
+      technicalClampCell(endpoint.controllerClass ?? 'Unknown', undefined, 'http-cell-controller'),
+      truncateCell(endpoint.handlerMethod ?? 'Unknown', 'http-cell-handler'),
+      technicalClampCell(sourceLabel(endpoint.sourceFile, endpoint.line), undefined, 'http-cell-source'),
+      technicalClampCell((endpoint.parameters ?? []).join(', ') || '—', undefined, 'http-cell-params')
     ]);
   }
   block.appendChild(wrapTable(table));
@@ -1039,18 +1075,18 @@ function renderOutboundEndpointsTable(
     sortableHeader('Host', 'host', state.outboundSort, actions.onSetOutboundSort),
     'Source',
     'Config property'
-  ], 'http-table');
+  ], 'http-table http-table-outbound');
   const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
   for (const endpoint of visible) {
     const row = tbody.insertRow();
     row.className = 'data-row';
     appendCells(row, [
-      truncateCell(endpoint.clientType ?? 'HTTP client'),
-      truncateCell(endpoint.method ?? 'REQUEST'),
+      truncateCell(endpoint.clientType ?? 'HTTP client', 'http-cell-client'),
+      truncateCell(endpoint.method ?? 'REQUEST', 'http-cell-method'),
       outboundUrlCell(endpoint),
-      truncateCell(endpoint.host ?? '—'),
-      truncateCell(sourceLabel(endpoint.sourceFile, endpoint.line)),
-      truncateCell(endpoint.configurationPropertyName ?? '—')
+      truncateCell(endpoint.host ?? '—', 'http-cell-host'),
+      technicalClampCell(sourceLabel(endpoint.sourceFile, endpoint.line), undefined, 'http-cell-source'),
+      technicalClampCell(endpoint.configurationPropertyName ?? '—', undefined, 'http-cell-config-property')
     ]);
   }
   block.appendChild(wrapTable(table));
@@ -1086,18 +1122,22 @@ function renderConfiguredUrlsTable(
     sortableHeader('Host', 'host', state.configuredUrlsSort, actions.onSetConfiguredUrlsSort),
     sortableHeader('Profile', 'profile', state.configuredUrlsSort, actions.onSetConfiguredUrlsSort),
     sortableHeader('Source', 'source', state.configuredUrlsSort, actions.onSetConfiguredUrlsSort)
-  ], 'http-table');
+  ], 'http-table http-table-configured');
   const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
   for (const item of visible) {
     const row = tbody.insertRow();
     row.className = 'data-row';
     appendCells(row, [
-      truncateCell(item.propertyName ?? 'Unknown'),
-      truncateCell(item.referencedPropertyName ? `${item.value ?? '—'} -> ${item.referencedPropertyName}` : item.value ?? '—'),
-      truncateCell(urlKindLabel(item.kind)),
-      truncateCell(item.host ?? '—'),
-      truncateCell(item.profile ?? 'default'),
-      truncateCell(sourceLabel(item.sourceFile, item.line))
+      technicalClampCell(item.propertyName ?? 'Unknown', undefined, 'http-cell-property'),
+      technicalClampCell(
+        item.referencedPropertyName ? `${item.value ?? '—'} -> ${item.referencedPropertyName}` : item.value ?? '—',
+        undefined,
+        'http-cell-value'
+      ),
+      truncateCell(urlKindLabel(item.kind), 'http-cell-kind'),
+      truncateCell(item.host ?? '—', 'http-cell-host'),
+      truncateCell(item.profile ?? 'default', 'http-cell-profile'),
+      technicalClampCell(sourceLabel(item.sourceFile, item.line), undefined, 'http-cell-source')
     ]);
   }
   block.appendChild(wrapTable(table));
@@ -1124,17 +1164,17 @@ function renderActuatorTable(
   }
 
   const visible = state.httpActuatorExpanded ? exposures : exposures.slice(0, 25);
-  const table = createTable(['Property', 'Value', 'Profile', 'Source', 'Exposed endpoints'], 'http-table');
+  const table = createTable(['Property', 'Value', 'Profile', 'Source', 'Exposed endpoints'], 'http-table http-table-actuator');
   const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
   for (const exposure of visible) {
     const row = tbody.insertRow();
     row.className = 'data-row';
     appendCells(row, [
-      truncateCell(exposure.propertyName ?? 'Unknown'),
-      truncateCell(exposure.value ?? '—'),
-      truncateCell(exposure.profile ?? 'default'),
-      truncateCell(sourceLabel(exposure.sourceFile, exposure.line)),
-      truncateCell((exposure.exposedEndpoints ?? []).join(', ') || '—')
+      technicalClampCell(exposure.propertyName ?? 'Unknown', undefined, 'http-cell-property'),
+      truncateCell(exposure.value ?? '—', 'http-cell-value-short'),
+      truncateCell(exposure.profile ?? 'default', 'http-cell-profile'),
+      technicalClampCell(sourceLabel(exposure.sourceFile, exposure.line), undefined, 'http-cell-source'),
+      technicalClampCell((exposure.exposedEndpoints ?? []).join(', ') || '—', undefined, 'http-cell-endpoints')
     ]);
   }
   block.appendChild(wrapTable(table));
@@ -1159,6 +1199,9 @@ function renderConfigurationSection(
   const files = analysis.files ?? [];
   const summary = analysis.summary ?? {};
   const profiles = uniqueValues(properties.map((property) => property.profile ?? 'default'));
+  const changedPropertyNames = collectChangedPropertyNames(properties);
+  const reviewSignals = configurationReviewSignals(properties, analysis.codeReferences ?? [], changedPropertyNames);
+  const dominantNamespace = dominantCustomPropertyNamespace(properties);
   const section = resultsSection(
     'Configuration',
     'results-configuration',
@@ -1191,6 +1234,51 @@ function renderConfigurationSection(
   }
   section.appendChild(cards);
 
+  const reviewOverview = element('div', { className: 'summary-grid runtime-grid configuration-review-grid' });
+  reviewOverview.appendChild(
+    element(
+      'div',
+      { className: 'summary-card compact-summary-card configuration-review-card' },
+      element('div', { className: 'summary-label', text: 'Configuration review' }),
+      element('div', {
+        className: 'summary-value',
+        text: reviewSignals.total > 0
+          ? `${reviewSignals.total} review signal${reviewSignals.total === 1 ? '' : 's'} surfaced statically`
+          : 'No review-priority signals in the current property set'
+      }),
+      element(
+        'div',
+        { className: 'compact-card-meta' },
+        [
+          `${reviewSignals.sensitive} sensitive`,
+          `${reviewSignals.unknown} unknown`,
+          `${reviewSignals.changed} changed across profiles`,
+          `${reviewSignals.codeReferenced} code-referenced`
+        ].join(' · ')
+      )
+    )
+  );
+  reviewOverview.appendChild(
+    element(
+      'div',
+      { className: 'summary-card compact-summary-card configuration-review-card' },
+      element('div', { className: 'summary-label', text: 'Current shape' }),
+      element('div', {
+        className: 'summary-value',
+        text: dominantNamespace
+          ? `${dominantNamespace.namespace} dominates the visible custom namespace`
+          : 'Mixed configuration namespaces'
+      }),
+      element('div', {
+        className: 'compact-card-meta',
+        text: dominantNamespace
+          ? `${dominantNamespace.count} of ${summary.customPropertyCount ?? 0} custom properties share this namespace. Use Focus to jump from raw custom config to Spring Boot or review-oriented subsets.`
+          : 'Use Focus to switch between review signals, Spring Boot properties, custom app config, and profile differences.'
+      })
+    )
+  );
+  section.appendChild(reviewOverview);
+
   if (properties.length === 0) {
     section.appendChild(element('div', { className: 'empty-note', text: 'No application configuration files or property references were detected.' }));
     return section;
@@ -1199,15 +1287,37 @@ function renderConfigurationSection(
 
   const primaryControls = element('div', { className: 'filter-row compact-filter-row configuration-primary-filters' });
   primaryControls.append(
-    labeledInlineField('Search', textInput(state.configurationSearch, 'Search property', actions.onConfigurationSearchChange)),
+    labeledInlineField(
+      'Search',
+      textInput(state.configurationSearch, 'Search property', actions.onConfigurationSearchChange, 'results-configuration-search')
+    ),
+    labeledInlineField(
+      'Focus',
+      selectInput(
+        CONFIGURATION_FOCUS_OPTIONS.map((value) => ({
+          value,
+          label: configurationFocusLabel(value)
+        })),
+        state.configurationFocus,
+        actions.onConfigurationFocusChange,
+        'results-configuration-focus'
+      )
+    ),
     labeledInlineField(
       'Profile',
       selectInput(
         [{ value: 'ALL', label: 'All profiles' }, ...profiles.map((value) => ({ value, label: value }))],
         state.configurationProfile,
-        actions.onConfigurationProfileChange
+        actions.onConfigurationProfileChange,
+        'results-configuration-profile'
       )
     ),
+    labeledInlineField('Sensitive', checkboxField('Sensitive only', state.configurationSensitiveOnly, actions.onConfigurationSensitiveOnlyChange, 'results-configuration-sensitive'))
+  );
+  section.appendChild(primaryControls);
+
+  const secondaryControls = element('div', { className: 'filter-row compact-filter-row configuration-secondary-filters' });
+  secondaryControls.append(
     labeledInlineField(
       'Kind',
       selectInput(
@@ -1216,21 +1326,17 @@ function renderConfigurationSection(
           label: value === 'ALL' ? 'All kinds' : configurationKindLabel(value)
         })),
         state.configurationKind,
-        actions.onConfigurationKindChange
+        actions.onConfigurationKindChange,
+        'results-configuration-kind'
       )
     ),
-    labeledInlineField('Sensitive', checkboxField('Sensitive only', state.configurationSensitiveOnly, actions.onConfigurationSensitiveOnlyChange))
-  );
-  section.appendChild(primaryControls);
-
-  const secondaryControls = element('div', { className: 'filter-row compact-filter-row configuration-secondary-filters' });
-  secondaryControls.append(
     labeledInlineField(
       'Source',
       selectInput(
         [{ value: 'ALL', label: 'All sources' }, ...sourceFiles.map((value) => ({ value, label: value }))],
         state.configurationSource,
-        actions.onConfigurationSourceChange
+        actions.onConfigurationSourceChange,
+        'results-configuration-source'
       )
     )
   );
@@ -1252,25 +1358,37 @@ function renderConfigurationSection(
   );
   const filterRow = element('div', { className: 'mode-switcher compact-chip-row configuration-chip-row' });
   filterRow.append(
-    toggleChip('All', state.configurationKind === 'ALL' && !state.configurationSensitiveOnly && !state.configurationChangedOnly, () => {
-      actions.onConfigurationKindChange('ALL');
-      actions.onConfigurationSensitiveOnlyChange(false);
-      actions.onConfigurationChangedOnlyChange(false);
-    }),
-    toggleChip('Spring Boot', state.configurationKind === 'SPRING_BOOT', () => actions.onConfigurationKindChange('SPRING_BOOT')),
-    toggleChip('Custom', state.configurationKind === 'CUSTOM_CONFIGURATION_PROPERTIES', () => actions.onConfigurationKindChange('CUSTOM_CONFIGURATION_PROPERTIES')),
-    toggleChip('Code referenced', state.configurationKind === 'CODE_REFERENCED', () => actions.onConfigurationKindChange('CODE_REFERENCED')),
-    toggleChip('Third-party', state.configurationKind === 'THIRD_PARTY', () => actions.onConfigurationKindChange('THIRD_PARTY')),
-    toggleChip('Unknown', state.configurationKind === 'UNKNOWN', () => actions.onConfigurationKindChange('UNKNOWN')),
-    toggleChip('Sensitive', state.configurationSensitiveOnly, () => actions.onConfigurationSensitiveOnlyChange(!state.configurationSensitiveOnly)),
+    toggleChip('Review', state.configurationFocus === 'REVIEW', () => actions.onConfigurationFocusChange('REVIEW')),
+    toggleChip('Spring Boot', state.configurationFocus === 'SPRING_BOOT', () => actions.onConfigurationFocusChange('SPRING_BOOT')),
+    toggleChip('Custom app config', state.configurationFocus === 'CUSTOM', () => actions.onConfigurationFocusChange('CUSTOM')),
+    toggleChip('Profile differences', state.configurationFocus === 'PROFILE_DIFFS', () => actions.onConfigurationFocusChange('PROFILE_DIFFS')),
+    toggleChip('All properties', state.configurationFocus === 'ALL', () => actions.onConfigurationFocusChange('ALL')),
+    toggleChip('Sensitive only', state.configurationSensitiveOnly, () => actions.onConfigurationSensitiveOnlyChange(!state.configurationSensitiveOnly)),
     toggleChip('Changed across profiles', state.configurationChangedOnly, () => actions.onConfigurationChangedOnlyChange(!state.configurationChangedOnly))
   );
   chipPanel.appendChild(
     element(
       'div',
       { className: 'configuration-chip-group' },
-      element('div', { className: 'configuration-chip-group-label', text: 'Quick filter' }),
+      element('div', { className: 'configuration-chip-group-label', text: 'Focus' }),
       filterRow
+    )
+  );
+  const kindRow = element('div', { className: 'mode-switcher compact-chip-row configuration-chip-row' });
+  kindRow.append(
+    toggleChip('All kinds', state.configurationKind === 'ALL', () => actions.onConfigurationKindChange('ALL')),
+    toggleChip('Spring Boot', state.configurationKind === 'SPRING_BOOT', () => actions.onConfigurationKindChange('SPRING_BOOT')),
+    toggleChip('Custom', state.configurationKind === 'CUSTOM_CONFIGURATION_PROPERTIES', () => actions.onConfigurationKindChange('CUSTOM_CONFIGURATION_PROPERTIES')),
+    toggleChip('Code referenced', state.configurationKind === 'CODE_REFERENCED', () => actions.onConfigurationKindChange('CODE_REFERENCED')),
+    toggleChip('Third-party', state.configurationKind === 'THIRD_PARTY', () => actions.onConfigurationKindChange('THIRD_PARTY')),
+    toggleChip('Unknown', state.configurationKind === 'UNKNOWN', () => actions.onConfigurationKindChange('UNKNOWN'))
+  );
+  chipPanel.appendChild(
+    element(
+      'div',
+      { className: 'configuration-chip-group' },
+      element('div', { className: 'configuration-chip-group-label', text: 'Kind quick filter' }),
+      kindRow
     )
   );
   section.appendChild(chipPanel);
@@ -1293,7 +1411,7 @@ function renderConfigurationSection(
     section.appendChild(fileRow);
   }
 
-  const filtered = properties.filter((property) => configurationMatches(property, state));
+  const filtered = properties.filter((property) => configurationMatches(property, state, changedPropertyNames));
   if (filtered.length === 0) {
     section.appendChild(element('p', { className: 'muted-text', text: 'No configuration properties match the current filters.' }));
     return section;
@@ -1447,10 +1565,14 @@ function renderComponentsSection(
             label: value === 'ALL' ? 'All component types' : componentTypeLabel(value)
           })),
           state.componentType,
-          actions.onComponentTypeChange
+          actions.onComponentTypeChange,
+          'results-components-type'
         )
       ),
-      labeledInlineField('Text', textInput(state.componentText, 'Filter components', actions.onComponentTextChange))
+      labeledInlineField(
+        'Text',
+        textInput(state.componentText, 'Filter components', actions.onComponentTextChange, 'results-components-text')
+      )
     )
   );
 
@@ -1490,11 +1612,11 @@ function renderComponentsSection(
     const row = tbody.insertRow();
     row.className = 'data-row';
     appendCells(row, [
-      truncateCell(componentDisplayName(component)),
+      componentClassCell(component),
       badgeCell(componentTypeLabel(normalizeComponentType(component)), `badge badge-kind`),
-      truncateCell(component.packageName ?? '—'),
-      truncateCell(component.filePath ?? '—'),
-      truncateCell((component.annotationNames ?? component.annotations ?? []).join(', ') || '—')
+      technicalClampCell(component.packageName ?? '—', undefined, 'component-package-cell'),
+      technicalClampCell(component.filePath ?? '—', undefined, 'component-source-cell'),
+      componentAnnotationsCell(component)
     ]);
   }
   section.appendChild(wrapTable(table));
@@ -1615,18 +1737,27 @@ function renderDependenciesSection(
 
   const controls = element('div', { className: 'filter-row compact-filter-row' });
   controls.append(
-    labeledInlineField('Search', textInput(state.dependencyText, 'Filter dependencies', actions.onDependencyTextChange)),
+    labeledInlineField(
+      'Search',
+      textInput(state.dependencyText, 'Filter dependencies', actions.onDependencyTextChange, 'results-dependencies-search')
+    ),
     labeledInlineField(
       'Configuration',
       selectInput(
         [{ value: 'ALL', label: 'All configurations' }, ...configurationOptions.map((value) => ({ value, label: value }))],
         state.resolvedDependencyConfiguration,
-        actions.onResolvedDependencyConfigurationChange
+        actions.onResolvedDependencyConfigurationChange,
+        'results-dependencies-configuration'
       )
     ),
     labeledInlineField(
       'Direct only',
-      checkboxField('Only direct dependencies', state.resolvedDependencyDirectOnly, actions.onResolvedDependencyDirectOnlyChange)
+      checkboxField(
+        'Only direct dependencies',
+        state.resolvedDependencyDirectOnly,
+        actions.onResolvedDependencyDirectOnlyChange,
+        'results-dependencies-direct-only'
+      )
     )
   );
   section.appendChild(controls);
@@ -2251,7 +2382,7 @@ function renderConfigurationTable(
       truncateCell(sourceLabel(property.sourceFile, property.line)),
       badgeCell(configurationKindLabel(property.kind ?? 'UNKNOWN'), `badge ${configurationBadgeClass(property.kind)}`),
       truncateCell(property.documentation?.type ?? 'Unknown type'),
-      truncateCell(propertyMeaning(property))
+      truncateCell(compactPropertyMeaning(property))
     ]);
 
     if (expanded) {
@@ -2828,6 +2959,17 @@ function truncateCellWithTitle(text: string, title: string, extraClassName?: str
   return cell;
 }
 
+function technicalClampCell(text: string, title?: string, extraClassName?: string): HTMLTableCellElement {
+  const cell = document.createElement('td');
+  const value = text || '—';
+  if (extraClassName) {
+    cell.className = extraClassName;
+  }
+  cell.title = title || value;
+  cell.appendChild(element('div', { className: 'cell-technical-wrap', text: value }));
+  return cell;
+}
+
 function outboundUrlCell(endpoint: OutboundEndpoint): HTMLTableCellElement {
   const value = endpoint.fullUrlPreview ?? endpoint.urlOrTemplate ?? 'Unknown';
   const cell = document.createElement('td');
@@ -2854,6 +2996,14 @@ function findingSummaryCell(
   const grouped = 'occurrences' in finding;
   const summaryText = finding.summary || finding.message || 'No summary available';
   const wrapper = element('div', { className: 'finding-summary-block' });
+  const titleRow = element('div', { className: 'finding-summary-title-row' });
+  titleRow.appendChild(
+    element('div', {
+      className: grouped && finding.occurrences > 1 ? 'finding-summary-kicker grouped' : 'finding-summary-kicker',
+      text: grouped && finding.occurrences > 1 ? `Grouped pattern · ${finding.occurrences} occurrences` : finding.category
+    })
+  );
+  wrapper.appendChild(titleRow);
   wrapper.appendChild(
     element('div', {
       className: 'finding-summary-title cell-wrap-two',
@@ -2921,13 +3071,26 @@ function findingLocationCell(finding: GroupedPresentedFinding | PresentedFinding
   const fullLocation = 'occurrences' in finding
     ? uniqueValues(finding.items.map((item) => item.location)).join('; ')
     : finding.location;
-  cell.appendChild(
+  const locationBlock = element('div', {
+    className: finding.locationKnown ? 'finding-location-block is-exact' : 'finding-location-block'
+  });
+  locationBlock.appendChild(
     element('div', {
-      className: 'cell-truncate finding-location-path',
+      className: 'finding-location-path',
       text: finding.locationShort || finding.location || '—',
       attributes: { title: fullLocation || '—' }
     })
   );
+  if (finding.locationMeta) {
+    locationBlock.appendChild(
+      element('div', {
+        className: 'finding-location-meta',
+        text: finding.locationMeta,
+        attributes: { title: finding.locationMeta }
+      })
+    );
+  }
+  cell.appendChild(locationBlock);
   return cell;
 }
 
@@ -2939,7 +3102,7 @@ function findingActionsCell(
   const cell = document.createElement('td');
   cell.className = 'finding-actions-cell';
   const actions = element('div', { className: 'finding-summary-actions' });
-  const hasRepresentativeCodeLocation = Boolean(primaryFindingLocation(finding.finding)?.filePath);
+  const hasAnyCodeLocation = hasFindingCodeLocation(finding);
   actions.appendChild(
     element('button', {
       className: 'secondary-button finding-row-action finding-expand-button',
@@ -2952,7 +3115,7 @@ function findingActionsCell(
       }
     })
   );
-  if (hasRepresentativeCodeLocation) {
+  if (hasAnyCodeLocation) {
     actions.appendChild(
       element('button', {
         className: 'secondary-button finding-row-action finding-code-button',
@@ -3522,9 +3685,10 @@ function labeledInlineField(label: string, control: HTMLElement): HTMLElement {
 function selectInput(
   options: Array<{ value: string; label: string }>,
   selectedValue: string,
-  onChange: (value: string) => void
+  onChange: (value: string) => void,
+  id?: string
 ): HTMLSelectElement {
-  const select = element('select', { className: 'select-input' }) as HTMLSelectElement;
+  const select = element('select', { className: 'select-input', attributes: id ? { id } : undefined }) as HTMLSelectElement;
   for (const option of options) {
     select.appendChild(new Option(option.label, option.value, false, option.value === selectedValue));
   }
@@ -3533,19 +3697,19 @@ function selectInput(
   return select;
 }
 
-function textInput(value: string, placeholder: string, onChange: (value: string) => void): HTMLInputElement {
+function textInput(value: string, placeholder: string, onChange: (value: string) => void, id?: string): HTMLInputElement {
   const input = element('input', {
     className: 'text-input',
-    attributes: { type: 'text', placeholder }
+    attributes: { type: 'text', placeholder, ...(id ? { id } : {}) }
   }) as HTMLInputElement;
   input.value = value;
   input.addEventListener('input', () => onChange(input.value));
   return input;
 }
 
-function checkboxField(label: string, checked: boolean, onChange: (value: boolean) => void): HTMLElement {
+function checkboxField(label: string, checked: boolean, onChange: (value: boolean) => void, id?: string): HTMLElement {
   const wrapper = element('label', { className: 'inline-checkbox' });
-  const input = element('input', { attributes: { type: 'checkbox' } }) as HTMLInputElement;
+  const input = element('input', { attributes: { type: 'checkbox', ...(id ? { id } : {}) } }) as HTMLInputElement;
   input.checked = checked;
   input.addEventListener('change', () => onChange(input.checked));
   wrapper.append(input, element('span', { text: label }));
@@ -3572,7 +3736,11 @@ function toggleChip(text: string, active: boolean, onClick: () => void): HTMLEle
   return button;
 }
 
-function configurationMatches(property: ApplicationProperty, state: ResultsViewState): boolean {
+function configurationMatches(
+  property: ApplicationProperty,
+  state: ResultsViewState,
+  changedPropertyNames: Set<string>
+): boolean {
   const searchNeedle = state.configurationSearch.trim().toLowerCase();
   const haystack = [
     property.name,
@@ -3594,7 +3762,13 @@ function configurationMatches(property: ApplicationProperty, state: ResultsViewS
     state.configurationProfile === 'ALL' || (property.profile ?? 'default') === state.configurationProfile;
   const sourceMatches = state.configurationSource === 'ALL' || (property.sourceFile ?? '') === state.configurationSource;
   const sensitiveMatches = !state.configurationSensitiveOnly || Boolean(property.valueRedacted);
-  return (!searchNeedle || haystack.includes(searchNeedle)) && kindMatches && profileMatches && sourceMatches && sensitiveMatches;
+  const focusMatches = configurationFocusMatches(property, state.configurationFocus, changedPropertyNames);
+  return (!searchNeedle || haystack.includes(searchNeedle))
+    && kindMatches
+    && profileMatches
+    && sourceMatches
+    && sensitiveMatches
+    && focusMatches;
 }
 
 function normalizeMainApplicationClasses(
@@ -3731,6 +3905,48 @@ function configurationKindLabel(value: string): string {
       return 'Unknown';
     default:
       return value;
+  }
+}
+
+function configurationFocusLabel(value: string): string {
+  switch (value) {
+    case 'REVIEW':
+      return 'Review signals';
+    case 'SPRING_BOOT':
+      return 'Spring Boot properties';
+    case 'CUSTOM':
+      return 'Custom app config';
+    case 'PROFILE_DIFFS':
+      return 'Profile differences';
+    case 'ALL':
+    default:
+      return 'All properties';
+  }
+}
+
+function configurationFocusMatches(
+  property: ApplicationProperty,
+  focus: string,
+  changedPropertyNames: Set<string>
+): boolean {
+  const kind = property.kind ?? 'UNKNOWN';
+  const propertyName = property.name ?? '';
+  switch (focus) {
+    case 'REVIEW':
+      return Boolean(property.valueRedacted)
+        || kind === 'UNKNOWN'
+        || kind === 'CODE_REFERENCED'
+        || kind === 'CONDITIONAL_PROPERTY'
+        || changedPropertyNames.has(propertyName);
+    case 'SPRING_BOOT':
+      return kind === 'SPRING_BOOT' || kind === 'SPRING_BOOT_MAP_PROPERTY';
+    case 'CUSTOM':
+      return kind === 'CUSTOM_CONFIGURATION_PROPERTIES';
+    case 'PROFILE_DIFFS':
+      return changedPropertyNames.has(propertyName);
+    case 'ALL':
+    default:
+      return true;
   }
 }
 
@@ -4142,7 +4358,7 @@ function deriveFindingPresentation(finding: Finding): PresentedFinding {
   const message = finding.message ?? 'No message';
   const shortMessage = finding.shortMessage?.trim() || message;
   const normalized = message.toLowerCase();
-  let ruleType = finding.title || finding.ruleId || finding.rule || finding.category || 'Analyzer finding';
+  let ruleType = finding.title || finding.ruleId || finding.rule || finding.category || 'Static finding';
   let title = finding.title?.trim() || ruleType;
   let target = finding.target || finding.location || '—';
 
@@ -4196,9 +4412,16 @@ function deriveFindingPresentation(finding: Finding): PresentedFinding {
     ruleType = 'Build-aware analysis disabled';
     title = 'Build-aware analysis disabled';
     target = 'Gradle model';
+  } else if (normalized.includes('outside the main application package')) {
+    ruleType = 'Component outside main package';
+    title = 'Component outside main package';
+  } else if (title === 'Static finding' || title === 'Analyzer finding') {
+    title = fallbackFindingTitle(finding);
+    ruleType = title;
   }
 
   const location = buildFindingLocation(finding);
+  const locationDetails = deriveLocationDetails(finding);
   return {
     severity: normalizeSeverity(finding.severity),
     title,
@@ -4209,7 +4432,9 @@ function deriveFindingPresentation(finding: Finding): PresentedFinding {
     ruleType,
     target,
     location,
-    locationShort: middleEllipsis(location, 56),
+    locationShort: middleEllipsis(location, 88),
+    locationMeta: locationDetails.meta,
+    locationKnown: locationDetails.known,
     message,
     summary: shortMessage,
     finding
@@ -4231,6 +4456,30 @@ function primaryFindingLocation(finding: Finding): SourceLocation | null {
     };
   }
   return null;
+}
+
+function fallbackFindingTitle(finding: Finding): string {
+  const category = findingCategoryLabel(normalizeFindingCategory(finding.category));
+  const message = (finding.message ?? '').trim();
+  if (!message) {
+    return `${category} finding`;
+  }
+  const normalized = message.charAt(0).toUpperCase() + message.slice(1);
+  return normalized.length > 72 ? `${category} finding` : normalized;
+}
+
+function deriveLocationDetails(finding: Finding): { meta: string; known: boolean } {
+  const primaryLocation = primaryFindingLocation(finding);
+  if (primaryLocation?.filePath) {
+    if (!primaryLocation.startLine) {
+      return { meta: 'Exact line not resolved statically', known: false };
+    }
+    if (!primaryLocation.endLine || primaryLocation.endLine <= primaryLocation.startLine) {
+      return { meta: `Line ${primaryLocation.startLine}`, known: true };
+    }
+    return { meta: `Lines ${primaryLocation.startLine}-${primaryLocation.endLine}`, known: true };
+  }
+  return { meta: '', known: false };
 }
 
 function isHeuristicFinding(finding: Finding): boolean {
@@ -4307,7 +4556,9 @@ function groupFindings(findings: Finding[]): GroupedPresentedFinding[] {
       message: representative.message,
       summary: representative.summary,
       location: representative.location,
-      locationShort: middleEllipsis(representative.location, 56),
+      locationShort: middleEllipsis(representative.location, 88),
+      locationMeta: representative.locationMeta,
+      locationKnown: representative.locationKnown,
       occurrences: bucket.length,
       items: bucket,
       finding: representative.finding
@@ -4377,6 +4628,81 @@ function componentDisplayName(component: Partial<DetectedClass>): string {
     return `${component.packageName}.${component.simpleClassName ?? component.simpleName ?? ''}`;
   }
   return component.simpleClassName ?? component.simpleName ?? 'Unknown component';
+}
+
+function componentPrimaryName(component: Partial<DetectedClass>): string {
+  if (component.simpleClassName?.trim()) {
+    return component.simpleClassName.trim();
+  }
+  if (component.simpleName?.trim()) {
+    return component.simpleName.trim();
+  }
+  const displayName = componentDisplayName(component);
+  const lastDot = displayName.lastIndexOf('.');
+  return lastDot >= 0 ? displayName.slice(lastDot + 1) : displayName;
+}
+
+function componentQualifiedName(component: Partial<DetectedClass>): string {
+  if (component.fullyQualifiedClassName?.trim()) {
+    return component.fullyQualifiedClassName.trim();
+  }
+  if (component.packageName && (component.simpleClassName || component.simpleName)) {
+    return `${component.packageName}.${component.simpleClassName ?? component.simpleName ?? ''}`;
+  }
+  return componentDisplayName(component);
+}
+
+function componentClassCell(component: Partial<DetectedClass>): HTMLTableCellElement {
+  const cell = document.createElement('td');
+  cell.className = 'component-class-cell';
+  const primary = componentPrimaryName(component);
+  const qualified = componentQualifiedName(component);
+  const wrapper = element('div', { className: 'component-class-block' });
+  wrapper.appendChild(
+    element('div', {
+      className: 'component-class-primary',
+      text: primary,
+      attributes: { title: qualified }
+    })
+  );
+  if (qualified && qualified !== primary) {
+    wrapper.appendChild(
+      element('div', {
+        className: 'component-class-secondary',
+        text: qualified,
+        attributes: { title: qualified }
+      })
+    );
+  }
+  cell.appendChild(wrapper);
+  return cell;
+}
+
+function componentAnnotationsCell(component: Partial<DetectedClass>): HTMLTableCellElement {
+  const annotations = (component.annotationNames ?? component.annotations ?? []).filter((value): value is string => Boolean(value?.trim()));
+  const text = annotations.join(', ') || '—';
+  const cell = technicalClampCell(text, undefined, 'component-annotations-cell');
+  if (isRedundantComponentAnnotation(component, annotations)) {
+    cell.classList.add('is-redundant');
+  }
+  return cell;
+}
+
+function isRedundantComponentAnnotation(component: Partial<DetectedClass>, annotations: string[]): boolean {
+  if (annotations.length !== 1) {
+    return false;
+  }
+  const annotation = annotations[0].trim().toLowerCase();
+  const componentType = normalizeComponentType(component);
+  return (
+    (componentType === 'COMPONENT' && annotation === 'component')
+    || (componentType === 'SERVICE' && annotation === 'service')
+    || (componentType === 'REPOSITORY' && annotation === 'repository')
+    || (componentType === 'CONFIGURATION' && annotation === 'configuration')
+    || (componentType === 'CONTROLLER' && annotation === 'controller')
+    || (componentType === 'REST_CONTROLLER' && annotation === 'restcontroller')
+    || (componentType === 'CONFIGURATION_PROPERTIES' && annotation === 'configurationproperties')
+  );
 }
 
 function normalizeFindingCategory(value: string | undefined): string {
@@ -4484,6 +4810,85 @@ function propertyMeaning(property: ApplicationProperty): string {
     return 'Custom application configuration property.';
   }
   return 'No description available.';
+}
+
+function compactPropertyMeaning(property: ApplicationProperty): string {
+  const meaning = propertyMeaning(property);
+  if (property.kind === 'CUSTOM_CONFIGURATION_PROPERTIES') {
+    const normalized = meaning.toLowerCase();
+    if (
+      normalized.startsWith('custom property defined by ')
+      || normalized.startsWith('custom application configuration property')
+    ) {
+      const namespace = dominantPropertyPrefix(property.name);
+      return namespace ? `Custom ${namespace} property.` : 'Custom application property.';
+    }
+  }
+  return meaning;
+}
+
+function collectChangedPropertyNames(properties: ApplicationProperty[]): Set<string> {
+  return new Set(
+    buildProfileComparisonGroups(properties)
+      .filter((group) => group.changed)
+      .map((group) => group.name)
+  );
+}
+
+function configurationReviewSignals(
+  properties: ApplicationProperty[],
+  codeReferences: PropertyReference[],
+  changedPropertyNames: Set<string>
+): { sensitive: number; unknown: number; changed: number; codeReferenced: number; total: number } {
+  const sensitive = properties.filter((property) => Boolean(property.valueRedacted)).length;
+  const unknown = properties.filter((property) => (property.kind ?? 'UNKNOWN') === 'UNKNOWN').length;
+  const codeReferenced = properties.filter((property) => {
+    const kind = property.kind ?? 'UNKNOWN';
+    return kind === 'CODE_REFERENCED' || kind === 'CONDITIONAL_PROPERTY';
+  }).length || codeReferences.length;
+  const changed = changedPropertyNames.size;
+  return {
+    sensitive,
+    unknown,
+    changed,
+    codeReferenced,
+    total: sensitive + unknown + changed + codeReferenced
+  };
+}
+
+function dominantCustomPropertyNamespace(
+  properties: ApplicationProperty[]
+): { namespace: string; count: number } | null {
+  const counts = new Map<string, number>();
+  properties
+    .filter((property) => (property.kind ?? 'UNKNOWN') === 'CUSTOM_CONFIGURATION_PROPERTIES')
+    .forEach((property) => {
+      const namespace = dominantPropertyPrefix(property.name);
+      if (!namespace) {
+        return;
+      }
+      counts.set(namespace, (counts.get(namespace) ?? 0) + 1);
+    });
+  const sorted = [...counts.entries()].sort((left, right) => right[1] - left[1]);
+  if (sorted.length === 0) {
+    return null;
+  }
+  const [namespace, count] = sorted[0];
+  return count >= 3 ? { namespace, count } : null;
+}
+
+function dominantPropertyPrefix(propertyName: string | undefined): string | null {
+  if (!propertyName) {
+    return null;
+  }
+  const parts = propertyName.split('.').filter(Boolean);
+  if (parts.length >= 2) {
+    return `${parts[0]}.${parts[1]}`;
+  }
+  if (parts.length === 1) {
+    return parts[0];
+  }
+  return null;
 }
 
 function normalizeGroupingText(value: string): string {
