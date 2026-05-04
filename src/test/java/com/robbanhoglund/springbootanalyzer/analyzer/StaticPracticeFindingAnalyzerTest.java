@@ -1699,9 +1699,8 @@ class StaticPracticeFindingAnalyzerTest {
                 emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-data-jpa"))
         );
 
-        // show-sql=true in prod is emitted as SPRING_RISKY_PROD_CONFIG (via the generic configFinding helper)
         assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_RISKY_PROD_CONFIG.ruleId().equals(finding.ruleId())
+                FindingRules.SPRING_JPA_SHOW_SQL_PROD.ruleId().equals(finding.ruleId())
                         && finding.severity() == FindingSeverity.WARNING
                         && finding.evidence() != null
                         && finding.evidence().contains("spring.jpa.show-sql")
@@ -2864,5 +2863,595 @@ class StaticPracticeFindingAnalyzerTest {
                     .as(ruleId + ": evidence must not be blank")
                     .isNotBlank();
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD
+    // -------------------------------------------------------------------------
+
+    @Test
+    void flagsActuatorWildcardExposure() throws IOException {
+        Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(resources.resolve("application.properties"),
+                "management.endpoints.web.exposure.include=*\n");
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).anyMatch(finding ->
+                FindingRules.SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD.ruleId().equals(finding.ruleId())
+                        && finding.severity() == FindingSeverity.WARNING
+                        && finding.primaryLocation() != null
+        );
+    }
+
+    @Test
+    void flagsActuatorDangerousEndpointExposure() throws IOException {
+        Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(resources.resolve("application.properties"),
+                "management.endpoints.web.exposure.include=health,info,env\n");
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).anyMatch(finding ->
+                FindingRules.SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD.ruleId().equals(finding.ruleId())
+        );
+    }
+
+    @Test
+    void doesNotFlagSafeActuatorExposure() throws IOException {
+        Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(resources.resolve("application.properties"),
+                "management.endpoints.web.exposure.include=health,info\n");
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).noneMatch(finding ->
+                FindingRules.SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD.ruleId().equals(finding.ruleId())
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // SPRING_CONNECTION_POOL_MISCONFIGURED
+    // -------------------------------------------------------------------------
+
+    @Test
+    void flagsHikariPoolSizeTooSmall() throws IOException {
+        Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(resources.resolve("application.properties"),
+                "spring.datasource.hikari.maximum-pool-size=1\n");
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).anyMatch(finding ->
+                FindingRules.SPRING_CONNECTION_POOL_MISCONFIGURED.ruleId().equals(finding.ruleId())
+                        && finding.severity() == FindingSeverity.WARNING
+                        && finding.primaryLocation() != null
+        );
+    }
+
+    @Test
+    void doesNotFlagReasonableHikariPoolSize() throws IOException {
+        Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(resources.resolve("application.properties"),
+                "spring.datasource.hikari.maximum-pool-size=10\n");
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).noneMatch(finding ->
+                FindingRules.SPRING_CONNECTION_POOL_MISCONFIGURED.ruleId().equals(finding.ruleId())
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // SPRING_SQL_INJECTION_QUERY_CONCATENATION
+    // -------------------------------------------------------------------------
+
+    @Test
+    void flagsNativeQueryWithStringConcatenation() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("UserRepository.java"), """
+                package com.example.demo;
+
+                import jakarta.persistence.EntityManager;
+                import org.springframework.stereotype.Repository;
+
+                @Repository
+                class UserRepository {
+                    private EntityManager entityManager;
+
+                    Object findByRole(String role) {
+                        return entityManager.createNativeQuery("SELECT * FROM users WHERE role = '" + role + "'");
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).anyMatch(finding ->
+                FindingRules.SPRING_SQL_INJECTION_QUERY_CONCATENATION.ruleId().equals(finding.ruleId())
+                        && finding.severity() == FindingSeverity.WARNING
+                        && finding.primaryLocation() != null
+        );
+    }
+
+    @Test
+    void doesNotFlagNativeQueryWithLiteralOnly() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("UserRepository.java"), """
+                package com.example.demo;
+
+                import jakarta.persistence.EntityManager;
+                import org.springframework.stereotype.Repository;
+
+                @Repository
+                class UserRepository {
+                    private EntityManager entityManager;
+
+                    Object findAll() {
+                        return entityManager.createNativeQuery("SELECT * FROM users");
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).noneMatch(finding ->
+                FindingRules.SPRING_SQL_INJECTION_QUERY_CONCATENATION.ruleId().equals(finding.ruleId())
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // SPRING_LOGGING_PII_EXPOSURE
+    // -------------------------------------------------------------------------
+
+    @Test
+    void flagsLoggingPasswordVariable() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("AuthService.java"), """
+                package com.example.demo;
+
+                import org.slf4j.Logger;
+                import org.slf4j.LoggerFactory;
+                import org.springframework.stereotype.Service;
+
+                @Service
+                class AuthService {
+                    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
+
+                    void login(String username, String password) {
+                        log.info("Login attempt for user: {}, password: {}", username, password);
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).anyMatch(finding ->
+                FindingRules.SPRING_LOGGING_PII_EXPOSURE.ruleId().equals(finding.ruleId())
+                        && finding.severity() == FindingSeverity.WARNING
+        );
+    }
+
+    @Test
+    void doesNotFlagLoggingNonSensitiveValues() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("OrderService.java"), """
+                package com.example.demo;
+
+                import org.slf4j.Logger;
+                import org.slf4j.LoggerFactory;
+                import org.springframework.stereotype.Service;
+
+                @Service
+                class OrderService {
+                    private static final Logger log = LoggerFactory.getLogger(OrderService.class);
+
+                    void processOrder(String orderId, String status) {
+                        log.info("Processing order: {}, status: {}", orderId, status);
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).noneMatch(finding ->
+                FindingRules.SPRING_LOGGING_PII_EXPOSURE.ruleId().equals(finding.ruleId())
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // SPRING_JPA_LAZY_LOADING_OUTSIDE_TRANSACTION
+    // -------------------------------------------------------------------------
+
+    @Test
+    void flagsGetReferenceByIdWithoutTransaction() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("OrderService.java"), """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Service;
+
+                @Service
+                class OrderService {
+                    private OrderRepository orderRepository;
+
+                    Order getOrder(Long id) {
+                        return orderRepository.getReferenceById(id);
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).anyMatch(finding ->
+                FindingRules.SPRING_JPA_LAZY_LOADING_OUTSIDE_TRANSACTION.ruleId().equals(finding.ruleId())
+                        && finding.severity() == FindingSeverity.WARNING
+                        && finding.primaryLocation() != null
+        );
+    }
+
+    @Test
+    void doesNotFlagGetReferenceByIdWithTransactional() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("OrderService.java"), """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+
+                @Service
+                class OrderService {
+                    private OrderRepository orderRepository;
+
+                    @Transactional(readOnly = true)
+                    Order getOrder(Long id) {
+                        return orderRepository.getReferenceById(id);
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).noneMatch(finding ->
+                FindingRules.SPRING_JPA_LAZY_LOADING_OUTSIDE_TRANSACTION.ruleId().equals(finding.ruleId())
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // SPRING_ASYNC_EXECUTOR_NOT_CONFIGURED
+    // -------------------------------------------------------------------------
+
+    @Test
+    void flagsAsyncWithoutCustomExecutor() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("NotificationService.java"), """
+                package com.example.demo;
+
+                import org.springframework.scheduling.annotation.Async;
+                import org.springframework.stereotype.Service;
+
+                @Service
+                class NotificationService {
+                    @Async
+                    void sendEmail(String to) {
+                        // send email
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).anyMatch(finding ->
+                FindingRules.SPRING_ASYNC_EXECUTOR_NOT_CONFIGURED.ruleId().equals(finding.ruleId())
+                        && finding.severity() == FindingSeverity.WARNING
+        );
+    }
+
+    @Test
+    void doesNotFlagAsyncWhenExecutorBeanPresent() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("NotificationService.java"), """
+                package com.example.demo;
+
+                import org.springframework.scheduling.annotation.Async;
+                import org.springframework.stereotype.Service;
+
+                @Service
+                class NotificationService {
+                    @Async
+                    void sendEmail(String to) {
+                        // send email
+                    }
+                }
+                """);
+        Files.writeString(sourceRoot.resolve("AsyncConfig.java"), """
+                package com.example.demo;
+
+                import org.springframework.context.annotation.Bean;
+                import org.springframework.context.annotation.Configuration;
+                import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+
+                @Configuration
+                class AsyncConfig {
+                    @Bean
+                    ThreadPoolTaskExecutor taskExecutor() {
+                        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+                        executor.setCorePoolSize(5);
+                        return executor;
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).noneMatch(finding ->
+                FindingRules.SPRING_ASYNC_EXECUTOR_NOT_CONFIGURED.ruleId().equals(finding.ruleId())
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // SPRING_SCHEDULED_EXECUTOR_SERVICE_NOT_CONFIGURED
+    // -------------------------------------------------------------------------
+
+    @Test
+    void flagsMultipleScheduledMethodsWithoutTaskScheduler() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("CleanupJob.java"), """
+                package com.example.demo;
+
+                import org.springframework.scheduling.annotation.Scheduled;
+                import org.springframework.stereotype.Component;
+
+                @Component
+                class CleanupJob {
+                    @Scheduled(fixedDelay = 60000)
+                    void cleanExpiredSessions() {}
+
+                    @Scheduled(cron = "0 0 * * * *")
+                    void archiveOldRecords() {}
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).anyMatch(finding ->
+                FindingRules.SPRING_SCHEDULED_EXECUTOR_SERVICE_NOT_CONFIGURED.ruleId().equals(finding.ruleId())
+                        && finding.severity() == FindingSeverity.WARNING
+        );
+    }
+
+    @Test
+    void doesNotFlagScheduledWhenTaskSchedulerPresent() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("CleanupJob.java"), """
+                package com.example.demo;
+
+                import org.springframework.scheduling.annotation.Scheduled;
+                import org.springframework.stereotype.Component;
+
+                @Component
+                class CleanupJob {
+                    @Scheduled(fixedDelay = 60000)
+                    void cleanExpiredSessions() {}
+
+                    @Scheduled(cron = "0 0 * * * *")
+                    void archiveOldRecords() {}
+                }
+                """);
+        Files.writeString(sourceRoot.resolve("SchedulingConfig.java"), """
+                package com.example.demo;
+
+                import org.springframework.context.annotation.Bean;
+                import org.springframework.context.annotation.Configuration;
+                import org.springframework.scheduling.TaskScheduler;
+                import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
+
+                @Configuration
+                class SchedulingConfig {
+                    @Bean
+                    TaskScheduler taskScheduler() {
+                        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+                        scheduler.setPoolSize(4);
+                        return scheduler;
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).noneMatch(finding ->
+                FindingRules.SPRING_SCHEDULED_EXECUTOR_SERVICE_NOT_CONFIGURED.ruleId().equals(finding.ruleId())
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // SPRING_FEIGN_NO_FALLBACK_OR_TIMEOUT
+    // -------------------------------------------------------------------------
+
+    @Test
+    void flagsFeignClientWithoutFallback() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("InventoryClient.java"), """
+                package com.example.demo;
+
+                import org.springframework.cloud.openfeign.FeignClient;
+                import org.springframework.web.bind.annotation.GetMapping;
+
+                @FeignClient(name = "inventory", url = "http://inventory-service")
+                interface InventoryClient {
+                    @GetMapping("/items")
+                    java.util.List<String> getItems();
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).anyMatch(finding ->
+                FindingRules.SPRING_FEIGN_NO_FALLBACK_OR_TIMEOUT.ruleId().equals(finding.ruleId())
+                        && finding.severity() == FindingSeverity.WARNING
+                        && finding.primaryLocation() != null
+        );
+    }
+
+    @Test
+    void doesNotFlagFeignClientWithFallback() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("InventoryClient.java"), """
+                package com.example.demo;
+
+                import org.springframework.cloud.openfeign.FeignClient;
+                import org.springframework.web.bind.annotation.GetMapping;
+
+                @FeignClient(name = "inventory", url = "http://inventory-service", fallback = InventoryClientFallback.class)
+                interface InventoryClient {
+                    @GetMapping("/items")
+                    java.util.List<String> getItems();
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).noneMatch(finding ->
+                FindingRules.SPRING_FEIGN_NO_FALLBACK_OR_TIMEOUT.ruleId().equals(finding.ruleId())
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER
+    // -------------------------------------------------------------------------
+
+    @Test
+    void flagsRestTemplateBeanWithoutErrorHandler() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("WebConfig.java"), """
+                package com.example.demo;
+
+                import org.springframework.context.annotation.Bean;
+                import org.springframework.context.annotation.Configuration;
+                import org.springframework.web.client.RestTemplate;
+
+                @Configuration
+                class WebConfig {
+                    @Bean
+                    RestTemplate restTemplate() {
+                        return new RestTemplate();
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).anyMatch(finding ->
+                FindingRules.SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER.ruleId().equals(finding.ruleId())
+                        && finding.severity() == FindingSeverity.WARNING
+                        && finding.primaryLocation() != null
+        );
+    }
+
+    @Test
+    void doesNotFlagRestTemplateWithErrorHandler() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("WebConfig.java"), """
+                package com.example.demo;
+
+                import org.springframework.context.annotation.Bean;
+                import org.springframework.context.annotation.Configuration;
+                import org.springframework.web.client.RestTemplate;
+
+                @Configuration
+                class WebConfig {
+                    @Bean
+                    RestTemplate restTemplate() {
+                        RestTemplate restTemplate = new RestTemplate();
+                        restTemplate.setErrorHandler(new MyErrorHandler());
+                        return restTemplate;
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).noneMatch(finding ->
+                FindingRules.SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER.ruleId().equals(finding.ruleId())
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // SPRING_TRANSACTION_ISOLATION_READ_UNCOMMITTED
+    // -------------------------------------------------------------------------
+
+    @Test
+    void flagsReadUncommittedIsolation() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("ReportService.java"), """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Isolation;
+                import org.springframework.transaction.annotation.Transactional;
+
+                @Service
+                class ReportService {
+                    @Transactional(isolation = Isolation.READ_UNCOMMITTED)
+                    java.util.List<String> generateReport() {
+                        return java.util.List.of();
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).anyMatch(finding ->
+                FindingRules.SPRING_TRANSACTION_ISOLATION_READ_UNCOMMITTED.ruleId().equals(finding.ruleId())
+                        && finding.severity() == FindingSeverity.WARNING
+                        && finding.primaryLocation() != null
+        );
+    }
+
+    @Test
+    void doesNotFlagReadCommittedIsolation() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(sourceRoot.resolve("ReportService.java"), """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Isolation;
+                import org.springframework.transaction.annotation.Transactional;
+
+                @Service
+                class ReportService {
+                    @Transactional(isolation = Isolation.READ_COMMITTED)
+                    java.util.List<String> generateReport() {
+                        return java.util.List.of();
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings).noneMatch(finding ->
+                FindingRules.SPRING_TRANSACTION_ISOLATION_READ_UNCOMMITTED.ruleId().equals(finding.ruleId())
+        );
     }
 }

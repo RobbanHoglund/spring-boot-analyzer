@@ -135,6 +135,8 @@ public class StaticPracticeFindingAnalyzer {
         detectFlywaySchemaRisks(repositoryRoot, buildInfo, configurationAnalysis, gradleModelAnalysis, findings);
         detectMissingSecurityStarter(buildInfo, findings);
         detectOpenInViewNotDisabled(configurationAnalysis, findings);
+        detectActuatorExposure(configurationAnalysis, findings);
+        detectConnectionPoolMisconfiguration(configurationAnalysis, findings);
         detectSourcePractices(repositoryRoot, httpSurfaceAnalysis, detectedClasses, findings);
         detectRepeatedFallbackParsingPattern(findings);
         return dedupe(findings);
@@ -284,15 +286,16 @@ public class StaticPracticeFindingAnalyzer {
                         .target(name)
                         .build());
             } else if (prodLike && "spring.jpa.show-sql".equals(name) && "true".equalsIgnoreCase(value)) {
-                findings.add(configFinding(
-                        "spring.jpa.show-sql=true prints all SQL statements to stdout in a production-oriented profile.",
-                        "SQL logging at the JPA layer bypasses the application logging framework, writes directly to stdout, and cannot be controlled by log-level configuration.",
-                        "Production logs become noisy, schema details and query structures are exposed in log aggregation systems, and performance overhead is added on every query.",
-                        "Use logging.level.org.hibernate.SQL=DEBUG or a query profiling tool instead, and keep it disabled in production profiles.",
-                        property,
-                        name,
-                        FindingConfidence.HIGH
-                ));
+                findings.add(FindingFactory.builder(FindingRules.SPRING_JPA_SHOW_SQL_PROD, FindingConfidence.HIGH)
+                        .shortMessage("spring.jpa.show-sql=true prints all SQL statements to stdout in a production-oriented profile.")
+                        .whyBadPractice("SQL logging at the JPA layer bypasses the application logging framework, writes directly to stdout, and cannot be controlled by log-level configuration.")
+                        .possibleImpact("Production logs become noisy, schema details and query structures are exposed in log aggregation systems, and performance overhead is added on every query.")
+                        .recommendation("Use logging.level.org.hibernate.SQL=DEBUG or a query profiling tool instead, and keep it disabled in production profiles.")
+                        .evidence("spring.jpa.show-sql=true was found in " + property.sourceFile() + ".")
+                        .limitations("Static analysis cannot prove whether this profile is always active in deployment, but the filename or profile marker indicates production-oriented usage.")
+                        .source(property.sourceFile(), property.line())
+                        .target(name)
+                        .build());
             } else if ("spring.jpa.open-in-view".equals(name) && "true".equalsIgnoreCase(value)) {
                 findings.add(FindingFactory.builder(FindingRules.SPRING_JPA_OPEN_IN_VIEW, FindingConfidence.HIGH)
                         .shortMessage("spring.jpa.open-in-view=true is explicitly enabled.")
@@ -525,6 +528,8 @@ public class StaticPracticeFindingAnalyzer {
         } catch (IOException exception) {
             throw new IllegalStateException("Failed to scan Java sources for static practice findings", exception);
         }
+        detectAsyncWithoutExecutor(repositoryRoot, findings);
+        detectScheduledWithoutExecutor(repositoryRoot, findings);
     }
 
     private void parseSourcePractices(
@@ -666,6 +671,10 @@ public class StaticPracticeFindingAnalyzer {
                 detectTransactionalOnScheduled(relativePath, declaration, method, findings);
             }
 
+            if (hasAnnotation(method.getAnnotations(), "Transactional")) {
+                detectTransactionIsolationReadUncommitted(relativePath, declaration, method, findings);
+            }
+
             if (controllerLike) {
                 detectRequestMappingNoMethod(relativePath, declaration, method, findings);
                 detectSensitiveRequestParams(relativePath, declaration, method, findings);
@@ -686,6 +695,11 @@ public class StaticPracticeFindingAnalyzer {
 
         detectCsrfDisabled(relativePath, declaration, findings);
         detectCorsAllowAll(relativePath, declaration, findings);
+        detectFeignClientRisks(relativePath, declaration, findings);
+        detectRestTemplateNoStatusHandler(relativePath, declaration, findings);
+        detectSqlInjectionInQueries(relativePath, declaration, findings);
+        detectLoggingPiiExposure(relativePath, declaration, findings);
+        detectJpaLazyLoadingOutsideTransaction(relativePath, declaration, findings);
     }
 
     private void detectExceptionHandlingInConstructor(
@@ -2367,6 +2381,355 @@ public class StaticPracticeFindingAnalyzer {
             }
         }
         return "";
+    }
+
+    private void detectActuatorExposure(ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {
+        Set<String> dangerous = Set.of("env", "configprops", "heapdump", "threaddump", "shutdown");
+        for (ApplicationProperty property : configurationAnalysis == null ? List.<ApplicationProperty>of() : configurationAnalysis.properties()) {
+            if (property == null || !"management.endpoints.web.exposure.include".equals(property.name()) || property.value() == null) {
+                continue;
+            }
+            String value = property.value().trim();
+            boolean exposesAll = "*".equals(value);
+            boolean exposesDangerous = !exposesAll && Stream.of(value.split(","))
+                    .map(String::trim).anyMatch(dangerous::contains);
+            if (!exposesAll && !exposesDangerous) {
+                continue;
+            }
+            String exposed = exposesAll ? "*" : Stream.of(value.split(","))
+                    .map(String::trim).filter(dangerous::contains).collect(Collectors.joining(", "));
+            findings.add(FindingFactory.builder(FindingRules.SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD, FindingConfidence.HIGH)
+                    .shortMessage("Sensitive actuator endpoint(s) exposed: " + exposed + ".")
+                    .whyBadPractice("Endpoints like env and configprops expose all loaded environment variables and configuration properties including secrets. heapdump and threaddump expose runtime internals. shutdown can terminate the process remotely.")
+                    .possibleImpact("Unauthenticated access to /actuator/env can leak credentials and API keys. /actuator/shutdown can be used for denial-of-service. These endpoints are frequently targeted in Spring Boot attacks.")
+                    .recommendation("Restrict exposure to health and info for public applications: management.endpoints.web.exposure.include=health,info. Protect any additional endpoints behind authentication or network controls.")
+                    .evidence("management.endpoints.web.exposure.include=" + value + " found in " + property.sourceFile() + ".")
+                    .limitations("Static analysis cannot determine whether Spring Security or a firewall restricts access to actuator endpoints at runtime.")
+                    .source(property.sourceFile(), property.line())
+                    .target("management.endpoints.web.exposure.include")
+                    .build());
+        }
+    }
+
+    private void detectConnectionPoolMisconfiguration(ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {
+        if (configurationAnalysis == null) {
+            return;
+        }
+        for (ApplicationProperty property : configurationAnalysis.properties()) {
+            if (property == null || property.name() == null || property.value() == null) {
+                continue;
+            }
+            if (!"spring.datasource.hikari.maximum-pool-size".equals(property.name())) {
+                continue;
+            }
+            try {
+                int size = Integer.parseInt(property.value().trim());
+                if (size < 2) {
+                    findings.add(FindingFactory.builder(FindingRules.SPRING_CONNECTION_POOL_MISCONFIGURED, FindingConfidence.HIGH)
+                            .shortMessage("HikariCP maximum-pool-size=" + size + " is too small for production use.")
+                            .whyBadPractice("A pool of size 1 serializes all database access through a single connection. Any concurrent request must wait, and a single slow query blocks the entire application.")
+                            .possibleImpact("Severe throughput degradation under any concurrent load. A single blocked connection causes application-wide request queuing.")
+                            .recommendation("Set maximum-pool-size to at least the number of concurrent threads that access the database, typically 5–20 for most applications.")
+                            .evidence("spring.datasource.hikari.maximum-pool-size=" + size + " found in " + property.sourceFile() + ".")
+                            .limitations("Static analysis cannot determine the application's actual concurrency requirements.")
+                            .source(property.sourceFile(), property.line())
+                            .target("spring.datasource.hikari.maximum-pool-size")
+                            .build());
+                }
+            } catch (NumberFormatException ignored) {
+            }
+        }
+    }
+
+    private void detectFeignClientRisks(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            List<Finding> findings
+    ) {
+        declaration.getAnnotationByName("FeignClient").ifPresent(annotation -> {
+            boolean hasFallback = annotation.isNormalAnnotationExpr()
+                    && annotation.asNormalAnnotationExpr().getPairs().stream()
+                    .anyMatch(pair -> "fallback".equals(pair.getNameAsString()) || "fallbackFactory".equals(pair.getNameAsString()));
+            if (!hasFallback) {
+                Integer line = declaration.getBegin().map(p -> p.line).orElse(null);
+                String name = declaration.getNameAsString();
+                findings.add(FindingFactory.builder(FindingRules.SPRING_FEIGN_NO_FALLBACK_OR_TIMEOUT, FindingConfidence.MEDIUM)
+                        .shortMessage("@FeignClient " + name + " has no fallback or fallbackFactory.")
+                        .whyBadPractice("Without a fallback, any failure in the remote service propagates directly to the caller as an exception. Feign has no default read timeout, so slow or unresponsive services can block threads indefinitely.")
+                        .possibleImpact("Thread pool exhaustion under sustained failure or latency in the remote service. Cascading failures across the call stack.")
+                        .recommendation("Add a fallback class via @FeignClient(fallback = MyFallback.class), or configure a circuit-breaker via Resilience4j. At minimum, configure feign.client.config.default.readTimeout.")
+                        .evidence("@FeignClient on " + name + " in " + relativePath + " has no fallback or fallbackFactory attribute.")
+                        .limitations("Static analysis cannot determine whether a global Resilience4j circuit-breaker or timeout is configured externally.")
+                        .source(relativePath, line)
+                        .target(name)
+                        .build());
+            }
+        });
+    }
+
+    private void detectRestTemplateNoStatusHandler(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            List<Finding> findings
+    ) {
+        for (MethodDeclaration method : declaration.getMethods()) {
+            if (!hasAnnotation(method.getAnnotations(), "Bean")) {
+                continue;
+            }
+            if (!"RestTemplate".equals(simpleName(method.getTypeAsString()))) {
+                continue;
+            }
+            boolean hasErrorHandler = method.findAll(MethodCallExpr.class).stream()
+                    .anyMatch(call -> "setErrorHandler".equals(call.getNameAsString()));
+            if (!hasErrorHandler) {
+                Integer line = method.getBegin().map(p -> p.line).orElse(null);
+                String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+                findings.add(FindingFactory.builder(FindingRules.SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER, FindingConfidence.MEDIUM)
+                        .shortMessage("RestTemplate @Bean " + target + " has no custom error handler.")
+                        .whyBadPractice("By default, RestTemplate throws HttpClientErrorException or HttpServerErrorException on 4xx/5xx responses. Without a custom ResponseErrorHandler, callers must catch these specific Spring exceptions or let them bubble up unexpectedly.")
+                        .possibleImpact("Non-2xx responses cause uncaught exceptions. Error details from downstream services are lost or inconsistently handled across different call sites.")
+                        .recommendation("Set a custom ResponseErrorHandler via restTemplate.setErrorHandler(...) that converts error responses to application-specific exceptions with meaningful messages.")
+                        .evidence("@Bean RestTemplate method " + method.getNameAsString() + " in " + relativePath + " has no setErrorHandler call.")
+                        .limitations("Static analysis cannot determine whether error handling is configured on the RestTemplate instance after the @Bean method returns.")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+            }
+        }
+    }
+
+    private void detectSqlInjectionInQueries(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            List<Finding> findings
+    ) {
+        for (MethodDeclaration method : declaration.getMethods()) {
+            for (MethodCallExpr call : method.findAll(MethodCallExpr.class)) {
+                String callName = call.getNameAsString();
+                if (!"createNativeQuery".equals(callName) && !"createQuery".equals(callName)) {
+                    continue;
+                }
+                boolean hasConcat = call.getArguments().stream()
+                        .anyMatch(this::containsNonLiteralStringConcatenation);
+                if (hasConcat) {
+                    Integer line = call.getBegin().map(p -> p.line).orElse(null);
+                    String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+                    findings.add(FindingFactory.builder(FindingRules.SPRING_SQL_INJECTION_QUERY_CONCATENATION, FindingConfidence.HIGH)
+                            .shortMessage("SQL query in " + target + " is built with string concatenation.")
+                            .whyBadPractice("Building SQL queries by concatenating strings allows user-controlled input to alter the query structure, enabling SQL injection attacks.")
+                            .possibleImpact("An attacker can read, modify, or delete arbitrary data, bypass authentication, or execute stored procedures depending on database permissions.")
+                            .recommendation("Use named parameters or positional parameters. Replace string concatenation with setParameter() calls on the Query object.")
+                            .evidence("createNativeQuery or createQuery with string concatenation detected in " + target + " in " + relativePath + ".")
+                            .limitations("Static analysis cannot prove whether the concatenated values are sanitized or come only from trusted sources.")
+                            .source(relativePath, line)
+                            .target(target)
+                            .build());
+                }
+            }
+        }
+    }
+
+    private boolean containsNonLiteralStringConcatenation(Expression expr) {
+        if (!(expr instanceof BinaryExpr binaryExpr)) {
+            return false;
+        }
+        if (binaryExpr.getOperator() != BinaryExpr.Operator.PLUS) {
+            return false;
+        }
+        Expression left = binaryExpr.getLeft();
+        Expression right = binaryExpr.getRight();
+        boolean leftIsNonLiteral = left instanceof NameExpr || left instanceof MethodCallExpr || left instanceof FieldAccessExpr;
+        boolean rightIsNonLiteral = right instanceof NameExpr || right instanceof MethodCallExpr || right instanceof FieldAccessExpr;
+        return leftIsNonLiteral || rightIsNonLiteral
+                || containsNonLiteralStringConcatenation(left)
+                || containsNonLiteralStringConcatenation(right);
+    }
+
+    private void detectLoggingPiiExposure(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            List<Finding> findings
+    ) {
+        Set<String> logMethodNames = Set.of("error", "warn", "info", "debug", "trace");
+        for (MethodDeclaration method : declaration.getMethods()) {
+            for (MethodCallExpr call : method.findAll(MethodCallExpr.class)) {
+                if (!logMethodNames.contains(call.getNameAsString())) {
+                    continue;
+                }
+                boolean isLogCall = call.getScope().map(scope -> {
+                    String s = scope.toString().toLowerCase(Locale.ROOT);
+                    return s.equals("log") || s.equals("logger") || s.endsWith(".log") || s.endsWith(".logger");
+                }).orElse(false);
+                if (!isLogCall) {
+                    continue;
+                }
+                for (Expression arg : call.getArguments()) {
+                    String argStr = arg.toString().toLowerCase(Locale.ROOT);
+                    boolean hasSensitiveRef = SENSITIVE_MARKERS.stream().anyMatch(argStr::contains);
+                    if (hasSensitiveRef) {
+                        Integer line = call.getBegin().map(p -> p.line).orElse(null);
+                        String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+                        findings.add(FindingFactory.builder(FindingRules.SPRING_LOGGING_PII_EXPOSURE, FindingConfidence.MEDIUM)
+                                .shortMessage("Potentially sensitive value logged in " + target + ".")
+                                .whyBadPractice("Logging sensitive values such as passwords, tokens, or API keys makes them visible in log aggregation systems, operator consoles, and security audit trails.")
+                                .possibleImpact("Credentials exposed in logs can be extracted by anyone with log read access — including operators, monitoring systems, or an attacker who compromises log storage.")
+                                .recommendation("Redact or mask sensitive values before logging. Use structured logging with explicit field whitelists and never include raw credential values.")
+                                .evidence("Log statement in " + target + " contains a reference matching a sensitive-sounding name in " + relativePath + ".")
+                                .limitations("Static analysis detects sensitive-looking names in log arguments but cannot prove the value is actually sensitive at runtime.")
+                                .source(relativePath, line)
+                                .target(target)
+                                .build());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    private void detectJpaLazyLoadingOutsideTransaction(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            List<Finding> findings
+    ) {
+        if (!hasAnyAnnotation(declaration.getAnnotations(), Set.of("Service", "Component"))) {
+            return;
+        }
+        boolean classTransactional = hasAnnotation(declaration.getAnnotations(), "Transactional");
+        for (MethodDeclaration method : declaration.getMethods()) {
+            if (classTransactional || hasAnnotation(method.getAnnotations(), "Transactional")) {
+                continue;
+            }
+            if (method.isPrivate()) {
+                continue;
+            }
+            boolean callsLazyProxy = method.findAll(MethodCallExpr.class).stream()
+                    .anyMatch(call -> "getReferenceById".equals(call.getNameAsString()) || "getOne".equals(call.getNameAsString()));
+            if (callsLazyProxy) {
+                Integer line = method.getBegin().map(p -> p.line).orElse(null);
+                String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+                findings.add(FindingFactory.builder(FindingRules.SPRING_JPA_LAZY_LOADING_OUTSIDE_TRANSACTION, FindingConfidence.HIGH)
+                        .shortMessage("Service method " + target + " calls getReferenceById/getOne without @Transactional.")
+                        .whyBadPractice("getReferenceById() and getOne() return a Hibernate lazy proxy that is not loaded until a property is accessed. Accessing the proxy outside an active Hibernate session throws LazyInitializationException.")
+                        .possibleImpact("Any caller that accesses properties on the returned entity — including JSON serializers — will receive LazyInitializationException at runtime.")
+                        .recommendation("Annotate the service method with @Transactional, or replace getReferenceById with findById() and handle the Optional explicitly.")
+                        .evidence("getReferenceById or getOne called in non-transactional method " + method.getNameAsString() + " in " + relativePath + ".")
+                        .limitations("Static analysis cannot determine whether open-in-view or another session-extending mechanism provides an active session at the point of access.")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+            }
+        }
+    }
+
+    private void detectTransactionIsolationReadUncommitted(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            MethodDeclaration method,
+            List<Finding> findings
+    ) {
+        method.getAnnotationByName("Transactional").ifPresent(annotation -> {
+            if (!annotation.isNormalAnnotationExpr()) {
+                return;
+            }
+            annotation.asNormalAnnotationExpr().getPairs().stream()
+                    .filter(pair -> "isolation".equals(pair.getNameAsString()))
+                    .filter(pair -> {
+                        String val = pair.getValue().toString();
+                        return val.contains("READ_UNCOMMITTED") || "1".equals(val.trim());
+                    })
+                    .findFirst()
+                    .ifPresent(pair -> {
+                        Integer line = method.getBegin().map(p -> p.line).orElse(null);
+                        String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+                        findings.add(FindingFactory.builder(FindingRules.SPRING_TRANSACTION_ISOLATION_READ_UNCOMMITTED, FindingConfidence.HIGH)
+                                .shortMessage("@Transactional on " + target + " uses READ_UNCOMMITTED isolation.")
+                                .whyBadPractice("READ_UNCOMMITTED allows dirty reads — reading data that has been modified but not yet committed by another transaction. This is the weakest isolation level and almost never correct for application code.")
+                                .possibleImpact("Business logic can read uncommitted, temporary, or rolled-back values, leading to data consistency violations and incorrect calculations.")
+                                .recommendation("Use READ_COMMITTED (the default in most databases) or a higher isolation level. Use SERIALIZABLE or REPEATABLE_READ only when the specific consistency guarantee is required and understood.")
+                                .evidence("@Transactional(isolation = Isolation.READ_UNCOMMITTED) found on " + method.getNameAsString() + " in " + relativePath + ".")
+                                .limitations("Static analysis cannot determine whether the database actually supports or enforces the requested isolation level.")
+                                .source(relativePath, line)
+                                .target(target)
+                                .build());
+                    });
+        });
+    }
+
+    private void detectAsyncWithoutExecutor(Path repositoryRoot, List<Finding> findings) {
+        Path sourceRoot = repositoryRoot.resolve("src/main/java");
+        if (Files.notExists(sourceRoot)) {
+            return;
+        }
+        boolean hasAsyncAnnotation = false;
+        boolean hasExecutorBean = false;
+        try (Stream<Path> files = Files.walk(sourceRoot)) {
+            for (Path file : files.filter(Files::isRegularFile)
+                    .filter(path -> path.toString().endsWith(".java"))
+                    .toList()) {
+                try {
+                    String content = Files.readString(file, StandardCharsets.UTF_8);
+                    if (content.contains("@Async")) {
+                        hasAsyncAnnotation = true;
+                    }
+                    if (content.contains("@Bean") && (content.contains("ThreadPoolTaskExecutor")
+                            || content.contains("AsyncTaskExecutor")
+                            || content.contains("TaskExecutor"))) {
+                        hasExecutorBean = true;
+                    }
+                } catch (IOException ignored) {
+                }
+            }
+        } catch (IOException ignored) {
+        }
+        if (hasAsyncAnnotation && !hasExecutorBean) {
+            findings.add(FindingFactory.builder(FindingRules.SPRING_ASYNC_EXECUTOR_NOT_CONFIGURED, FindingConfidence.MEDIUM)
+                    .shortMessage("@Async is used but no custom Executor bean was found.")
+                    .whyBadPractice("When no custom Executor bean is configured, Spring uses SimpleAsyncTaskExecutor by default, which creates a new OS thread for every @Async invocation without pooling.")
+                    .possibleImpact("Thread exhaustion and out-of-memory errors under sustained async load. Each invocation creates a new thread, bypassing any pool sizing or backpressure.")
+                    .recommendation("Configure a ThreadPoolTaskExecutor @Bean with explicit corePoolSize, maxPoolSize, and queueCapacity. Optionally implement AsyncConfigurer to set it as the default executor.")
+                    .evidence("@Async annotation found in the codebase without a ThreadPoolTaskExecutor or equivalent Executor @Bean.")
+                    .limitations("Static analysis may miss executor beans defined in imported @Configuration classes or provided by auto-configuration.")
+                    .location("Async configuration")
+                    .target("Async executor")
+                    .build());
+        }
+    }
+
+    private void detectScheduledWithoutExecutor(Path repositoryRoot, List<Finding> findings) {
+        Path sourceRoot = repositoryRoot.resolve("src/main/java");
+        if (Files.notExists(sourceRoot)) {
+            return;
+        }
+        int scheduledCount = 0;
+        boolean hasTaskScheduler = false;
+        try (Stream<Path> files = Files.walk(sourceRoot)) {
+            for (Path file : files.filter(Files::isRegularFile)
+                    .filter(path -> path.toString().endsWith(".java"))
+                    .toList()) {
+                try {
+                    String content = Files.readString(file, StandardCharsets.UTF_8);
+                    scheduledCount += countOccurrences(content, "@Scheduled");
+                    if (content.contains("@Bean") && (content.contains("TaskScheduler")
+                            || content.contains("SchedulingConfigurer"))) {
+                        hasTaskScheduler = true;
+                    }
+                } catch (IOException ignored) {
+                }
+            }
+        } catch (IOException ignored) {
+        }
+        if (scheduledCount > 1 && !hasTaskScheduler) {
+            findings.add(FindingFactory.builder(FindingRules.SPRING_SCHEDULED_EXECUTOR_SERVICE_NOT_CONFIGURED, FindingConfidence.MEDIUM)
+                    .shortMessage(scheduledCount + " @Scheduled methods found without a dedicated TaskScheduler.")
+                    .whyBadPractice("By default, Spring uses a single-threaded scheduler for all @Scheduled methods. If one job runs long or blocks, all other scheduled tasks are delayed.")
+                    .possibleImpact("Scheduled jobs miss their execution windows. A slow or blocking job starves all other scheduled tasks in the application.")
+                    .recommendation("Configure a TaskScheduler @Bean with a thread pool sized to the number of concurrent scheduled jobs, or implement SchedulingConfigurer to wire a custom scheduler.")
+                    .evidence(scheduledCount + " @Scheduled methods found in the codebase without a TaskScheduler or SchedulingConfigurer bean.")
+                    .limitations("Static analysis may miss TaskScheduler beans in imported @Configuration classes or provided by auto-configuration.")
+                    .location("Scheduling configuration")
+                    .target("Task scheduler")
+                    .build());
+        }
     }
 
     private List<Finding> dedupe(List<Finding> findings) {

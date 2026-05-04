@@ -50,6 +50,7 @@ function defaultState(): ResultsViewState {
       category: 'MAINTAINABILITY',
       confidence: 'MEDIUM',
       runtimeDetection: 'NOT_NORMALLY_DETECTED',
+      isPropertySource: false,
       analysisId: null,
       occurrences: [],
       selectedOccurrenceIndex: 0,
@@ -100,6 +101,8 @@ function defaultActions(overrides: Partial<ResultsViewActions> = {}): ResultsVie
     onToggleHttpConfiguredExpanded: noop,
     onToggleHttpActuatorExpanded: noop,
     onOpenFindingCode: noop,
+    onOpenPropertySource: noop,
+    onOpenComponentSource: noop,
     onCloseFindingCode: noop,
     onSelectFindingCodeOccurrence: noop,
     ...overrides
@@ -686,6 +689,7 @@ describe('renderResultsView findings UI', () => {
       category: 'HTTP',
       confidence: 'MEDIUM',
       runtimeDetection: 'NOT_NORMALLY_DETECTED',
+      isPropertySource: false,
       analysisId: 'analysis-1',
       occurrences: [
         {
@@ -751,6 +755,7 @@ describe('renderResultsView findings UI', () => {
       category: 'EXCEPTION_HANDLING',
       confidence: 'HIGH',
       runtimeDetection: 'NOT_NORMALLY_DETECTED',
+      isPropertySource: false,
       analysisId: 'analysis-1',
       occurrences: [
         {

@@ -136,6 +136,7 @@ export interface CodeSnippetModalState {
   category: string;
   confidence: string;
   runtimeDetection: string;
+  isPropertySource: boolean;
   analysisId: string | null;
   occurrences: FindingCodeOccurrence[];
   selectedOccurrenceIndex: number;
@@ -226,6 +227,8 @@ export interface ResultsViewActions {
   onToggleHttpConfiguredExpanded: () => void;
   onToggleHttpActuatorExpanded: () => void;
   onOpenFindingCode: (finding: Finding, groupedFindings: Finding[], triggerId: string, selectedOccurrenceIndex?: number) => void;
+  onOpenPropertySource: (property: ApplicationProperty, triggerId: string) => void;
+  onOpenComponentSource: (component: Partial<DetectedClass>, triggerId: string) => void;
   onCloseFindingCode: () => void;
   onSelectFindingCodeOccurrence: (index: number) => void;
 }
@@ -1603,7 +1606,6 @@ function renderComponentsSection(
   const table = createTable([
     sortableHeader('Class', 'class', state.componentsSort, actions.onSetComponentsSort),
     sortableHeader('Type', 'type', state.componentsSort, actions.onSetComponentsSort),
-    sortableHeader('Package', 'package', state.componentsSort, actions.onSetComponentsSort),
     sortableHeader('Source', 'source', state.componentsSort, actions.onSetComponentsSort),
     'Annotations'
   ], 'components-table');
@@ -1611,11 +1613,31 @@ function renderComponentsSection(
   for (const component of visible) {
     const row = tbody.insertRow();
     row.className = 'data-row';
+    const sourceCell = document.createElement('td');
+    sourceCell.className = 'component-source-cell';
+    if (component.filePath) {
+      const sourceButtonId = `component-source-btn-${component.fullyQualifiedClassName ?? component.filePath}`;
+      const sourceButton = element('button', {
+        className: 'property-source-link',
+        text: component.filePath,
+        attributes: {
+          id: sourceButtonId,
+          type: 'button',
+          title: component.filePath,
+          'aria-label': `View source for ${component.simpleClassName ?? component.simpleName ?? 'component'}`
+        }
+      });
+      sourceButton.addEventListener('click', () => {
+        actions.onOpenComponentSource(component, sourceButtonId);
+      });
+      sourceCell.appendChild(sourceButton);
+    } else {
+      sourceCell.textContent = '—';
+    }
     appendCells(row, [
       componentClassCell(component),
       badgeCell(componentTypeLabel(normalizeComponentType(component)), `badge badge-kind`),
-      technicalClampCell(component.packageName ?? '—', undefined, 'component-package-cell'),
-      technicalClampCell(component.filePath ?? '—', undefined, 'component-source-cell'),
+      sourceCell,
       componentAnnotationsCell(component)
     ]);
   }
@@ -2375,11 +2397,33 @@ function renderConfigurationTable(
     });
     expandCell.appendChild(expandButton);
 
+    const sourceCell = document.createElement('td');
+    sourceCell.className = 'cell-truncate';
+    if (property.sourceFile) {
+      const sourceButtonId = `property-source-btn-${key}`;
+      const sourceButton = element('button', {
+        className: 'property-source-link',
+        text: sourceLabel(property.sourceFile, property.line),
+        attributes: {
+          id: sourceButtonId,
+          type: 'button',
+          title: sourceLabel(property.sourceFile, property.line),
+          'aria-label': `View source for ${property.name ?? 'configuration property'}`
+        }
+      });
+      sourceButton.addEventListener('click', () => {
+        actions.onOpenPropertySource(property, sourceButtonId);
+      });
+      sourceCell.appendChild(sourceButton);
+    } else {
+      sourceCell.textContent = '\u2014';
+    }
+
     appendCells(row, [
       truncateCell(property.name ?? 'Unknown property'),
       truncateCell(displayPropertyValue(property)),
       truncateCell(property.profile ?? 'default'),
-      truncateCell(sourceLabel(property.sourceFile, property.line)),
+      sourceCell,
       badgeCell(configurationKindLabel(property.kind ?? 'UNKNOWN'), `badge ${configurationBadgeClass(property.kind)}`),
       truncateCell(property.documentation?.type ?? 'Unknown type'),
       truncateCell(compactPropertyMeaning(property))
@@ -3337,14 +3381,16 @@ function renderCodeSnippetModal(
   }
 
   const badgeRow = element('div', { className: 'finding-detail-badges' });
-  for (const [text, className] of [
-    [modalState.severity, `badge badge-${modalState.severity.toLowerCase()}`],
-    [findingCategoryLabel(normalizeFindingCategory(modalState.category)), 'badge badge-category'],
-    [confidenceLabel(normalizeConfidence(modalState.confidence)), 'badge badge-confidence'],
-    [runtimeDetectionLabel(normalizeRuntimeDetection(modalState.runtimeDetection)), 'badge badge-runtime']
-  ] as Array<[string, string]>) {
-    const title = className.includes(`badge-${modalState.severity.toLowerCase()}`) ? severityExplanation(text) : text;
-    badgeRow.appendChild(element('span', { className, text, attributes: { title } }));
+  if (!modalState.isPropertySource) {
+    for (const [text, className] of [
+      [modalState.severity, `badge badge-${modalState.severity.toLowerCase()}`],
+      [findingCategoryLabel(normalizeFindingCategory(modalState.category)), 'badge badge-category'],
+      [confidenceLabel(normalizeConfidence(modalState.confidence)), 'badge badge-confidence'],
+      [runtimeDetectionLabel(normalizeRuntimeDetection(modalState.runtimeDetection)), 'badge badge-runtime']
+    ] as Array<[string, string]>) {
+      const title = className.includes(`badge-${modalState.severity.toLowerCase()}`) ? severityExplanation(text) : text;
+      badgeRow.appendChild(element('span', { className, text, attributes: { title } }));
+    }
   }
 
   const actionRow = element('div', { className: 'code-snippet-modal-actions' });
@@ -3366,19 +3412,21 @@ function renderCodeSnippetModal(
   });
   actionRow.appendChild(copyPathButton);
 
-  const copySummaryButton = element('button', {
-    className: 'secondary-button',
-    text: 'Copy finding summary',
-    attributes: { type: 'button' }
-  });
-  copySummaryButton.addEventListener('click', async () => {
-    await navigator.clipboard.writeText(`${modalState.title}: ${modalState.summary}`);
-    copySummaryButton.textContent = 'Copied';
-    window.setTimeout(() => {
-      copySummaryButton.textContent = 'Copy finding summary';
-    }, 1200);
-  });
-  actionRow.appendChild(copySummaryButton);
+  if (!modalState.isPropertySource) {
+    const copySummaryButton = element('button', {
+      className: 'secondary-button',
+      text: 'Copy finding summary',
+      attributes: { type: 'button' }
+    });
+    copySummaryButton.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(`${modalState.title}: ${modalState.summary}`);
+      copySummaryButton.textContent = 'Copied';
+      window.setTimeout(() => {
+        copySummaryButton.textContent = 'Copy finding summary';
+      }, 1200);
+    });
+    actionRow.appendChild(copySummaryButton);
+  }
 
   const githubUrl = modalState.snippet?.githubUrl ?? currentOccurrence?.location?.githubUrl;
   if (githubUrl) {
@@ -4657,34 +4705,40 @@ function componentClassCell(component: Partial<DetectedClass>): HTMLTableCellEle
   cell.className = 'component-class-cell';
   const primary = componentPrimaryName(component);
   const qualified = componentQualifiedName(component);
-  const wrapper = element('div', { className: 'component-class-block' });
-  wrapper.appendChild(
+  cell.appendChild(
     element('div', {
       className: 'component-class-primary',
       text: primary,
-      attributes: { title: qualified }
+      attributes: { title: qualified ?? primary }
     })
   );
-  if (qualified && qualified !== primary) {
-    wrapper.appendChild(
-      element('div', {
-        className: 'component-class-secondary',
-        text: qualified,
-        attributes: { title: qualified }
-      })
-    );
-  }
-  cell.appendChild(wrapper);
   return cell;
 }
 
 function componentAnnotationsCell(component: Partial<DetectedClass>): HTMLTableCellElement {
   const annotations = (component.annotationNames ?? component.annotations ?? []).filter((value): value is string => Boolean(value?.trim()));
-  const text = annotations.join(', ') || '—';
-  const cell = technicalClampCell(text, undefined, 'component-annotations-cell');
-  if (isRedundantComponentAnnotation(component, annotations)) {
-    cell.classList.add('is-redundant');
+  const cell = document.createElement('td');
+  cell.className = 'component-annotations-cell';
+  if (annotations.length === 0) {
+    cell.textContent = '—';
+    return cell;
   }
+  const redundant = isRedundantComponentAnnotation(component, annotations);
+  if (annotations.length === 1) {
+    cell.appendChild(element('span', {
+      className: redundant ? 'annotation-single annotation-single-muted' : 'annotation-single',
+      text: `@${annotations[0]}`
+    }));
+    return cell;
+  }
+  const chips = element('div', { className: 'annotation-chips' });
+  annotations.forEach((annotation, i) => {
+    chips.appendChild(element('span', { className: 'annotation-single', text: `@${annotation}` }));
+    if (i < annotations.length - 1) {
+      chips.appendChild(element('span', { className: 'annotation-sep', text: '·' }));
+    }
+  });
+  cell.appendChild(chips);
   return cell;
 }
 
@@ -4813,18 +4867,10 @@ function propertyMeaning(property: ApplicationProperty): string {
 }
 
 function compactPropertyMeaning(property: ApplicationProperty): string {
-  const meaning = propertyMeaning(property);
-  if (property.kind === 'CUSTOM_CONFIGURATION_PROPERTIES') {
-    const normalized = meaning.toLowerCase();
-    if (
-      normalized.startsWith('custom property defined by ')
-      || normalized.startsWith('custom application configuration property')
-    ) {
-      const namespace = dominantPropertyPrefix(property.name);
-      return namespace ? `Custom ${namespace} property.` : 'Custom application property.';
-    }
+  if (property.kind === 'CUSTOM_CONFIGURATION_PROPERTIES' && !property.documentation?.description) {
+    return '';
   }
-  return meaning;
+  return propertyMeaning(property);
 }
 
 function collectChangedPropertyNames(properties: ApplicationProperty[]): Set<string> {

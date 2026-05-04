@@ -64,6 +64,7 @@ function baseSnapshot(): AnalysisSessionSnapshot {
         category: 'EXCEPTION_HANDLING',
         confidence: 'HIGH',
         runtimeDetection: 'NOT_NORMALLY_DETECTED',
+        isPropertySource: false,
         analysisId: 'analysis-1',
         occurrences: [],
         selectedOccurrenceIndex: 0,

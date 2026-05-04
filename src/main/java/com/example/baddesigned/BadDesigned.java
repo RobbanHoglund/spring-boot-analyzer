@@ -14,7 +14,11 @@ import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.Bean;
 import org.springframework.http.ResponseEntity;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -22,11 +26,14 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.client.RestTemplate;
 
 @RestController
 @EnableScheduling
 @RequestMapping("/bad-designed")
 public class BadDesigned {
+
+    private static final Logger log = LoggerFactory.getLogger(BadDesigned.class);
 
     private final HttpClient httpClient = HttpClient.newHttpClient();
     private String cachedStatus = "unknown";
@@ -123,6 +130,30 @@ public class BadDesigned {
         } catch (InterruptedException exception) {
             exception.printStackTrace();
         }
+    }
+
+    // SPRING_SCHEDULED_EXECUTOR_SERVICE_NOT_CONFIGURED — second @Scheduled without a TaskScheduler bean
+    @Scheduled(cron = "0 0 2 * * *")
+    void generateDailyReport() {
+        cachedStatus = "report-generated";
+    }
+
+    // SPRING_ASYNC_EXECUTOR_NOT_CONFIGURED — @Async without a ThreadPoolTaskExecutor bean
+    @Async
+    void notifyExternalSystem(String event) {
+        cachedStatus = event;
+    }
+
+    // SPRING_LOGGING_PII_EXPOSURE — sensitive variable name passed directly to logger
+    void authenticate(String username, String password) {
+        log.info("Login attempt — user: {}, password: {}", username, password);
+    }
+
+    // SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER — RestTemplate @Bean with no error handler
+    // Also triggers SPRING_BEAN_ON_NON_CONFIGURATION (lite mode, no @Configuration on the class)
+    @Bean
+    RestTemplate restTemplate() {
+        return new RestTemplate();
     }
 
     public record CreateOrderRequest(

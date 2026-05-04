@@ -346,6 +346,77 @@ public final class FindingRules {
             FindingRuntimeDetection.NOT_NORMALLY_DETECTED
     );
 
+    public static final FindingRule SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD = rule(
+            "SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD",
+            "Sensitive actuator endpoints are exposed",
+            FindingSeverity.WARNING,
+            FindingCategory.ACTUATOR,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_SQL_INJECTION_QUERY_CONCATENATION = rule(
+            "SPRING_SQL_INJECTION_QUERY_CONCATENATION",
+            "Native SQL query built with string concatenation",
+            FindingSeverity.WARNING,
+            FindingCategory.SECURITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_LOGGING_PII_EXPOSURE = rule(
+            "SPRING_LOGGING_PII_EXPOSURE",
+            "Sensitive value may be written to logs",
+            FindingSeverity.WARNING,
+            FindingCategory.SECURITY,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_JPA_LAZY_LOADING_OUTSIDE_TRANSACTION = rule(
+            "SPRING_JPA_LAZY_LOADING_OUTSIDE_TRANSACTION",
+            "Service method may trigger lazy loading outside a transaction",
+            FindingSeverity.WARNING,
+            FindingCategory.PERSISTENCE,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_CONNECTION_POOL_MISCONFIGURED = rule(
+            "SPRING_CONNECTION_POOL_MISCONFIGURED",
+            "HikariCP connection pool configuration looks misconfigured",
+            FindingSeverity.WARNING,
+            FindingCategory.CONFIGURATION,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_ASYNC_EXECUTOR_NOT_CONFIGURED = rule(
+            "SPRING_ASYNC_EXECUTOR_NOT_CONFIGURED",
+            "@Async used without a custom executor configured",
+            FindingSeverity.WARNING,
+            FindingCategory.SCHEDULING,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_SCHEDULED_EXECUTOR_SERVICE_NOT_CONFIGURED = rule(
+            "SPRING_SCHEDULED_EXECUTOR_SERVICE_NOT_CONFIGURED",
+            "Multiple @Scheduled methods without a dedicated TaskScheduler",
+            FindingSeverity.WARNING,
+            FindingCategory.SCHEDULING,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_FEIGN_NO_FALLBACK_OR_TIMEOUT = rule(
+            "SPRING_FEIGN_NO_FALLBACK_OR_TIMEOUT",
+            "@FeignClient has no fallback or timeout configuration",
+            FindingSeverity.WARNING,
+            FindingCategory.HTTP,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER = rule(
+            "SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER",
+            "RestTemplate used without HTTP status error handling",
+            FindingSeverity.WARNING,
+            FindingCategory.HTTP,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+    public static final FindingRule SPRING_TRANSACTION_ISOLATION_READ_UNCOMMITTED = rule(
+            "SPRING_TRANSACTION_ISOLATION_READ_UNCOMMITTED",
+            "@Transactional uses READ_UNCOMMITTED isolation",
+            FindingSeverity.WARNING,
+            FindingCategory.TRANSACTION,
+            FindingRuntimeDetection.NOT_NORMALLY_DETECTED
+    );
+
     private FindingRules() {
     }
 

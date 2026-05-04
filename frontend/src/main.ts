@@ -26,6 +26,8 @@ import type {
   AnalysisMode,
   AnalyzeRepositoryRequest,
   AnalyzeRepositoryResponse,
+  ApplicationProperty,
+  DetectedClass,
   Finding,
   FindingOccurrence,
   HighlightRange,
@@ -210,6 +212,7 @@ function createClosedCodeModalState(): CodeSnippetModalState {
     category: 'MAINTAINABILITY',
     confidence: 'MEDIUM',
     runtimeDetection: 'NOT_NORMALLY_DETECTED',
+    isPropertySource: false,
     analysisId: null,
     occurrences: [],
     selectedOccurrenceIndex: 0,
@@ -464,6 +467,12 @@ function render(): void {
           onOpenFindingCode: (finding, groupedFindings, triggerId, selectedOccurrenceIndex) => {
             void openFindingCodeModal(finding, groupedFindings, triggerId, selectedOccurrenceIndex);
           },
+          onOpenPropertySource: (property, triggerId) => {
+            void openPropertySourceModal(property, triggerId);
+          },
+          onOpenComponentSource: (component, triggerId) => {
+            void openComponentSourceModal(component, triggerId);
+          },
           onCloseFindingCode: () => {
             closeFindingCodeModal();
           },
@@ -697,9 +706,92 @@ async function openFindingCodeModal(
     category: finding.category ?? 'MAINTAINABILITY',
     confidence: finding.confidence ?? 'MEDIUM',
     runtimeDetection: finding.runtimeDetection ?? 'NOT_NORMALLY_DETECTED',
+    isPropertySource: false,
     analysisId,
     occurrences,
     selectedOccurrenceIndex: clampedOccurrenceIndex,
+    snippet: null,
+    loading: true,
+    errorMessage: '',
+    returnFocusId: triggerId
+  };
+  pendingFocusElementId = 'code-snippet-modal-close';
+  render();
+  await loadCodeSnippetForSelection();
+}
+
+async function openPropertySourceModal(property: ApplicationProperty, triggerId: string): Promise<void> {
+  const analysisId = state.result?.analysisId ?? state.result?.workspaceId ?? null;
+  const filePath = property.sourceFile;
+  if (!analysisId || !filePath) {
+    return;
+  }
+  const line = typeof property.line === 'number' ? property.line : undefined;
+  const occurrence: FindingCodeOccurrence = {
+    key: `${filePath}:${line ?? 0}`,
+    label: property.name ?? filePath,
+    summary: property.name ?? '',
+    location: {
+      filePath,
+      startLine: line,
+      endLine: line,
+      language: filePath.endsWith('.java') ? 'java' : filePath.endsWith('.yml') || filePath.endsWith('.yaml') ? 'yaml' : 'properties',
+      githubUrl: null
+    },
+    highlightRanges: []
+  };
+  state.resultsViewState.codeModal = {
+    open: true,
+    title: property.name ?? 'Property',
+    summary: '',
+    ruleType: '',
+    target: property.name ?? '—',
+    severity: 'INFO',
+    category: 'CONFIGURATION',
+    confidence: 'HIGH',
+    runtimeDetection: 'NOT_NORMALLY_DETECTED',
+    isPropertySource: true,
+    analysisId,
+    occurrences: [occurrence],
+    selectedOccurrenceIndex: 0,
+    snippet: null,
+    loading: true,
+    errorMessage: '',
+    returnFocusId: triggerId
+  };
+  pendingFocusElementId = 'code-snippet-modal-close';
+  render();
+  await loadCodeSnippetForSelection();
+}
+
+async function openComponentSourceModal(component: Partial<DetectedClass>, triggerId: string): Promise<void> {
+  const analysisId = state.result?.analysisId ?? state.result?.workspaceId ?? null;
+  const filePath = component.filePath;
+  if (!analysisId || !filePath) {
+    return;
+  }
+  const name = component.simpleClassName ?? component.simpleName ?? filePath;
+  const occurrence: FindingCodeOccurrence = {
+    key: filePath,
+    label: name,
+    summary: component.fullyQualifiedClassName ?? name,
+    location: { filePath, language: 'java', githubUrl: null },
+    highlightRanges: []
+  };
+  state.resultsViewState.codeModal = {
+    open: true,
+    title: name,
+    summary: component.fullyQualifiedClassName ?? name,
+    ruleType: '',
+    target: name,
+    severity: 'INFO',
+    category: 'MAINTAINABILITY',
+    confidence: 'HIGH',
+    runtimeDetection: 'NOT_NORMALLY_DETECTED',
+    isPropertySource: true,
+    analysisId,
+    occurrences: [occurrence],
+    selectedOccurrenceIndex: 0,
     snippet: null,
     loading: true,
     errorMessage: '',
