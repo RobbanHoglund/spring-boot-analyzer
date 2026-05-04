@@ -5249,10 +5249,8 @@ function configurationSortValue(property: ApplicationProperty, key: string): str
 function componentSortValue(component: DetectedClass, key: string): string {
   return key === 'type'
     ? componentTypeLabel(normalizeComponentType(component))
-    : key === 'package'
-      ? component.packageName ?? ''
-      : key === 'source'
-        ? component.filePath ?? ''
+    : key === 'source'
+      ? component.filePath ?? ''
         : componentDisplayName(component);
 }
 
