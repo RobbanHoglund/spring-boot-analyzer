@@ -1,8 +1,11 @@
 package com.robbanhoglund.springbootanalyzer.api;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
+import static org.mockito.BDDMockito.willThrow;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -24,9 +27,12 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.http.HttpSurfaceAnaly
 import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.RuntimeStackAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.VirtualThreadAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.WebStack;
+import com.robbanhoglund.springbootanalyzer.application.InvalidSourceSnippetRequestException;
 import com.robbanhoglund.springbootanalyzer.application.RepositoryAnalysisService;
+import com.robbanhoglund.springbootanalyzer.application.SourceSnippetNotFoundException;
 import com.robbanhoglund.springbootanalyzer.application.SourceSnippetService;
 import com.robbanhoglund.springbootanalyzer.error.GlobalExceptionHandler;
+import com.robbanhoglund.springbootanalyzer.git.GitCloneException;
 import com.robbanhoglund.springbootanalyzer.git.GitRepositoryReference;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -246,6 +252,72 @@ class AnalysisControllerTest {
                 .andExpect(jsonPath("$.filePath").value("src/main/java/com/example/demo/Demo.java"))
                 .andExpect(jsonPath("$.highlightRanges").isArray())
                 .andExpect(jsonPath("$.highlightRanges").isEmpty());
+    }
+
+    @Test
+    void rejectsMissingRepositoryUrl() throws Exception {
+        mockMvc.perform(post("/api/analyze")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.title").value("Validation failed"))
+                .andExpect(jsonPath("$.errors.repositoryUrl").value("repositoryUrl is required"));
+    }
+
+    @Test
+    void returnsNotFoundWhenAnalysisSessionIsMissing() throws Exception {
+        given(sourceSnippetService.loadSnippet(any(), any(), any(), any(), anyInt()))
+                .willThrow(new SourceSnippetNotFoundException("Analysis session was not found."));
+
+        mockMvc.perform(get("/api/analyses/unknown-id/source-snippet")
+                        .param("path", "src/main/java/Demo.java")
+                        .param("context", "4"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.title").value("Source snippet unavailable"));
+    }
+
+    @Test
+    void returnsBadRequestWhenSnippetPathIsInvalid() throws Exception {
+        given(sourceSnippetService.loadSnippet(any(), any(), any(), any(), anyInt()))
+                .willThrow(new InvalidSourceSnippetRequestException("Source path must stay inside the analyzed repository."));
+
+        mockMvc.perform(get("/api/analyses/workspace-123/source-snippet")
+                        .param("path", "../secrets.txt")
+                        .param("context", "0"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.title").value("Invalid source snippet request"));
+    }
+
+    @Test
+    void returns502WhenRepositoryCloneFails() throws Exception {
+        given(repositoryAnalysisService.analyze(any()))
+                .willThrow(new GitCloneException("Could not connect to remote.", null));
+
+        mockMvc.perform(post("/api/analyze")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "repositoryUrl": "https://github.com/example/demo.git"
+                                }
+                                """))
+                .andExpect(status().isBadGateway())
+                .andExpect(jsonPath("$.title").value("Repository clone failed"));
+    }
+
+    @Test
+    void returns500WhenAnalysisThrowsIllegalState() throws Exception {
+        given(repositoryAnalysisService.analyze(any()))
+                .willThrow(new IllegalStateException("Unexpected analysis failure."));
+
+        mockMvc.perform(post("/api/analyze")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "repositoryUrl": "https://github.com/example/demo.git"
+                                }
+                                """))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.title").value("Analysis failed"));
     }
 
     private BuildInfo buildInfo(String javaVersion) {

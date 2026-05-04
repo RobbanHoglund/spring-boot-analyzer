@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.robbanhoglund.springbootanalyzer.api.dto.SourceSnippetResponse;
 import com.robbanhoglund.springbootanalyzer.git.GitHubLinkBuilder;
+import com.robbanhoglund.springbootanalyzer.application.InvalidSourceSnippetRequestException;
+import com.robbanhoglund.springbootanalyzer.application.SourceSnippetNotFoundException;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -131,5 +133,83 @@ class SourceSnippetServiceTest {
     void rejectsGitInternalAccess() {
         assertThatThrownBy(() -> service.loadSnippet("analysis-1", ".git/config", 1, 1, 0))
                 .isInstanceOf(InvalidSourceSnippetRequestException.class);
+    }
+
+    @Test
+    void rejectsUnknownAnalysisId() {
+        assertThatThrownBy(() -> service.loadSnippet("no-such-id", "src/main/java/Demo.java", null, null, 0))
+                .isInstanceOf(SourceSnippetNotFoundException.class);
+    }
+
+    @Test
+    void rejectsNonexistentFile() {
+        assertThatThrownBy(() -> service.loadSnippet("analysis-1", "src/main/java/Missing.java", null, null, 0))
+                .isInstanceOf(SourceSnippetNotFoundException.class);
+    }
+
+    @Test
+    void rejectsPartialLineRange() {
+        assertThatThrownBy(() -> service.loadSnippet("analysis-1", "src/main/java/Demo.java", 5, null, 0))
+                .isInstanceOf(InvalidSourceSnippetRequestException.class);
+    }
+
+    @Test
+    void rejectsInvalidLineRange() throws IOException {
+        Path file = Files.createDirectories(repositoryRoot.resolve("src/main/java/com/example"))
+                .resolve("Demo.java");
+        Files.writeString(file, "class Demo {}\n");
+
+        assertThatThrownBy(() -> service.loadSnippet("analysis-1", "src/main/java/com/example/Demo.java", 10, 5, 0))
+                .isInstanceOf(InvalidSourceSnippetRequestException.class);
+    }
+
+    @Test
+    void rejectsStartLineBeyondFileLength() throws IOException {
+        Path file = Files.createDirectories(repositoryRoot.resolve("src/main/java/com/example"))
+                .resolve("Short.java");
+        Files.writeString(file, "class Short {}\n");
+
+        assertThatThrownBy(() -> service.loadSnippet("analysis-1", "src/main/java/com/example/Short.java", 999, 1000, 0))
+                .isInstanceOf(InvalidSourceSnippetRequestException.class);
+    }
+
+    @Test
+    void rejectsExcessiveContext() {
+        assertThatThrownBy(() -> service.loadSnippet("analysis-1", "src/main/java/Demo.java", null, null, 999))
+                .isInstanceOf(InvalidSourceSnippetRequestException.class);
+    }
+
+    @Test
+    void detectsYamlLanguage() throws IOException {
+        Path file = Files.createDirectories(repositoryRoot.resolve("src/main/resources"))
+                .resolve("application.yml");
+        Files.writeString(file, "server:\n  port: 8080\n");
+
+        SourceSnippetResponse response = service.loadSnippet(
+                "analysis-1",
+                "src/main/resources/application.yml",
+                null,
+                null,
+                0
+        );
+
+        assertThat(response.language()).isEqualTo("yaml");
+    }
+
+    @Test
+    void detectsPropertiesLanguage() throws IOException {
+        Path file = Files.createDirectories(repositoryRoot.resolve("src/main/resources"))
+                .resolve("custom.properties");
+        Files.writeString(file, "app.name=demo\napp.version=1.0\n");
+
+        SourceSnippetResponse response = service.loadSnippet(
+                "analysis-1",
+                "src/main/resources/custom.properties",
+                null,
+                null,
+                0
+        );
+
+        assertThat(response.language()).isEqualTo("properties");
     }
 }
