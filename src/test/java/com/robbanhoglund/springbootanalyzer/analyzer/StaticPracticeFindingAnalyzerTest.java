@@ -230,7 +230,7 @@ class StaticPracticeFindingAnalyzerTest {
                 Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
         Files.writeString(
                 sourceRoot.resolve("ClientHolder.java"),
-                """
+"""
 package com.example.demo;
 
 import org.springframework.stereotype.Component;
@@ -273,7 +273,7 @@ class ClientHolder {
                 Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
         Files.writeString(
                 sourceRoot.resolve("StartupBean.java"),
-                """
+"""
 package com.example.demo;
 
 import java.nio.file.Files;
@@ -1137,7 +1137,7 @@ record CreateRequest(@NotBlank String symbol, int quantity) {
                 """);
         Files.writeString(
                 sourceRoot.resolve("ProviderConfig.java"),
-                """
+"""
 package com.example.demo;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -1162,7 +1162,7 @@ class ProviderConfig {
 """);
         Files.writeString(
                 sourceRoot.resolve("StartupSyncRunner.java"),
-                """
+"""
 package com.example.demo;
 
 import org.springframework.boot.CommandLineRunner;
@@ -1184,7 +1184,7 @@ class StartupSyncRunner implements CommandLineRunner {
 """);
         Files.writeString(
                 sourceRoot.resolve("PriceRefreshJob.java"),
-                """
+"""
 package com.example.demo;
 
 import org.springframework.scheduling.annotation.Scheduled;
@@ -2386,7 +2386,7 @@ class PriceRefreshJob {
                 Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
         Files.writeString(
                 sourceRoot.resolve("SecurityConfig.java"),
-                """
+"""
 package com.example.demo;
 
 import org.springframework.context.annotation.Bean;
@@ -3276,7 +3276,7 @@ class SecurityConfig {
                 Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
         Files.writeString(
                 sourceRoot.resolve("NotificationClient.java"),
-                """
+"""
 package com.example.demo;
 
 import org.springframework.stereotype.Component;
@@ -3396,7 +3396,7 @@ class NotificationClient {
                 Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
         Files.writeString(
                 sourceRoot.resolve("ParserA.java"),
-                """
+"""
 package com.example.demo;
 
 class ParserA {
@@ -3407,7 +3407,7 @@ class ParserA {
 """);
         Files.writeString(
                 sourceRoot.resolve("ParserB.java"),
-                """
+"""
 package com.example.demo;
 
 class ParserB {
@@ -3418,7 +3418,7 @@ class ParserB {
 """);
         Files.writeString(
                 sourceRoot.resolve("ParserC.java"),
-                """
+"""
 package com.example.demo;
 
 class ParserC {
@@ -3719,7 +3719,7 @@ class ParserC {
                 Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
         Files.writeString(
                 sourceRoot.resolve("UserRepository.java"),
-                """
+"""
 package com.example.demo;
 
 import jakarta.persistence.EntityManager;
@@ -4147,7 +4147,7 @@ class UserRepository {
                 Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
         Files.writeString(
                 sourceRoot.resolve("InventoryClient.java"),
-                """
+"""
 package com.example.demo;
 
 import org.springframework.cloud.openfeign.FeignClient;

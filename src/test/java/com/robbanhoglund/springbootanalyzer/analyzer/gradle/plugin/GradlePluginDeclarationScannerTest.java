@@ -58,7 +58,7 @@ class GradlePluginDeclarationScannerTest {
         Files.createDirectories(tempDir.resolve("gradle"));
         Files.writeString(
                 tempDir.resolve("gradle/libs.versions.toml"),
-                """
+"""
 [versions]
 dependency-management = "1.1.7"
 

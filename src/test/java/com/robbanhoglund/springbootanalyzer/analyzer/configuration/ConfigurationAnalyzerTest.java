@@ -112,7 +112,7 @@ class ConfigurationAnalyzerTest {
                 """);
         Files.writeString(
                 sourceRoot.resolve("TradingService.java"),
-                """
+"""
 package com.example.demo;
 
 import org.springframework.beans.factory.annotation.Value;

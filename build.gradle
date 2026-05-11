@@ -48,7 +48,7 @@ test {
 
 spotless {
     java {
-        googleJavaFormat('1.25.2').aosp().reflowLongStrings().skipJavadocFormatting()
+        googleJavaFormat('1.27.0').aosp().reflowLongStrings().skipJavadocFormatting()
         removeUnusedImports()
         trimTrailingWhitespace()
         endWithNewline()

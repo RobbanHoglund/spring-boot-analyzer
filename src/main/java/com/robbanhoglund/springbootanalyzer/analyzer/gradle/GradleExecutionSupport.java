@@ -293,7 +293,8 @@ public final class GradleExecutionSupport {
             GradleScriptValueRenderer renderer) {
         String pluginRepositoriesBlock =
                 pluginRepositoriesBlock(properties, localPluginRepository, renderer);
-        return """
+        return
+"""
 import groovy.json.JsonOutput
 import org.gradle.api.artifacts.result.ResolvedDependencyResult
 import org.gradle.api.artifacts.result.UnresolvedDependencyResult

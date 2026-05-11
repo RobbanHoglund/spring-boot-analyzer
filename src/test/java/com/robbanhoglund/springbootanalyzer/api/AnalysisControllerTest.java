@@ -145,7 +145,7 @@ class AnalysisControllerTest {
                         post("/api/analyze")
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content(
-                                        """
+"""
 {
   "repositoryUrl": "https://github.com/example/private-demo.git",
   "branch": "main",
@@ -207,7 +207,7 @@ class AnalysisControllerTest {
                         post("/api/analyze")
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content(
-                                        """
+"""
 {
   "repositoryUrl": "https://github.com/example/private-demo.git",
   "analysisMode": "EXTENDED"

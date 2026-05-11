@@ -183,7 +183,7 @@ class GradleModelAnalyzerTest {
                         -1,
                         null,
                         null,
-                        """
+"""
 FAILURE: Build failed with an exception.
 
 * Where:

@@ -29,7 +29,7 @@ class HttpSurfaceAnalyzerTest {
                 Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
         Files.writeString(
                 sourceRoot.resolve("OrderController.java"),
-                """
+"""
 package com.example.demo;
 
 import org.springframework.web.bind.annotation.PathVariable;
@@ -50,7 +50,7 @@ class OrderController {
 """);
         Files.writeString(
                 sourceRoot.resolve("ApiClient.java"),
-                """
+"""
 package com.example.demo;
 
 import java.net.URI;
@@ -219,7 +219,7 @@ class ApiClient {
                 Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
         Files.writeString(
                 sourceRoot.resolve("OpenAiClient.java"),
-                """
+"""
 package com.example.demo;
 
 import org.springframework.web.client.RestClient;
@@ -232,7 +232,7 @@ class OpenAiClient {
 """);
         Files.writeString(
                 sourceRoot.resolve("ResendClient.java"),
-                """
+"""
 package com.example.demo;
 
 import java.net.URI;
@@ -306,7 +306,7 @@ class ResendClient {
                 """);
         Files.writeString(
                 sourceRoot.resolve("ResendGateway.java"),
-                """
+"""
 package com.example.demo;
 
 import java.net.URI;

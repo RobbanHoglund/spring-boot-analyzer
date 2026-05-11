@@ -19,7 +19,7 @@ class GradleModelReportParserTest {
         Path reportFile = tempDir.resolve("gradle-model.json");
         Files.writeString(
                 reportFile,
-                """
+"""
 {
   "gradleVersion": "9.5.0",
   "projects": [{"path": ":", "name": "demo", "projectDir": "/tmp/demo"}],
