@@ -9,6 +9,4 @@ public record ConfiguredUrl(
         String sourceFile,
         Integer line,
         String profile,
-        UrlKind kind
-) {
-}
+        UrlKind kind) {}

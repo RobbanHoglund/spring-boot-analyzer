@@ -15,7 +15,8 @@ import org.springframework.stereotype.Component;
 @Component
 public class ConfigurationFileScanner {
 
-    private static final List<String> ROOTS = List.of("src/main/resources", "src/test/resources", "config", ".");
+    private static final List<String> ROOTS =
+            List.of("src/main/resources", "src/test/resources", "config", ".");
     private static final Pattern PROFILE_PATTERN =
             Pattern.compile("application-([^.]+)\\.(?:properties|ya?ml)", Pattern.CASE_INSENSITIVE);
 
@@ -32,7 +33,8 @@ public class ConfigurationFileScanner {
                         .sorted(Comparator.naturalOrder())
                         .forEach(path -> candidates.add(toCandidate(repositoryRoot, path)));
             } catch (IOException exception) {
-                throw new IllegalStateException("Failed to scan configuration files under " + start, exception);
+                throw new IllegalStateException(
+                        "Failed to scan configuration files under " + start, exception);
             }
         }
         return candidates.stream().distinct().toList();
@@ -44,8 +46,7 @@ public class ConfigurationFileScanner {
                 normalizePath(repositoryRoot, path),
                 path,
                 detectProfile(filename),
-                detectSourceType(filename)
-        );
+                detectSourceType(filename));
     }
 
     private boolean isConfigurationFile(String filename) {
@@ -84,7 +85,5 @@ public class ConfigurationFileScanner {
             String relativePath,
             Path absolutePath,
             String profile,
-            PropertySourceType sourceType
-    ) {
-    }
+            PropertySourceType sourceType) {}
 }

@@ -10,6 +10,4 @@ public record SourceSnippetResponse(
         int endLine,
         String githubUrl,
         List<SourceSnippetLine> lines,
-        List<HighlightRange> highlightRanges
-) {
-}
+        List<HighlightRange> highlightRanges) {}

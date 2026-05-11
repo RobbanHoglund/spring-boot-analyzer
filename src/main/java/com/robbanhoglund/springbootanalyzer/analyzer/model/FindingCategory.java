@@ -16,5 +16,7 @@ public enum FindingCategory {
     ACTUATOR,
     API_SURFACE,
     OBSERVABILITY,
-    MAINTAINABILITY
+    MAINTAINABILITY,
+    TESTING,
+    CACHING
 }

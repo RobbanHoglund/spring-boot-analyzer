@@ -21,35 +21,60 @@ import org.springframework.stereotype.Component;
 public class FindingNormalizer {
 
     // Rules that fire at catch-clause level and are eligible for same-block overlap detection.
-    private static final Set<String> CATCH_BLOCK_RULES = Set.of(
-            "JAVA_EMPTY_CATCH_BLOCK",
-            "SPRING_SWALLOWED_EXCEPTION_FALLBACK",
-            "SPRING_INTERRUPTED_EXCEPTION_SWALLOWED",
-            "SPRING_BROAD_FATAL_ERROR_CATCH",
-            "SPRING_BROAD_EXCEPTION_SPRING_BOUNDARY",
-            "SPRING_PRINT_STACK_TRACE",
-            "SPRING_RAW_EXCEPTION_MESSAGE_HTTP"
-    );
+    private static final Set<String> CATCH_BLOCK_RULES =
+            Set.of(
+                    "JAVA_EMPTY_CATCH_BLOCK",
+                    "SPRING_SWALLOWED_EXCEPTION_FALLBACK",
+                    "SPRING_INTERRUPTED_EXCEPTION_SWALLOWED",
+                    "SPRING_BROAD_FATAL_ERROR_CATCH",
+                    "SPRING_BROAD_EXCEPTION_SPRING_BOUNDARY",
+                    "SPRING_PRINT_STACK_TRACE",
+                    "SPRING_RAW_EXCEPTION_MESSAGE_HTTP");
 
     // Explicit rule-id pairs that overlap at the enclosing method (target) level.
-    private static final List<Set<String>> TARGET_OVERLAP_PAIRS = List.of(
-            Set.of("SPRING_INTERRUPTED_EXCEPTION_SWALLOWED", "SPRING_PRINT_STACK_TRACE"),
-            Set.of("SPRING_RAW_EXCEPTION_MESSAGE_HTTP", "SPRING_BROAD_EXCEPTION_HANDLER"),
-            Set.of("SPRING_RAW_EXCEPTION_MESSAGE_HTTP", "SPRING_BROAD_EXCEPTION_SPRING_BOUNDARY")
-    );
+    private static final List<Set<String>> TARGET_OVERLAP_PAIRS =
+            List.of(
+                    Set.of("SPRING_INTERRUPTED_EXCEPTION_SWALLOWED", "SPRING_PRINT_STACK_TRACE"),
+                    Set.of("SPRING_RAW_EXCEPTION_MESSAGE_HTTP", "SPRING_BROAD_EXCEPTION_HANDLER"),
+                    Set.of(
+                            "SPRING_RAW_EXCEPTION_MESSAGE_HTTP",
+                            "SPRING_BROAD_EXCEPTION_SPRING_BOUNDARY"));
 
     // Higher number = more dominant when findings overlap.
-    private static final Map<String, Integer> DOMINANCE = Map.ofEntries(
-            Map.entry("SPRING_INTERRUPTED_EXCEPTION_SWALLOWED", 100),
-            Map.entry("SPRING_RAW_EXCEPTION_MESSAGE_HTTP", 95),
-            Map.entry("JAVA_EMPTY_CATCH_BLOCK", 90),
-            Map.entry("SPRING_SWALLOWED_EXCEPTION_FALLBACK", 80),
-            Map.entry("SPRING_BROAD_FATAL_ERROR_CATCH", 60),
-            Map.entry("SPRING_BROAD_EXCEPTION_SPRING_BOUNDARY", 50),
-            Map.entry("SPRING_BROAD_EXCEPTION_HANDLER", 45),
-            Map.entry("SPRING_PRINT_STACK_TRACE", 40)
-    );
+    private static final Map<String, Integer> DOMINANCE =
+            Map.ofEntries(
+                    Map.entry("SPRING_INTERRUPTED_EXCEPTION_SWALLOWED", 100),
+                    Map.entry("SPRING_RAW_EXCEPTION_MESSAGE_HTTP", 95),
+                    Map.entry("JAVA_EMPTY_CATCH_BLOCK", 90),
+                    Map.entry("SPRING_SWALLOWED_EXCEPTION_FALLBACK", 80),
+                    Map.entry("SPRING_BROAD_FATAL_ERROR_CATCH", 60),
+                    Map.entry("SPRING_BROAD_EXCEPTION_SPRING_BOUNDARY", 50),
+                    Map.entry("SPRING_BROAD_EXCEPTION_HANDLER", 45),
+                    Map.entry("SPRING_PRINT_STACK_TRACE", 40));
 
+    /**
+     * Deduplicates and enriches the raw finding list produced by the analysis pipeline.
+     *
+     * <p>The algorithm:
+     * <ol>
+     *   <li>Build a Union-Find structure over all findings. Two findings are unioned when
+     *       {@code overlaps()} returns true — i.e. they share the same source file and
+     *       line/target combination and their rule IDs are in {@code TARGET_OVERLAP_PAIRS},
+     *       or they both fire at catch-clause level (via {@code CATCH_BLOCK_RULES}).</li>
+     *   <li>Within each group the finding with the highest {@code DOMINANCE} score becomes
+     *       the primary finding. All other group members are demoted to
+     *       {@link Finding#relatedSignals()} on the primary via
+     *       {@link Finding#withRelatedSignals(List)}.</li>
+     *   <li>Only primary findings are included in the returned list; demoted findings
+     *       are accessible through the primary's {@code relatedSignals} field.</li>
+     * </ol>
+     *
+     * <p>Groups of size 1 are returned as-is (no allocation). Findings with no rule ID
+     * are always treated as non-overlapping.
+     *
+     * @param findings the raw, potentially overlapping findings from all analyzers; must not be null
+     * @return the normalised list with overlapping findings merged; never null
+     */
     public List<Finding> normalize(List<Finding> findings) {
         int n = findings.size();
         if (n <= 1) {
@@ -87,16 +112,18 @@ public class FindingNormalizer {
     }
 
     private Finding mergeGroup(List<Finding> all, List<Integer> indices) {
-        int primaryIdx = indices.stream()
-                .max(Comparator.comparingInt(i -> dominanceOf(all.get(i).ruleId())))
-                .orElse(indices.get(0));
+        int primaryIdx =
+                indices.stream()
+                        .max(Comparator.comparingInt(i -> dominanceOf(all.get(i).ruleId())))
+                        .orElse(indices.get(0));
 
         Finding primary = all.get(primaryIdx);
-        List<RelatedFindingSignal> signals = indices.stream()
-                .filter(i -> i != primaryIdx)
-                .sorted(Comparator.comparingInt(i -> -dominanceOf(all.get(i).ruleId())))
-                .map(i -> toSignal(all.get(i)))
-                .toList();
+        List<RelatedFindingSignal> signals =
+                indices.stream()
+                        .filter(i -> i != primaryIdx)
+                        .sorted(Comparator.comparingInt(i -> -dominanceOf(all.get(i).ruleId())))
+                        .map(i -> toSignal(all.get(i)))
+                        .toList();
 
         return primary.withRelatedSignals(signals);
     }
@@ -157,8 +184,7 @@ public class FindingNormalizer {
                 finding.severity(),
                 finding.confidence(),
                 finding.evidence(),
-                finding.primaryLocation()
-        );
+                finding.primaryLocation());
     }
 
     private int find(int[] parent, int i) {

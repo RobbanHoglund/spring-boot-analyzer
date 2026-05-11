@@ -8,6 +8,4 @@ public record HttpSurfaceSummary(
         int configuredUrlCount,
         int actuatorExposureCount,
         List<String> basePaths,
-        List<String> externalHosts
-) {
-}
+        List<String> externalHosts) {}

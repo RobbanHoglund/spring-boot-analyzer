@@ -1,5 +1,7 @@
 package com.robbanhoglund.springbootanalyzer.analyzer.gradle;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleAnalysisStatus;
@@ -10,13 +12,11 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleJavaTool
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleModelAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradlePluginModel;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleProjectModel;
-import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleResolutionResult;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleRepositoryModel;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleResolutionResult;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleResolvedDependencyModel;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleSourceSetModel;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleTaskModel;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -45,7 +45,8 @@ public class GradleModelReportParser {
                     List.of(),
                     List.of(),
                     List.of(),
-                    com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradlePluginResolutionBridgeResult.empty(),
+                    com.robbanhoglund.springbootanalyzer.analyzer.model.gradle
+                            .GradlePluginResolutionBridgeResult.empty(),
                     false,
                     null,
                     List.of(),
@@ -59,8 +60,11 @@ public class GradleModelReportParser {
                     List.of(),
                     List.of(),
                     List.of(),
-                    List.of(new Finding(FindingSeverity.WARNING, "Gradle analysis did not produce a report file.", null))
-            );
+                    List.of(
+                            new Finding(
+                                    FindingSeverity.WARNING,
+                                    "Gradle analysis did not produce a report file.",
+                                    null)));
         }
         try {
             JsonNode root = objectMapper.readTree(reportFile.toFile());
@@ -78,7 +82,8 @@ public class GradleModelReportParser {
                     List.of(),
                     List.of(),
                     List.of(),
-                    com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradlePluginResolutionBridgeResult.empty(),
+                    com.robbanhoglund.springbootanalyzer.analyzer.model.gradle
+                            .GradlePluginResolutionBridgeResult.empty(),
                     false,
                     null,
                     parseProjects(root.path("projects")),
@@ -92,8 +97,7 @@ public class GradleModelReportParser {
                     parseSourceSets(root.path("sourceSets")),
                     parseTasks(root.path("tasks")),
                     parseJavaToolchains(root.path("javaToolchains")),
-                    List.of()
-            );
+                    List.of());
         } catch (IOException exception) {
             return new GradleModelAnalysis(
                     GradleAnalysisStatus.FAILED,
@@ -109,7 +113,8 @@ public class GradleModelReportParser {
                     List.of(),
                     List.of(),
                     List.of(),
-                    com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradlePluginResolutionBridgeResult.empty(),
+                    com.robbanhoglund.springbootanalyzer.analyzer.model.gradle
+                            .GradlePluginResolutionBridgeResult.empty(),
                     false,
                     null,
                     List.of(),
@@ -123,129 +128,169 @@ public class GradleModelReportParser {
                     List.of(),
                     List.of(),
                     List.of(),
-                    List.of(new Finding(FindingSeverity.WARNING, "Failed to parse Gradle model report.", null))
-            );
+                    List.of(
+                            new Finding(
+                                    FindingSeverity.WARNING,
+                                    "Failed to parse Gradle model report.",
+                                    null)));
         }
     }
 
     private List<GradleProjectModel> parseProjects(JsonNode node) {
         List<GradleProjectModel> items = new ArrayList<>();
-        node.forEach(entry -> items.add(new GradleProjectModel(text(entry, "path"), text(entry, "name"), text(entry, "projectDir"))));
+        node.forEach(
+                entry ->
+                        items.add(
+                                new GradleProjectModel(
+                                        text(entry, "path"),
+                                        text(entry, "name"),
+                                        text(entry, "projectDir"))));
         return List.copyOf(items);
     }
 
     private List<GradlePluginModel> parsePlugins(JsonNode node) {
         List<GradlePluginModel> items = new ArrayList<>();
-        node.forEach(entry -> items.add(new GradlePluginModel(text(entry, "projectPath"), text(entry, "pluginId"), text(entry, "implementationClass"))));
+        node.forEach(
+                entry ->
+                        items.add(
+                                new GradlePluginModel(
+                                        text(entry, "projectPath"),
+                                        text(entry, "pluginId"),
+                                        text(entry, "implementationClass"))));
         return List.copyOf(items);
     }
 
     private List<GradleRepositoryModel> parseRepositories(JsonNode node) {
         List<GradleRepositoryModel> items = new ArrayList<>();
-        node.forEach(entry -> items.add(new GradleRepositoryModel(text(entry, "projectPath"), text(entry, "name"), text(entry, "type"), text(entry, "url"))));
+        node.forEach(
+                entry ->
+                        items.add(
+                                new GradleRepositoryModel(
+                                        text(entry, "projectPath"),
+                                        text(entry, "name"),
+                                        text(entry, "type"),
+                                        text(entry, "url"))));
         return List.copyOf(items);
     }
 
     private List<GradleConfigurationModel> parseConfigurations(JsonNode node) {
         List<GradleConfigurationModel> items = new ArrayList<>();
-        node.forEach(entry -> items.add(new GradleConfigurationModel(
-                text(entry, "projectPath"),
-                text(entry, "name"),
-                entry.path("resolvable").asBoolean(false),
-                entry.path("consumable").asBoolean(false),
-                entry.path("dependencyCount").asInt(0),
-                entry.path("declaredDependencyCount").asInt(entry.path("dependencyCount").asInt(0)),
-                entry.path("allDependencyCount").asInt(entry.path("dependencyCount").asInt(0)),
-                strings(entry.path("extendsFrom"))
-        )));
+        node.forEach(
+                entry ->
+                        items.add(
+                                new GradleConfigurationModel(
+                                        text(entry, "projectPath"),
+                                        text(entry, "name"),
+                                        entry.path("resolvable").asBoolean(false),
+                                        entry.path("consumable").asBoolean(false),
+                                        entry.path("dependencyCount").asInt(0),
+                                        entry.path("declaredDependencyCount")
+                                                .asInt(entry.path("dependencyCount").asInt(0)),
+                                        entry.path("allDependencyCount")
+                                                .asInt(entry.path("dependencyCount").asInt(0)),
+                                        strings(entry.path("extendsFrom")))));
         return List.copyOf(items);
     }
 
     private List<GradleDependencyModel> parseDeclaredDependencies(JsonNode node) {
         List<GradleDependencyModel> items = new ArrayList<>();
-        node.forEach(entry -> items.add(new GradleDependencyModel(
-                text(entry, "projectPath"),
-                text(entry, "configuration"),
-                text(entry, "notation"),
-                text(entry, "group"),
-                text(entry, "artifact"),
-                text(entry, "version")
-        )));
+        node.forEach(
+                entry ->
+                        items.add(
+                                new GradleDependencyModel(
+                                        text(entry, "projectPath"),
+                                        text(entry, "configuration"),
+                                        text(entry, "notation"),
+                                        text(entry, "group"),
+                                        text(entry, "artifact"),
+                                        text(entry, "version"))));
         return List.copyOf(items);
     }
 
     private List<GradleResolutionResult> parseResolutionResults(JsonNode node) {
         List<GradleResolutionResult> items = new ArrayList<>();
-        node.forEach(entry -> items.add(new GradleResolutionResult(
-                text(entry, "projectPath"),
-                text(entry, "configuration"),
-                entry.path("attempted").asBoolean(false),
-                entry.path("successful").asBoolean(false),
-                entry.path("fallbackUsed").asBoolean(false),
-                text(entry, "errorType"),
-                text(entry, "errorMessage"),
-                entry.path("resolvedDependencyCount").asInt(0)
-        )));
+        node.forEach(
+                entry ->
+                        items.add(
+                                new GradleResolutionResult(
+                                        text(entry, "projectPath"),
+                                        text(entry, "configuration"),
+                                        entry.path("attempted").asBoolean(false),
+                                        entry.path("successful").asBoolean(false),
+                                        entry.path("fallbackUsed").asBoolean(false),
+                                        text(entry, "errorType"),
+                                        text(entry, "errorMessage"),
+                                        entry.path("resolvedDependencyCount").asInt(0))));
         return List.copyOf(items);
     }
 
     private List<GradleResolvedDependencyModel> parseResolvedDependencies(JsonNode node) {
         List<GradleResolvedDependencyModel> items = new ArrayList<>();
-        node.forEach(entry -> items.add(new GradleResolvedDependencyModel(
-                text(entry, "projectPath"),
-                text(entry, "configuration"),
-                text(entry, "group"),
-                text(entry, "artifact"),
-                text(entry, "version"),
-                entry.path("direct").asBoolean(false),
-                text(entry, "selectedReason")
-        )));
+        node.forEach(
+                entry ->
+                        items.add(
+                                new GradleResolvedDependencyModel(
+                                        text(entry, "projectPath"),
+                                        text(entry, "configuration"),
+                                        text(entry, "group"),
+                                        text(entry, "artifact"),
+                                        text(entry, "version"),
+                                        entry.path("direct").asBoolean(false),
+                                        text(entry, "selectedReason"))));
         return List.copyOf(items);
     }
 
     private List<GradleDependencyConflict> parseDependencyConflicts(JsonNode node) {
         List<GradleDependencyConflict> items = new ArrayList<>();
-        node.forEach(entry -> items.add(new GradleDependencyConflict(
-                text(entry, "projectPath"),
-                text(entry, "configuration"),
-                text(entry, "group"),
-                text(entry, "artifact"),
-                text(entry, "requestedVersions"),
-                text(entry, "selectedVersion")
-        )));
+        node.forEach(
+                entry ->
+                        items.add(
+                                new GradleDependencyConflict(
+                                        text(entry, "projectPath"),
+                                        text(entry, "configuration"),
+                                        text(entry, "group"),
+                                        text(entry, "artifact"),
+                                        text(entry, "requestedVersions"),
+                                        text(entry, "selectedVersion"))));
         return List.copyOf(items);
     }
 
     private List<GradleSourceSetModel> parseSourceSets(JsonNode node) {
         List<GradleSourceSetModel> items = new ArrayList<>();
-        node.forEach(entry -> items.add(new GradleSourceSetModel(
-                text(entry, "projectPath"),
-                text(entry, "name"),
-                strings(entry.path("javaDirs")),
-                strings(entry.path("resourceDirs"))
-        )));
+        node.forEach(
+                entry ->
+                        items.add(
+                                new GradleSourceSetModel(
+                                        text(entry, "projectPath"),
+                                        text(entry, "name"),
+                                        strings(entry.path("javaDirs")),
+                                        strings(entry.path("resourceDirs")))));
         return List.copyOf(items);
     }
 
     private List<GradleTaskModel> parseTasks(JsonNode node) {
         List<GradleTaskModel> items = new ArrayList<>();
-        node.forEach(entry -> items.add(new GradleTaskModel(
-                text(entry, "projectPath"),
-                text(entry, "name"),
-                text(entry, "group"),
-                text(entry, "description")
-        )));
+        node.forEach(
+                entry ->
+                        items.add(
+                                new GradleTaskModel(
+                                        text(entry, "projectPath"),
+                                        text(entry, "name"),
+                                        text(entry, "group"),
+                                        text(entry, "description"))));
         return List.copyOf(items);
     }
 
     private List<GradleJavaToolchainModel> parseJavaToolchains(JsonNode node) {
         List<GradleJavaToolchainModel> items = new ArrayList<>();
-        node.forEach(entry -> items.add(new GradleJavaToolchainModel(
-                text(entry, "projectPath"),
-                text(entry, "languageVersion"),
-                text(entry, "vendor"),
-                text(entry, "implementation")
-        )));
+        node.forEach(
+                entry ->
+                        items.add(
+                                new GradleJavaToolchainModel(
+                                        text(entry, "projectPath"),
+                                        text(entry, "languageVersion"),
+                                        text(entry, "vendor"),
+                                        text(entry, "implementation"))));
         return List.copyOf(items);
     }
 

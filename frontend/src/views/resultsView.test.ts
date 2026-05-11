@@ -438,7 +438,7 @@ describe('renderResultsView findings UI', () => {
     expect(document.body.textContent).toContain('Top concerns');
     expect(document.body.textContent).toContain('Security posture');
     expect(document.body.textContent).toContain('Persistence');
-    expect(document.body.textContent).toContain('Errors / blocking');
+    expect(document.body.textContent).toContain('Errors are reserved for analyzer failures');
     expect(document.body.textContent).toContain('Warnings are prioritized static review items.');
     expect(document.body.textContent).toContain('Detected statically');
     expect(document.body.textContent).toContain('Depends on active profile');
@@ -794,5 +794,106 @@ describe('renderResultsView findings UI', () => {
 
     (document.getElementById('code-snippet-modal-close') as HTMLButtonElement).click();
     expect(onCloseFindingCode).toHaveBeenCalledOnce();
+  });
+
+  // ── Idle-state tests ──────────────────────────────────────────────────────
+
+  describe('idle states (no result)', () => {
+    it('renders the initial welcome state when there is no result, no error, and not analyzing', () => {
+      const view = renderResultsView(null, defaultState(), defaultActions());
+      document.body.appendChild(view);
+
+      expect(document.querySelector('.results-idle-state')).not.toBeNull();
+      expect(document.querySelector('.results-idle-title')?.textContent).toBe('Point it at a repository');
+      expect(document.querySelectorAll('.results-idle-features li').length).toBeGreaterThan(0);
+      // No error icon
+      expect(document.querySelector('.results-idle-icon.error-icon')).toBeNull();
+    });
+
+    it('renders the analyzing state when isAnalyzing is true and there is no result', () => {
+      const view = renderResultsView(null, defaultState(), defaultActions(), {
+        isAnalyzing: true,
+        statusMessage: 'Cloning repository...'
+      });
+      document.body.appendChild(view);
+
+      expect(document.querySelector('.results-idle-title')?.textContent).toBe('Analyzing repository…');
+      expect(document.querySelector('.results-idle-analyzing-bar')).not.toBeNull();
+      // Description should show the status message
+      expect(document.querySelector('.results-idle-desc')?.textContent).toContain('Cloning repository...');
+    });
+
+    it('renders the error state when errorMessage is set and there is no result', () => {
+      const view = renderResultsView(null, defaultState(), defaultActions(), {
+        errorMessage: 'Authentication failed: 401 Unauthorized'
+      });
+      document.body.appendChild(view);
+
+      expect(document.querySelector('.results-idle-title')?.textContent).toBe('Analysis failed');
+      expect(document.querySelector('.results-idle-error-message')?.textContent)
+        .toBe('Authentication failed: 401 Unauthorized');
+      expect(document.querySelector('.results-idle-icon.error-icon')).not.toBeNull();
+      // Auth-related hints
+      const hints = document.querySelectorAll('.results-idle-error-hints li');
+      expect(hints.length).toBeGreaterThan(0);
+    });
+
+    it('does not render the error chip in the header when there is no result (error shown in panel)', () => {
+      const view = renderResultsView(null, defaultState(), defaultActions(), {
+        errorMessage: 'Clone failed: repository not found'
+      });
+      document.body.appendChild(view);
+
+      expect(document.querySelector('.status-chip-error')).toBeNull();
+      expect(document.querySelector('.results-idle-error-message')).not.toBeNull();
+    });
+
+    it('shows a warning chip in the header even when there is no result (e.g. SSH warning)', () => {
+      const view = renderResultsView(null, defaultState(), defaultActions(), {
+        warningMessage: 'SSH repository selected. Browser-stored HTTPS tokens will not be sent.'
+      });
+      document.body.appendChild(view);
+
+      expect(document.querySelector('.status-chip-warning')?.textContent)
+        .toContain('SSH repository selected');
+    });
+  });
+
+  // ── Partial-analysis notice ───────────────────────────────────────────────
+
+  it('shows a partial-analysis notice when Spring Boot was not detected', () => {
+    const result = baseResult([]);
+    result.springBootDetected = false;
+
+    const view = renderResultsView(result, defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    expect(document.querySelector('.partial-analysis-notice')).not.toBeNull();
+    expect(document.querySelector('.partial-analysis-notice')?.textContent)
+      .toContain('Spring Boot was not detected');
+  });
+
+  it('does not show a partial-analysis notice when Spring Boot is detected', () => {
+    const result = baseResult([baseFinding()]);
+    result.springBootDetected = true;
+
+    const view = renderResultsView(result, defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    expect(document.querySelector('.partial-analysis-notice')).toBeNull();
+  });
+
+  // ── No-findings message ───────────────────────────────────────────────────
+
+  it('shows a qualified no-findings message that includes a caveat about static analysis limits', () => {
+    const view = renderResultsView(baseResult([]), defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    // The findings section's success note is inside #results-findings
+    const findingsSection = document.getElementById('results-findings');
+    const note = findingsSection?.querySelector('.empty-note.success-note');
+    expect(note).not.toBeNull();
+    expect(note?.textContent).toContain('No issues detected');
+    expect(note?.textContent).toContain('complement static analysis');
   });
 });

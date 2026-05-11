@@ -6,5 +6,6 @@ import java.nio.file.Path;
 
 public interface StaticAnalyzer {
 
-    AnalysisResult analyze(GitRepositoryReference repositoryReference, Path repositoryRoot, String workspaceId);
+    AnalysisResult analyze(
+            GitRepositoryReference repositoryReference, Path repositoryRoot, String workspaceId);
 }

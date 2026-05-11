@@ -1,0 +1,75 @@
+# Dependabot configuration for spring-boot-analyzer
+# Docs: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+
+updates:
+
+  # ── Gradle (backend) ──────────────────────────────────────────────────────
+  - package-ecosystem: "gradle"
+    # Scan the root directory where build.gradle lives
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    # Target the main integration branch
+    target-branch: "main"
+    # Cap open PRs so the queue stays manageable
+    open-pull-requests-limit: 5
+    groups:
+      # Batch all non-breaking upgrades into a single PR
+      gradle-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+      # Major version bumps get their own individual PRs (breaking risk)
+      gradle-major:
+        update-types:
+          - "major"
+    # Surface the version change clearly in the PR title
+    commit-message:
+      prefix: "build(deps)"
+
+  # ── npm (frontend) ────────────────────────────────────────────────────────
+  - package-ecosystem: "npm"
+    # Point at the subdirectory that contains frontend/package.json
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    target-branch: "main"
+    open-pull-requests-limit: 5
+    groups:
+      # Batch compatible upgrades; keeps routine maintenance as one PR
+      npm-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+      # Major bumps are grouped separately so they are easy to review/skip
+      npm-major:
+        update-types:
+          - "major"
+    commit-message:
+      prefix: "build(deps)"
+
+  # ── GitHub Actions ────────────────────────────────────────────────────────
+  - package-ecosystem: "github-actions"
+    # Actions are defined in .github/workflows/; use root as scan directory
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    target-branch: "main"
+    open-pull-requests-limit: 5
+    groups:
+      # Group all action updates (minor/patch) into one PR
+      actions-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+      # Major action version changes get individual PRs for careful review
+      actions-major:
+        update-types:
+          - "major"
+    commit-message:
+      prefix: "ci(deps)"

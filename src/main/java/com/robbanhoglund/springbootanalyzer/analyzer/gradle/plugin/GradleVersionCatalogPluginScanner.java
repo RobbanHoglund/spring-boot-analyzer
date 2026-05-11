@@ -15,7 +15,8 @@ public class GradleVersionCatalogPluginScanner {
     private static final Pattern SIMPLE_VALUE_PATTERN =
             Pattern.compile("^([A-Za-z0-9_.-]+)\\s*=\\s*\"([^\"]+)\"\\s*$");
     private static final Pattern INLINE_PLUGIN_PATTERN =
-            Pattern.compile("^([A-Za-z0-9_.-]+)\\s*=\\s*\\{\\s*id\\s*=\\s*\"([^\"]+)\"\\s*,\\s*(version|version\\.ref)\\s*=\\s*\"([^\"]+)\"\\s*}.*$");
+            Pattern.compile(
+                    "^([A-Za-z0-9_.-]+)\\s*=\\s*\\{\\s*id\\s*=\\s*\"([^\"]+)\"\\s*,\\s*(version|version\\.ref)\\s*=\\s*\"([^\"]+)\"\\s*}.*$");
 
     public Map<String, CatalogPlugin> scan(Path repositoryRoot) {
         Path catalog = repositoryRoot.resolve("gradle").resolve("libs.versions.toml");
@@ -56,7 +57,8 @@ public class GradleVersionCatalogPluginScanner {
                     String pluginId = matcher.group(2);
                     String key = matcher.group(3);
                     String rawVersion = matcher.group(4);
-                    String version = "version.ref".equals(key) ? versions.get(rawVersion) : rawVersion;
+                    String version =
+                            "version.ref".equals(key) ? versions.get(rawVersion) : rawVersion;
                     plugins.put(alias, new CatalogPlugin(alias, pluginId, version));
                 }
             }
@@ -69,10 +71,5 @@ public class GradleVersionCatalogPluginScanner {
         return hash >= 0 ? line.substring(0, hash) : line;
     }
 
-    public record CatalogPlugin(
-            String alias,
-            String pluginId,
-            String version
-    ) {
-    }
+    public record CatalogPlugin(String alias, String pluginId, String version) {}
 }

@@ -9,6 +9,4 @@ public record PropertyReference(
         String defaultValue,
         boolean required,
         String expectedValue,
-        Boolean matchIfMissing
-) {
-}
+        Boolean matchIfMissing) {}

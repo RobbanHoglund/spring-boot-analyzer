@@ -12,40 +12,96 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Component;
 
+/**
+ * Reads the project's build files and extracts metadata used by the rest of the analysis
+ * pipeline: build tool, Spring Boot presence, Spring Boot version, Java version, and the
+ * raw dependency set.
+ *
+ * <p>The analyzer reads up to five files when they exist:
+ * {@code build.gradle}, {@code build.gradle.kts}, {@code pom.xml}, {@code gradle.properties},
+ * {@code settings.gradle} / {@code settings.gradle.kts}, and {@code gradle/libs.versions.toml}.
+ * Each file is scanned with a series of regex patterns; the first match with the highest
+ * declared confidence ({@code HIGH} → {@code MEDIUM} → {@code LOW}) wins for the version fields.
+ *
+ * <p>Spring Boot version detection uses seven patterns in priority order: Gradle plugin
+ * declarations and Maven parent/BOM {@code <version>} tags are rated {@code HIGH},
+ * {@code gradle.properties} and version catalog entries {@code MEDIUM}, and a generic
+ * dependency coordinate match {@code LOW}. Java version is detected from
+ * {@code JavaLanguageVersion.of()}, {@code VERSION_*} constants, {@code sourceCompatibility},
+ * Maven {@code <java.version>}, and Maven compiler properties.
+ */
 @Component
 public class BuildFileAnalyzer {
 
-    private static final List<String> SPRING_BOOT_MARKERS = List.of(
-            "org.springframework.boot",
-            "spring-boot-starter",
-            "spring-boot-maven-plugin"
-    );
+    private static final List<String> SPRING_BOOT_MARKERS =
+            List.of("org.springframework.boot", "spring-boot-starter", "spring-boot-maven-plugin");
 
     private static final Pattern GRADLE_DEPENDENCY_PATTERN =
             Pattern.compile("['\"]([a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+(?::[^'\"]+)?)['\"]");
 
-    private static final Pattern MAVEN_DEPENDENCY_PATTERN = Pattern.compile(
-            "<dependency>.*?<groupId>([^<]+)</groupId>.*?<artifactId>([^<]+)</artifactId>(?:.*?<version>([^<]+)</version>)?.*?</dependency>",
-            Pattern.DOTALL
-    );
+    private static final Pattern MAVEN_DEPENDENCY_PATTERN =
+            Pattern.compile(
+                    "<dependency>.*?<groupId>([^<]+)</groupId>.*?<artifactId>([^<]+)</artifactId>(?:.*?<version>([^<]+)</version>)?.*?</dependency>",
+                    Pattern.DOTALL);
 
-    private static final List<Pattern> JAVA_VERSION_PATTERNS = List.of(
-            Pattern.compile("JavaLanguageVersion\\.of\\((\\d+)\\)"),
-            Pattern.compile("VERSION_(\\d+)"),
-            Pattern.compile("(?:sourceCompatibility|targetCompatibility)\\s*=\\s*['\"]?(\\d+)"),
-            Pattern.compile("<java\\.version>(\\d+)</java\\.version>"),
-            Pattern.compile("<maven\\.compiler\\.(?:source|target|release)>(\\d+)</maven\\.compiler\\.(?:source|target|release)>")
-    );
-    private static final List<VersionPattern> SPRING_BOOT_VERSION_PATTERNS = List.of(
-            new VersionPattern(Pattern.compile("id\\s*['\"]org\\.springframework\\.boot['\"]\\s*version\\s*['\"]([^'\"]+)['\"]"), "Gradle plugins", "HIGH"),
-            new VersionPattern(Pattern.compile("org\\.springframework\\.boot\\)\\s*version\\s*['\"]([^'\"]+)['\"]"), "Gradle plugins", "HIGH"),
-            new VersionPattern(Pattern.compile("springBoot\\s*=\\s*['\"]([^'\"]+)['\"]"), "gradle.properties", "MEDIUM"),
-            new VersionPattern(Pattern.compile("spring-boot\\s*=\\s*['\"]?([^\\s'\"]+)"), "version catalog", "MEDIUM"),
-            new VersionPattern(Pattern.compile("<artifactId>spring-boot-starter-parent</artifactId>\\s*<version>([^<]+)</version>", Pattern.DOTALL), "Maven parent", "HIGH"),
-            new VersionPattern(Pattern.compile("<artifactId>spring-boot-dependencies</artifactId>\\s*<version>([^<]+)</version>", Pattern.DOTALL), "Maven BOM", "HIGH"),
-            new VersionPattern(Pattern.compile("org\\.springframework\\.boot:[^:'\"]+[:\"]([^'\"]+)['\"]"), "Dependency declaration", "LOW")
-    );
+    private static final List<Pattern> JAVA_VERSION_PATTERNS =
+            List.of(
+                    Pattern.compile("JavaLanguageVersion\\.of\\((\\d+)\\)"),
+                    Pattern.compile("VERSION_(\\d+)"),
+                    Pattern.compile(
+                            "(?:sourceCompatibility|targetCompatibility)\\s*=\\s*['\"]?(\\d+)"),
+                    Pattern.compile("<java\\.version>(\\d+)</java\\.version>"),
+                    Pattern.compile(
+                            "<maven\\.compiler\\.(?:source|target|release)>(\\d+)</maven\\.compiler\\.(?:source|target|release)>"));
+    private static final List<VersionPattern> SPRING_BOOT_VERSION_PATTERNS =
+            List.of(
+                    new VersionPattern(
+                            Pattern.compile(
+                                    "id\\s*['\"]org\\.springframework\\.boot['\"]\\s*version\\s*['\"]([^'\"]+)['\"]"),
+                            "Gradle plugins",
+                            "HIGH"),
+                    new VersionPattern(
+                            Pattern.compile(
+                                    "org\\.springframework\\.boot\\)\\s*version\\s*['\"]([^'\"]+)['\"]"),
+                            "Gradle plugins",
+                            "HIGH"),
+                    new VersionPattern(
+                            Pattern.compile("springBoot\\s*=\\s*['\"]([^'\"]+)['\"]"),
+                            "gradle.properties",
+                            "MEDIUM"),
+                    new VersionPattern(
+                            Pattern.compile("spring-boot\\s*=\\s*['\"]?([^\\s'\"]+)"),
+                            "version catalog",
+                            "MEDIUM"),
+                    new VersionPattern(
+                            Pattern.compile(
+                                    "<artifactId>spring-boot-starter-parent</artifactId>\\s*<version>([^<]+)</version>",
+                                    Pattern.DOTALL),
+                            "Maven parent",
+                            "HIGH"),
+                    new VersionPattern(
+                            Pattern.compile(
+                                    "<artifactId>spring-boot-dependencies</artifactId>\\s*<version>([^<]+)</version>",
+                                    Pattern.DOTALL),
+                            "Maven BOM",
+                            "HIGH"),
+                    new VersionPattern(
+                            Pattern.compile(
+                                    "org\\.springframework\\.boot:[^:'\"]+[:\"]([^'\"]+)['\"]"),
+                            "Dependency declaration",
+                            "LOW"));
 
+    /**
+     * Scans all detectable build files under {@code repositoryRoot} and assembles a
+     * {@link BuildInfo} summary.
+     *
+     * <p>Detection is purely textual (regex-based); no build system is invoked. Missing files
+     * are silently skipped. I/O errors on individual files are silently ignored so that a
+     * corrupt or inaccessible file does not abort the entire analysis.
+     *
+     * @param repositoryRoot root directory of the project being analysed
+     * @return the assembled {@link BuildInfo}; never null
+     */
     public BuildInfo analyze(Path repositoryRoot) {
         BuildTool buildTool = detectBuildTool(repositoryRoot);
         List<Path> buildFiles = detectBuildFiles(repositoryRoot);
@@ -81,12 +137,12 @@ public class BuildFileAnalyzer {
                 List.copyOf(dependencies),
                 springBootVersion,
                 springBootVersionSource,
-                springBootVersionConfidence
-        );
+                springBootVersionConfidence);
     }
 
     private BuildTool detectBuildTool(Path repositoryRoot) {
-        if (Files.exists(repositoryRoot.resolve("build.gradle")) || Files.exists(repositoryRoot.resolve("build.gradle.kts"))) {
+        if (Files.exists(repositoryRoot.resolve("build.gradle"))
+                || Files.exists(repositoryRoot.resolve("build.gradle.kts"))) {
             return BuildTool.GRADLE;
         }
         if (Files.exists(repositoryRoot.resolve("pom.xml"))) {
@@ -139,7 +195,8 @@ public class BuildFileAnalyzer {
         for (VersionPattern versionPattern : SPRING_BOOT_VERSION_PATTERNS) {
             Matcher matcher = versionPattern.pattern().matcher(content);
             if (matcher.find()) {
-                return new SpringBootVersion(matcher.group(1), versionPattern.source(), versionPattern.confidence());
+                return new SpringBootVersion(
+                        matcher.group(1), versionPattern.source(), versionPattern.confidence());
             }
         }
         return null;
@@ -175,17 +232,7 @@ public class BuildFileAnalyzer {
         return dependencies;
     }
 
-    private record VersionPattern(
-            Pattern pattern,
-            String source,
-            String confidence
-    ) {
-    }
+    private record VersionPattern(Pattern pattern, String source, String confidence) {}
 
-    private record SpringBootVersion(
-            String version,
-            String source,
-            String confidence
-    ) {
-    }
+    private record SpringBootVersion(String version, String source, String confidence) {}
 }

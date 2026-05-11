@@ -6,6 +6,4 @@ public record GradleSettingsPluginWorkaround(
         String sourceFile,
         Integer line,
         String action,
-        String reason
-) {
-}
+        String reason) {}

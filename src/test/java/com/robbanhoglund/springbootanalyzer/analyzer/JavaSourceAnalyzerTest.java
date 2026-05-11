@@ -2,7 +2,6 @@ package com.robbanhoglund.springbootanalyzer.analyzer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.SpringComponentType;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -14,13 +13,15 @@ class JavaSourceAnalyzerTest {
 
     private final JavaSourceAnalyzer analyzer = new JavaSourceAnalyzer();
 
-    @TempDir
-    Path tempDir;
+    @TempDir Path tempDir;
 
     @Test
     void detectsAnnotatedSpringClasses() throws IOException {
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("DemoApplication.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("DemoApplication.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -29,7 +30,9 @@ class JavaSourceAnalyzerTest {
                 public class DemoApplication {
                 }
                 """);
-        Files.writeString(sourceRoot.resolve("GreetingService.java"), """
+        Files.writeString(
+                sourceRoot.resolve("GreetingService.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.stereotype.Service;
@@ -44,21 +47,26 @@ class JavaSourceAnalyzerTest {
         assertThat(result.detectedClasses()).hasSize(2);
         assertThat(result.detectedClasses())
                 .extracting(detectedClass -> detectedClass.componentType())
-                .containsExactlyInAnyOrder(SpringComponentType.MAIN_APPLICATION, SpringComponentType.SERVICE);
+                .containsExactlyInAnyOrder(
+                        SpringComponentType.MAIN_APPLICATION, SpringComponentType.SERVICE);
         assertThat(result.findings()).isEmpty();
     }
 
     @Test
-    void reportsDefaultPackageAndParseIssues() throws IOException {
+    void reportsDefaultPackageWarningAndSilentlySkipsUnparsableFiles() throws IOException {
         Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java"));
-        Files.writeString(sourceRoot.resolve("NoPackageComponent.java"), """
+        Files.writeString(
+                sourceRoot.resolve("NoPackageComponent.java"),
+                """
                 import org.springframework.stereotype.Component;
 
                 @Component
                 public class NoPackageComponent {
                 }
                 """);
-        Files.writeString(sourceRoot.resolve("BrokenFile.java"), """
+        Files.writeString(
+                sourceRoot.resolve("BrokenFile.java"),
+                """
                 package com.example.broken;
 
                 public class BrokenFile {
@@ -66,21 +74,24 @@ class JavaSourceAnalyzerTest {
 
         var result = analyzer.analyze(tempDir);
 
-        assertThat(result.detectedClasses()).extracting(detectedClass -> detectedClass.simpleClassName())
+        assertThat(result.detectedClasses())
+                .extracting(detectedClass -> detectedClass.simpleClassName())
                 .contains("NoPackageComponent");
         assertThat(result.findings())
-                .extracting(finding -> finding.severity())
-                .contains(FindingSeverity.WARNING);
+                .extracting(finding -> finding.message())
+                .anyMatch(message -> message.contains("default package"));
         assertThat(result.findings())
                 .extracting(finding -> finding.message())
-                .anyMatch(message -> message.contains("default package"))
-                .anyMatch(message -> message.contains("Failed to parse") && message.contains("Parse error"));
+                .noneMatch(message -> message.contains("Failed to parse"));
     }
 
     @Test
     void parsesModernJavaSyntaxWithJava25LanguageLevel() throws IOException {
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("ModernRecord.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ModernRecord.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.stereotype.Component;

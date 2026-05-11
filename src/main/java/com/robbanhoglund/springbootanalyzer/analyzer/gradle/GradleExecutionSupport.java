@@ -1,6 +1,5 @@
 package com.robbanhoglund.springbootanalyzer.analyzer.gradle;
 
-import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleExecutionFailureType;
 import com.robbanhoglund.springbootanalyzer.config.AnalyzerProperties;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -22,46 +21,47 @@ import org.slf4j.LoggerFactory;
 public final class GradleExecutionSupport {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(GradleExecutionSupport.class);
-    private static final List<String> SAFE_ENV_KEYS = List.of(
-            "PATH",
-            "JAVA_HOME",
-            "HOME",
-            "USERPROFILE",
-            "SYSTEMROOT",
-            "TMP",
-            "TEMP",
-            "APPDATA",
-            "LOCALAPPDATA",
-            "PROGRAMDATA",
-            "COMSPEC",
-            "PATHEXT",
-            "OS",
-            "USERNAME",
-            "USERDOMAIN",
-            "PROCESSOR_ARCHITECTURE",
-            "PROCESSOR_IDENTIFIER",
-            "NUMBER_OF_PROCESSORS"
-    );
-    private static final List<Pattern> UNSAFE_WINDOWS_URI_PATTERNS = List.of(
-            Pattern.compile("uri\\(['\"]?[A-Za-z]:\\\\"),
-            Pattern.compile("url\\s*=\\s*uri\\(['\"]?[A-Za-z]:\\\\"),
-            Pattern.compile("file\\(['\"]?[A-Za-z]:\\\\"),
-            Pattern.compile("uri\\(\"file:[^\"]*\\\\"),
-            Pattern.compile("uri\\('file:[^']*\\\\")
-    );
+    private static final List<String> SAFE_ENV_KEYS =
+            List.of(
+                    "PATH",
+                    "JAVA_HOME",
+                    "HOME",
+                    "USERPROFILE",
+                    "SYSTEMROOT",
+                    "TMP",
+                    "TEMP",
+                    "APPDATA",
+                    "LOCALAPPDATA",
+                    "PROGRAMDATA",
+                    "COMSPEC",
+                    "PATHEXT",
+                    "OS",
+                    "USERNAME",
+                    "USERDOMAIN",
+                    "PROCESSOR_ARCHITECTURE",
+                    "PROCESSOR_IDENTIFIER",
+                    "NUMBER_OF_PROCESSORS");
+    private static final List<Pattern> UNSAFE_WINDOWS_URI_PATTERNS =
+            List.of(
+                    Pattern.compile("uri\\(['\"]?[A-Za-z]:\\\\"),
+                    Pattern.compile("url\\s*=\\s*uri\\(['\"]?[A-Za-z]:\\\\"),
+                    Pattern.compile("file\\(['\"]?[A-Za-z]:\\\\"),
+                    Pattern.compile("uri\\(\"file:[^\"]*\\\\"),
+                    Pattern.compile("uri\\('file:[^']*\\\\"));
 
-    private GradleExecutionSupport() {
-    }
+    private GradleExecutionSupport() {}
 
-    public static ExecutionFiles prepareExecutionFiles(Path repositoryRoot, AnalyzerProperties.GradleProperties properties) throws IOException {
+    public static ExecutionFiles prepareExecutionFiles(
+            Path repositoryRoot, AnalyzerProperties.GradleProperties properties)
+            throws IOException {
         return prepareExecutionFiles(repositoryRoot, properties, null);
     }
 
     public static ExecutionFiles prepareExecutionFiles(
             Path repositoryRoot,
             AnalyzerProperties.GradleProperties properties,
-            Path localPluginRepository
-    ) throws IOException {
+            Path localPluginRepository)
+            throws IOException {
         GradleScriptValueRenderer renderer = new GradleScriptValueRenderer();
         Path tempDir = Files.createTempDirectory(repositoryRoot, "sba-gradle-");
         Path reportFile = tempDir.resolve("sba-gradle-model.json");
@@ -78,8 +78,7 @@ public final class GradleExecutionSupport {
     public static Map<String, String> safeEnvironment(
             Map<String, String> currentEnvironment,
             Path gradleUserHome,
-            AnalyzerProperties.GradleProperties properties
-    ) {
+            AnalyzerProperties.GradleProperties properties) {
         Map<String, String> environment = new LinkedHashMap<>();
         for (String key : SAFE_ENV_KEYS) {
             if (currentEnvironment.containsKey(key)) {
@@ -96,7 +95,8 @@ public final class GradleExecutionSupport {
     }
 
     public static String readBounded(InputStream inputStream, int maxBytes) throws IOException {
-        try (inputStream; ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
+        try (inputStream;
+                ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
             byte[] buffer = new byte[4096];
             int total = 0;
             int read;
@@ -113,18 +113,28 @@ public final class GradleExecutionSupport {
         if (value == null) {
             return null;
         }
-        return value
-                .replaceAll("(?i)(password|token|secret|credential)\\s*[=:]\\s*[^\\s]+", "$1=[redacted]")
-                .replaceAll("(?i)(proxy(password)?|https?\\.proxy(password)?|proxyUser|proxyPassword)\\s*[=:]\\s*[^\\s]+", "$1=[redacted]")
+        return value.replaceAll(
+                        "(?i)(password|token|secret|credential)\\s*[=:]\\s*[^\\s]+",
+                        "$1=[redacted]")
+                .replaceAll(
+                        "(?i)(proxy(password)?|https?\\.proxy(password)?|proxyUser|proxyPassword)\\s*[=:]\\s*[^\\s]+",
+                        "$1=[redacted]")
                 .replaceAll("(?i)(https?://)([^/@\\s]+)@", "$1[redacted]@");
     }
 
-    public static String executionModeLabel(String runner, com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleExecutionMode executionMode) {
+    public static String executionModeLabel(
+            String runner,
+            com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleExecutionMode
+                    executionMode) {
         return executionMode.name();
     }
 
     public static String extractWrapperGradleVersion(Path repositoryRoot) {
-        Path wrapperProperties = repositoryRoot.resolve("gradle").resolve("wrapper").resolve("gradle-wrapper.properties");
+        Path wrapperProperties =
+                repositoryRoot
+                        .resolve("gradle")
+                        .resolve("wrapper")
+                        .resolve("gradle-wrapper.properties");
         if (Files.notExists(wrapperProperties)) {
             return null;
         }
@@ -145,7 +155,8 @@ public final class GradleExecutionSupport {
         if (distributionUrl == null || distributionUrl.isBlank()) {
             return null;
         }
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("gradle-([0-9][^-/]*)-").matcher(distributionUrl);
+        java.util.regex.Matcher matcher =
+                java.util.regex.Pattern.compile("gradle-([0-9][^-/]*)-").matcher(distributionUrl);
         return matcher.find() ? matcher.group(1) : null;
     }
 
@@ -154,14 +165,19 @@ public final class GradleExecutionSupport {
             String gradleVersion,
             int javaFeatureVersion,
             GradleJavaCompatibilityService compatibilityService,
-            GradleFailureClassifier failureClassifier
-    ) {
-        return failureClassifier.classify(message, gradleVersion, javaFeatureVersion, compatibilityService);
+            GradleFailureClassifier failureClassifier) {
+        return failureClassifier.classify(
+                message, gradleVersion, javaFeatureVersion, compatibilityService);
     }
 
-    public static List<String> proxySystemProperties(AnalyzerProperties.GradleProperties properties) {
+    public static List<String> proxySystemProperties(
+            AnalyzerProperties.GradleProperties properties) {
         AnalyzerProperties.ProxyProperties proxy = properties.proxy();
-        if (proxy == null || !proxy.enabled() || proxy.host() == null || proxy.host().isBlank() || proxy.port() == null) {
+        if (proxy == null
+                || !proxy.enabled()
+                || proxy.host() == null
+                || proxy.host().isBlank()
+                || proxy.port() == null) {
             return List.of();
         }
         List<String> arguments = new ArrayList<>();
@@ -194,7 +210,8 @@ public final class GradleExecutionSupport {
     }
 
     public static Map<String, String> hostGradleProxyProperties() {
-        Path gradlePropertiesPath = Path.of(System.getProperty("user.home"), ".gradle", "gradle.properties");
+        Path gradlePropertiesPath =
+                Path.of(System.getProperty("user.home"), ".gradle", "gradle.properties");
         if (Files.notExists(gradlePropertiesPath)) {
             return Map.of();
         }
@@ -204,18 +221,18 @@ public final class GradleExecutionSupport {
         } catch (IOException exception) {
             return Map.of();
         }
-        List<String> allowedKeys = List.of(
-                "systemProp.http.proxyHost",
-                "systemProp.http.proxyPort",
-                "systemProp.http.proxyUser",
-                "systemProp.http.proxyPassword",
-                "systemProp.https.proxyHost",
-                "systemProp.https.proxyPort",
-                "systemProp.https.proxyUser",
-                "systemProp.https.proxyPassword",
-                "systemProp.http.nonProxyHosts",
-                "systemProp.https.nonProxyHosts"
-        );
+        List<String> allowedKeys =
+                List.of(
+                        "systemProp.http.proxyHost",
+                        "systemProp.http.proxyPort",
+                        "systemProp.http.proxyUser",
+                        "systemProp.http.proxyPassword",
+                        "systemProp.https.proxyHost",
+                        "systemProp.https.proxyPort",
+                        "systemProp.https.proxyUser",
+                        "systemProp.https.proxyPassword",
+                        "systemProp.http.nonProxyHosts",
+                        "systemProp.https.nonProxyHosts");
         Map<String, String> collected = new LinkedHashMap<>();
         for (String key : allowedKeys) {
             String value = properties.getProperty(key);
@@ -232,30 +249,35 @@ public final class GradleExecutionSupport {
 
     public static String pluginMarkerUrl(String repositoryUrl, String pluginId, String version) {
         String base = repositoryUrl.replaceAll("/+$", "");
-        String markerPath = pluginId.replace('.', '/')
-                + "/"
-                + pluginId
-                + ".gradle.plugin/"
-                + version
-                + "/"
-                + pluginId
-                + ".gradle.plugin-"
-                + version
-                + ".pom";
+        String markerPath =
+                pluginId.replace('.', '/')
+                        + "/"
+                        + pluginId
+                        + ".gradle.plugin/"
+                        + version
+                        + "/"
+                        + pluginId
+                        + ".gradle.plugin-"
+                        + version
+                        + ".pom";
         return base + "/" + markerPath;
     }
 
-    public static String externalCommandHint(Path initScript, Path reportFile, AnalyzerProperties.GradleProperties properties) {
-        String executable = properties.executable() != null ? properties.executable().toString() : "gradle";
+    public static String externalCommandHint(
+            Path initScript, Path reportFile, AnalyzerProperties.GradleProperties properties) {
+        String executable =
+                properties.executable() != null ? properties.executable().toString() : "gradle";
         String proxyArgs = String.join(" ", joinJvmArgs(properties));
-        return ("%s --console=plain --stacktrace %s --init-script %s -PsbaReportFile=%s -PsbaMaxResolvedDependencies=%d springBootAnalyzerModel")
+        return ("%s --console=plain --stacktrace %s --init-script %s -PsbaReportFile=%s"
+                        + " -PsbaMaxResolvedDependencies=%d springBootAnalyzerModel")
                 .formatted(
                         executable,
                         proxyArgs,
                         initScript,
                         reportFile,
-                        properties.maxResolvedDependencies()
-                ).replaceAll("\\s+", " ").trim();
+                        properties.maxResolvedDependencies())
+                .replaceAll("\\s+", " ")
+                .trim();
     }
 
     public static List<String> joinJvmArgs(AnalyzerProperties.GradleProperties properties) {
@@ -268,557 +290,558 @@ public final class GradleExecutionSupport {
     static String initScriptContent(
             AnalyzerProperties.GradleProperties properties,
             Path localPluginRepository,
-            GradleScriptValueRenderer renderer
-    ) {
-        String pluginRepositoriesBlock = pluginRepositoriesBlock(properties, localPluginRepository, renderer);
+            GradleScriptValueRenderer renderer) {
+        String pluginRepositoriesBlock =
+                pluginRepositoriesBlock(properties, localPluginRepository, renderer);
         return """
-                import groovy.json.JsonOutput
-                import org.gradle.api.artifacts.result.ResolvedDependencyResult
-                import org.gradle.api.artifacts.result.UnresolvedDependencyResult
-                import org.gradle.api.artifacts.component.ModuleComponentIdentifier
-                import org.gradle.api.artifacts.ExternalDependency
-                import org.gradle.api.artifacts.ModuleDependency
-                import org.gradle.api.artifacts.repositories.MavenArtifactRepository
-                import org.gradle.api.plugins.JavaPluginExtension
-                import org.gradle.api.tasks.SourceSetContainer
-                import groovy.lang.Closure
+import groovy.json.JsonOutput
+import org.gradle.api.artifacts.result.ResolvedDependencyResult
+import org.gradle.api.artifacts.result.UnresolvedDependencyResult
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.artifacts.ExternalDependency
+import org.gradle.api.artifacts.ModuleDependency
+import org.gradle.api.artifacts.repositories.MavenArtifactRepository
+import org.gradle.api.plugins.JavaPluginExtension
+import org.gradle.api.tasks.SourceSetContainer
+import groovy.lang.Closure
 
-                def reportFilePath = gradle.startParameter.projectProperties['sbaReportFile']
-                def maxResolvedDependencies = (gradle.startParameter.projectProperties['sbaMaxResolvedDependencies'] ?: '10000') as int
-                final Closure<String> sbaSanitizeValue = { Object value ->
-                    if (value == null) {
-                        return null
-                    }
-                    String text = String.valueOf(value)
-                    text
-                            .replaceAll(/(?i)(password|token|secret|credential)=([^&\\s]+)/, '$1=[redacted]')
-                            .replaceAll(/(?i)(https?:\\/\\/)([^\\/@\\s]+)@/, '$1[redacted]@')
-                }
-                final Closure<String> sbaNormalizePath = { Object value ->
-                    if (value == null) {
-                        return null
-                    }
-                    return String.valueOf(value).replace('\\\\', '/')
-                }
-                final Closure<String> sbaRelativePath = { project, Object value ->
-                    if (value == null) {
-                        return null
-                    }
-                    try {
-                        def basePath = project.projectDir.toPath().toAbsolutePath().normalize()
-                        def targetPath = (value instanceof File ? value.toPath() : new File(String.valueOf(value)).toPath())
-                                .toAbsolutePath()
-                                .normalize()
-                        if (targetPath.startsWith(basePath)) {
-                            return sbaNormalizePath.call(basePath.relativize(targetPath).toString())
-                        }
-                    } catch (Throwable ignored) {
-                    }
-                    return sbaNormalizePath.call(String.valueOf(value))
-                }
-                final Closure<String> sbaSelectionReason = { Object selectionReason ->
-                    try {
-                        def descriptions = selectionReason?.descriptions
-                        if (descriptions == null) {
-                            return null
-                        }
-                        return descriptions
-                                .collect { it.description }
-                                .findAll { it != null && !it.toString().isBlank() }
-                                .join(', ')
-                    } catch (Throwable ignored) {
-                        return null
-                    }
-                }
-                final Closure<String> sbaModuleKey = { Object group, Object artifact, Object version ->
-                    return "${group ?: ''}:${artifact ?: ''}:${version ?: ''}"
-                }
-                final Closure<String> sbaGroupArtifactKey = { Object group, Object artifact ->
-                    return "${group ?: ''}:${artifact ?: ''}"
-                }
-                final Closure<Boolean> sbaIsModuleComponentId = { Object id ->
-                    if (id == null) {
-                        return false
-                    }
-                    if (id instanceof ModuleComponentIdentifier) {
-                        return true
-                    }
-                    return id.hasProperty('group')
-                            && id.hasProperty('module')
-                            && id.hasProperty('version')
-                            && id.group != null
-                            && id.module != null
-                            && id.version != null
-                }
-                final Closure<String> sbaModuleKeyIfPresent = { Object id ->
-                    return sbaIsModuleComponentId.call(id)
-                            ? sbaModuleKey.call(id.group, id.module, id.version)
-                            : null
-                }
-                final Closure<String> sbaGroupArtifactKeyIfPresent = { Object id ->
-                    return sbaIsModuleComponentId.call(id)
-                            ? sbaGroupArtifactKey.call(id.group, id.module)
-                            : null
-                }
-                final Closure<String> sbaRequestedKeyIfPresent = { Object requested ->
-                    if (requested == null) {
-                        return null
-                    }
-                    def group = requested.hasProperty('group') ? requested.group : null
-                    def module = requested.hasProperty('module')
-                            ? requested.module
-                            : (requested.hasProperty('name') ? requested.name : null)
-                    return (group != null && module != null)
-                            ? sbaGroupArtifactKey.call(group, module)
-                            : null
-                }
-                final Closure<Boolean> sbaHasExternalRequestedDependencies = { configuration ->
-                    try {
-                        return configuration.allDependencies.any { dependency ->
-                            dependency instanceof ExternalDependency
-                                    || (dependency.group != null && dependency.name != null)
-                        }
-                    } catch (Throwable ignored) {
-                        return false
-                    }
-                }
-                final Closure<Void> sbaAddResolvedModule = { String projectPath, String configurationName, Object id, boolean direct, String selectedReason, List bucket, java.util.concurrent.atomic.AtomicInteger remaining ->
-                    if (id == null || remaining.get() <= 0 || !sbaIsModuleComponentId.call(id)) {
-                        return null
-                    }
-                    def existing = bucket.find { entry ->
-                        entry.projectPath == projectPath
-                                && entry.configuration == configurationName
-                                && entry.group == String.valueOf(id.group)
-                                && entry.artifact == String.valueOf(id.module)
-                                && entry.version == String.valueOf(id.version)
-                    }
-                    if (existing != null) {
-                        existing.direct = ((existing.direct == true) || direct)
-                        if ((existing.selectedReason == null || existing.selectedReason.toString().isBlank())
-                                && selectedReason != null
-                                && !selectedReason.isBlank()) {
-                            existing.selectedReason = selectedReason
-                        }
-                        return null
-                    }
-                    remaining.decrementAndGet()
-                    bucket << [
-                        projectPath: projectPath,
-                        configuration: configurationName,
-                        group: String.valueOf(id.group),
-                        artifact: String.valueOf(id.module),
-                        version: String.valueOf(id.version),
-                        direct: direct,
-                        selectedReason: selectedReason
+def reportFilePath = gradle.startParameter.projectProperties['sbaReportFile']
+def maxResolvedDependencies = (gradle.startParameter.projectProperties['sbaMaxResolvedDependencies'] ?: '10000') as int
+final Closure<String> sbaSanitizeValue = { Object value ->
+    if (value == null) {
+        return null
+    }
+    String text = String.valueOf(value)
+    text
+            .replaceAll(/(?i)(password|token|secret|credential)=([^&\\s]+)/, '$1=[redacted]')
+            .replaceAll(/(?i)(https?:\\/\\/)([^\\/@\\s]+)@/, '$1[redacted]@')
+}
+final Closure<String> sbaNormalizePath = { Object value ->
+    if (value == null) {
+        return null
+    }
+    return String.valueOf(value).replace('\\\\', '/')
+}
+final Closure<String> sbaRelativePath = { project, Object value ->
+    if (value == null) {
+        return null
+    }
+    try {
+        def basePath = project.projectDir.toPath().toAbsolutePath().normalize()
+        def targetPath = (value instanceof File ? value.toPath() : new File(String.valueOf(value)).toPath())
+                .toAbsolutePath()
+                .normalize()
+        if (targetPath.startsWith(basePath)) {
+            return sbaNormalizePath.call(basePath.relativize(targetPath).toString())
+        }
+    } catch (Throwable ignored) {
+    }
+    return sbaNormalizePath.call(String.valueOf(value))
+}
+final Closure<String> sbaSelectionReason = { Object selectionReason ->
+    try {
+        def descriptions = selectionReason?.descriptions
+        if (descriptions == null) {
+            return null
+        }
+        return descriptions
+                .collect { it.description }
+                .findAll { it != null && !it.toString().isBlank() }
+                .join(', ')
+    } catch (Throwable ignored) {
+        return null
+    }
+}
+final Closure<String> sbaModuleKey = { Object group, Object artifact, Object version ->
+    return "${group ?: ''}:${artifact ?: ''}:${version ?: ''}"
+}
+final Closure<String> sbaGroupArtifactKey = { Object group, Object artifact ->
+    return "${group ?: ''}:${artifact ?: ''}"
+}
+final Closure<Boolean> sbaIsModuleComponentId = { Object id ->
+    if (id == null) {
+        return false
+    }
+    if (id instanceof ModuleComponentIdentifier) {
+        return true
+    }
+    return id.hasProperty('group')
+            && id.hasProperty('module')
+            && id.hasProperty('version')
+            && id.group != null
+            && id.module != null
+            && id.version != null
+}
+final Closure<String> sbaModuleKeyIfPresent = { Object id ->
+    return sbaIsModuleComponentId.call(id)
+            ? sbaModuleKey.call(id.group, id.module, id.version)
+            : null
+}
+final Closure<String> sbaGroupArtifactKeyIfPresent = { Object id ->
+    return sbaIsModuleComponentId.call(id)
+            ? sbaGroupArtifactKey.call(id.group, id.module)
+            : null
+}
+final Closure<String> sbaRequestedKeyIfPresent = { Object requested ->
+    if (requested == null) {
+        return null
+    }
+    def group = requested.hasProperty('group') ? requested.group : null
+    def module = requested.hasProperty('module')
+            ? requested.module
+            : (requested.hasProperty('name') ? requested.name : null)
+    return (group != null && module != null)
+            ? sbaGroupArtifactKey.call(group, module)
+            : null
+}
+final Closure<Boolean> sbaHasExternalRequestedDependencies = { configuration ->
+    try {
+        return configuration.allDependencies.any { dependency ->
+            dependency instanceof ExternalDependency
+                    || (dependency.group != null && dependency.name != null)
+        }
+    } catch (Throwable ignored) {
+        return false
+    }
+}
+final Closure<Void> sbaAddResolvedModule = { String projectPath, String configurationName, Object id, boolean direct, String selectedReason, List bucket, java.util.concurrent.atomic.AtomicInteger remaining ->
+    if (id == null || remaining.get() <= 0 || !sbaIsModuleComponentId.call(id)) {
+        return null
+    }
+    def existing = bucket.find { entry ->
+        entry.projectPath == projectPath
+                && entry.configuration == configurationName
+                && entry.group == String.valueOf(id.group)
+                && entry.artifact == String.valueOf(id.module)
+                && entry.version == String.valueOf(id.version)
+    }
+    if (existing != null) {
+        existing.direct = ((existing.direct == true) || direct)
+        if ((existing.selectedReason == null || existing.selectedReason.toString().isBlank())
+                && selectedReason != null
+                && !selectedReason.isBlank()) {
+            existing.selectedReason = selectedReason
+        }
+        return null
+    }
+    remaining.decrementAndGet()
+    bucket << [
+        projectPath: projectPath,
+        configuration: configurationName,
+        group: String.valueOf(id.group),
+        artifact: String.valueOf(id.module),
+        version: String.valueOf(id.version),
+        direct: direct,
+        selectedReason: selectedReason
+    ]
+    return null
+}
+final Closure<String> sbaUnresolvedMessage = { String projectPath, String configurationName, Object requested, Object from, Object failure ->
+    def pieces = []
+    if (requested != null) {
+        pieces << "requested=" + sbaSanitizeValue.call(requested.displayName ?: requested.toString())
+    }
+    if (from != null) {
+        pieces << "from=" + sbaSanitizeValue.call(from.displayName ?: from.toString())
+    }
+    if (failure != null) {
+        pieces << "failure=" + sbaSanitizeValue.call(failure.message ?: failure.toString())
+    }
+    return pieces.isEmpty() ? null : pieces.join(', ')
+}
+final Closure<String> sbaFailureDetails = { Object throwable ->
+    if (throwable == null) {
+        return null
+    }
+    def pieces = []
+    def current = throwable
+    int depth = 0
+    while (current != null && depth < 5) {
+        def text = sbaSanitizeValue.call(current.message ?: current.toString())
+        if (text != null && !text.isBlank() && !pieces.contains(text)) {
+            pieces << text
+        }
+        current = current.cause
+        depth++
+    }
+    return pieces.join(' | ')
+}
+
+%s
+
+gradle.projectsLoaded {
+    gradle.rootProject {
+        tasks.register('springBootAnalyzerModel') {
+            group = 'verification'
+            description = 'Writes Spring Boot Analyzer Gradle model JSON.'
+            doLast {
+                def resolvedLimit = new java.util.concurrent.atomic.AtomicInteger(maxResolvedDependencies)
+                def report = [
+                    gradleVersion: gradle.gradleVersion,
+                    projects: [],
+                    plugins: [],
+                    repositories: [],
+                    configurations: [],
+                    declaredDependencies: [],
+                    resolvedDependencies: [],
+                    resolutionResults: [],
+                    dependencyConflicts: [],
+                    sourceSets: [],
+                    tasks: [],
+                    javaToolchains: []
+                ]
+
+                allprojects.each { project ->
+                    report.projects << [
+                        path: project.path,
+                        name: project.name,
+                        projectDir: project.projectDir.absolutePath
                     ]
-                    return null
-                }
-                final Closure<String> sbaUnresolvedMessage = { String projectPath, String configurationName, Object requested, Object from, Object failure ->
-                    def pieces = []
-                    if (requested != null) {
-                        pieces << "requested=" + sbaSanitizeValue.call(requested.displayName ?: requested.toString())
+
+                    project.plugins.each { plugin ->
+                        report.plugins << [
+                            projectPath: project.path,
+                            pluginId: plugin.class.name,
+                            implementationClass: plugin.class.name
+                        ]
                     }
-                    if (from != null) {
-                        pieces << "from=" + sbaSanitizeValue.call(from.displayName ?: from.toString())
-                    }
-                    if (failure != null) {
-                        pieces << "failure=" + sbaSanitizeValue.call(failure.message ?: failure.toString())
-                    }
-                    return pieces.isEmpty() ? null : pieces.join(', ')
-                }
-                final Closure<String> sbaFailureDetails = { Object throwable ->
-                    if (throwable == null) {
-                        return null
-                    }
-                    def pieces = []
-                    def current = throwable
-                    int depth = 0
-                    while (current != null && depth < 5) {
-                        def text = sbaSanitizeValue.call(current.message ?: current.toString())
-                        if (text != null && !text.isBlank() && !pieces.contains(text)) {
-                            pieces << text
+
+                    project.repositories.each { repo ->
+                        def url = null
+                        if (repo instanceof MavenArtifactRepository) {
+                            url = repo.url?.toString()
+                        } else if (repo.hasProperty('url')) {
+                            url = repo.url?.toString()
                         }
-                        current = current.cause
-                        depth++
+                        report.repositories << [
+                            projectPath: project.path,
+                            name: repo.name,
+                            type: repo.class.simpleName,
+                            url: sbaSanitizeValue.call(url)
+                        ]
                     }
-                    return pieces.join(' | ')
-                }
 
-                %s
+                    project.configurations.each { configuration ->
+                        report.configurations << [
+                            projectPath: project.path,
+                            name: configuration.name,
+                            resolvable: configuration.canBeResolved,
+                            consumable: configuration.canBeConsumed,
+                            dependencyCount: configuration.allDependencies.size(),
+                            declaredDependencyCount: configuration.dependencies.size(),
+                            allDependencyCount: configuration.allDependencies.size(),
+                            extendsFrom: configuration.extendsFrom.collect { it.name }
+                        ]
 
-                gradle.projectsLoaded {
-                    gradle.rootProject {
-                        tasks.register('springBootAnalyzerModel') {
-                            group = 'verification'
-                            description = 'Writes Spring Boot Analyzer Gradle model JSON.'
-                            doLast {
-                                def resolvedLimit = new java.util.concurrent.atomic.AtomicInteger(maxResolvedDependencies)
-                                def report = [
-                                    gradleVersion: gradle.gradleVersion,
-                                    projects: [],
-                                    plugins: [],
-                                    repositories: [],
-                                    configurations: [],
-                                    declaredDependencies: [],
-                                    resolvedDependencies: [],
-                                    resolutionResults: [],
-                                    dependencyConflicts: [],
-                                    sourceSets: [],
-                                    tasks: [],
-                                    javaToolchains: []
+                        configuration.dependencies.each { dependency ->
+                            report.declaredDependencies << [
+                                projectPath: project.path,
+                                configuration: configuration.name,
+                                notation: dependency.group && dependency.name ? "${dependency.group}:${dependency.name}:${dependency.version ?: ''}".replaceAll(':$','') : dependency.toString(),
+                                group: dependency.group,
+                                artifact: dependency.name,
+                                version: dependency.version
+                            ]
+                        }
+                    }
+
+                    if (project.extensions.findByType(JavaPluginExtension) != null) {
+                        def sourceSets = project.extensions.findByName('sourceSets')
+                        if (sourceSets instanceof SourceSetContainer) {
+                            sourceSets.each { sourceSet ->
+                                report.sourceSets << [
+                                    projectPath: project.path,
+                                    name: sourceSet.name,
+                                    javaDirs: sourceSet.allJava.srcDirs.collect { sbaRelativePath.call(project, it) },
+                                    resourceDirs: sourceSet.resources.srcDirs.collect { sbaRelativePath.call(project, it) }
                                 ]
+                            }
+                        }
+                        def toolchain = project.extensions.getByType(JavaPluginExtension).toolchain
+                        report.javaToolchains << [
+                            projectPath: project.path,
+                            languageVersion: toolchain.languageVersion.present ? toolchain.languageVersion.get().toString() : null,
+                            vendor: toolchain.vendor.present ? toolchain.vendor.get().toString() : null,
+                            implementation: toolchain.implementation.present ? toolchain.implementation.get().toString() : null
+                        ]
+                    }
 
-                                allprojects.each { project ->
-                                    report.projects << [
-                                        path: project.path,
-                                        name: project.name,
-                                        projectDir: project.projectDir.absolutePath
-                                    ]
+                    project.tasks.each { task ->
+                        report.tasks << [
+                            projectPath: project.path,
+                            name: task.name,
+                            group: task.group,
+                            description: task.description
+                        ]
+                    }
 
-                                    project.plugins.each { plugin ->
-                                        report.plugins << [
-                                            projectPath: project.path,
-                                            pluginId: plugin.class.name,
-                                            implementationClass: plugin.class.name
-                                        ]
+                    ['compileClasspath', 'runtimeClasspath', 'testCompileClasspath', 'testRuntimeClasspath', 'annotationProcessor', 'testAnnotationProcessor', 'productionRuntimeClasspath', 'developmentOnly']
+                            .findAll { project.configurations.findByName(it) != null }
+                            .each { configurationName ->
+                                def configuration = project.configurations.getByName(configurationName)
+                                if (!configuration.canBeResolved || resolvedLimit.get() <= 0) {
+                                    return
+                                }
+                                def requestedVersions = [:].withDefault { [] }
+                                def declaredKeys = [] as Set
+                                configuration.allDependencies.each { dep ->
+                                    if (dep.group && dep.name) {
+                                        declaredKeys << sbaGroupArtifactKey.call(dep.group, dep.name)
                                     }
-
-                                    project.repositories.each { repo ->
-                                        def url = null
-                                        if (repo instanceof MavenArtifactRepository) {
-                                            url = repo.url?.toString()
-                                        } else if (repo.hasProperty('url')) {
-                                            url = repo.url?.toString()
+                                    if (dep.group && dep.name && dep.version) {
+                                        requestedVersions["${dep.group}:${dep.name}"] << dep.version
+                                    }
+                                }
+                                def configurationResolvedDependencies = []
+                                boolean fallbackUsed = false
+                                boolean dependencyBearing = sbaHasExternalRequestedDependencies.call(configuration)
+                                def unresolvedMessages = [] as Set
+                                try {
+                                    def resolutionResult = configuration.incoming.resolutionResult
+                                    def directKeys = [] as Set
+                                    def componentTypes = [] as Set
+                                    resolutionResult.root.dependencies.each { dep ->
+                                        if (dep instanceof ResolvedDependencyResult) {
+                                            def selectedId = dep.selected?.id
+                                            componentTypes << selectedId?.class?.name
+                                            def requestedKey = sbaRequestedKeyIfPresent.call(dep.requested)
+                                            def selectedGaKey = sbaGroupArtifactKeyIfPresent.call(selectedId)
+                                            if (sbaIsModuleComponentId.call(selectedId)
+                                                    && ((requestedKey != null && declaredKeys.contains(requestedKey))
+                                                    || (selectedGaKey != null && declaredKeys.contains(selectedGaKey)))) {
+                                                directKeys << sbaModuleKey.call(selectedId.group, selectedId.module, selectedId.version)
+                                            }
+                                        } else if (dep instanceof UnresolvedDependencyResult) {
+                                            unresolvedMessages << sbaUnresolvedMessage.call(
+                                                    project.path,
+                                                    configurationName,
+                                                    dep.requested,
+                                                    dep.from?.id,
+                                                    dep.failure
+                                            )
                                         }
-                                        report.repositories << [
-                                            projectPath: project.path,
-                                            name: repo.name,
-                                            type: repo.class.simpleName,
-                                            url: sbaSanitizeValue.call(url)
-                                        ]
                                     }
-
-                                    project.configurations.each { configuration ->
-                                        report.configurations << [
-                                            projectPath: project.path,
-                                            name: configuration.name,
-                                            resolvable: configuration.canBeResolved,
-                                            consumable: configuration.canBeConsumed,
-                                            dependencyCount: configuration.allDependencies.size(),
-                                            declaredDependencyCount: configuration.dependencies.size(),
-                                            allDependencyCount: configuration.allDependencies.size(),
-                                            extendsFrom: configuration.extendsFrom.collect { it.name }
-                                        ]
-
-                                        configuration.dependencies.each { dependency ->
-                                            report.declaredDependencies << [
+                                    resolutionResult.allDependencies.each { dep ->
+                                        if (dep instanceof ResolvedDependencyResult) {
+                                            def selectedId = dep.selected?.id
+                                            componentTypes << selectedId?.class?.name
+                                            sbaAddResolvedModule.call(
+                                                    project.path,
+                                                    configurationName,
+                                                    selectedId,
+                                                    directKeys.contains(sbaModuleKeyIfPresent.call(selectedId)),
+                                                    sbaSelectionReason.call(dep.selected?.selectionReason),
+                                                    configurationResolvedDependencies,
+                                                    resolvedLimit
+                                            )
+                                        } else if (dep instanceof UnresolvedDependencyResult) {
+                                            unresolvedMessages << sbaUnresolvedMessage.call(
+                                                    project.path,
+                                                    configurationName,
+                                                    dep.requested,
+                                                    dep.from?.id,
+                                                    dep.failure
+                                            )
+                                        }
+                                    }
+                                    def seen = [] as Set
+                                    resolutionResult.allComponents.each { component ->
+                                        def id = component.id
+                                        componentTypes << id?.class?.name
+                                        if (resolvedLimit.get() <= 0) {
+                                            return
+                                        }
+                                        if (sbaIsModuleComponentId.call(id)) {
+                                            def key = sbaModuleKey.call(id.group, id.module, id.version)
+                                            if (seen.add(key)) {
+                                                sbaAddResolvedModule.call(
+                                                        project.path,
+                                                        configurationName,
+                                                        id,
+                                                        directKeys.contains(key),
+                                                        sbaSelectionReason.call(component.selectionReason),
+                                                        configurationResolvedDependencies,
+                                                        resolvedLimit
+                                                )
+                                            }
+                                        }
+                                    }
+                                    if (configurationResolvedDependencies.isEmpty() && dependencyBearing) {
+                                        fallbackUsed = true
+                                        try {
+                                            configuration.resolve()
+                                        } catch (Throwable forceResolveFailure) {
+                                            unresolvedMessages << ("resolve(): " + sbaSanitizeValue.call(forceResolveFailure.message ?: forceResolveFailure.class.name))
+                                        }
+                                        def forcedResult = configuration.incoming.resolutionResult
+                                        forcedResult.allDependencies.each { dep ->
+                                            if (dep instanceof ResolvedDependencyResult) {
+                                                def selectedId = dep.selected?.id
+                                                componentTypes << selectedId?.class?.name
+                                                sbaAddResolvedModule.call(
+                                                        project.path,
+                                                        configurationName,
+                                                        selectedId,
+                                                        directKeys.contains(sbaModuleKey.call(selectedId?.group, selectedId?.module, selectedId?.version)),
+                                                        sbaSelectionReason.call(dep.selected?.selectionReason),
+                                                        configurationResolvedDependencies,
+                                                        resolvedLimit
+                                                )
+                                            } else if (dep instanceof UnresolvedDependencyResult) {
+                                                unresolvedMessages << sbaUnresolvedMessage.call(
+                                                        project.path,
+                                                        configurationName,
+                                                        dep.requested,
+                                                        dep.from?.id,
+                                                        dep.failure
+                                                )
+                                            }
+                                        }
+                                        forcedResult.allComponents.each { component ->
+                                            def forcedId = component.id
+                                            componentTypes << forcedId?.class?.name
+                                            sbaAddResolvedModule.call(
+                                                    project.path,
+                                                    configurationName,
+                                                    forcedId,
+                                                    directKeys.contains(sbaModuleKeyIfPresent.call(forcedId)),
+                                                    sbaSelectionReason.call(component.selectionReason),
+                                                    configurationResolvedDependencies,
+                                                    resolvedLimit
+                                            )
+                                        }
+                                    }
+                                    if (configurationResolvedDependencies.isEmpty() && dependencyBearing) {
+                                        def artifacts = configuration.incoming.artifactView {
+                                            lenient(true)
+                                        }.artifacts
+                                        artifacts.artifacts.each { artifact ->
+                                            def artifactId = artifact.id?.componentIdentifier ?: artifact.variant?.owner
+                                            componentTypes << artifactId?.class?.name
+                                            sbaAddResolvedModule.call(
+                                                    project.path,
+                                                    configurationName,
+                                                    artifactId,
+                                                    false,
+                                                    'artifactView',
+                                                    configurationResolvedDependencies,
+                                                    resolvedLimit
+                                            )
+                                        }
+                                        try {
+                                            artifacts.failures.each { failure ->
+                                            unresolvedMessages << sbaFailureDetails.call(failure)
+                                        }
+                                    } catch (Throwable ignoredArtifactFailure) {
+                                    }
+                                    }
+                                    if (configurationResolvedDependencies.isEmpty() && dependencyBearing) {
+                                        fallbackUsed = true
+                                        try {
+                                            configuration.resolvedConfiguration.lenientConfiguration.allModuleDependencies.each { dep ->
+                                                def lenientKey = sbaModuleKey.call(dep.moduleGroup, dep.moduleName, dep.moduleVersion)
+                                                sbaAddResolvedModule.call(
+                                                        project.path,
+                                                        configurationName,
+                                                        [
+                                                            group: dep.moduleGroup,
+                                                            module: dep.moduleName,
+                                                            version: dep.moduleVersion
+                                                        ],
+                                                        directKeys.contains(lenientKey),
+                                                        'lenientConfiguration',
+                                                        configurationResolvedDependencies,
+                                                        resolvedLimit
+                                                )
+                                            }
+                                        } catch (Throwable fallbackFailure) {
+                                            unresolvedMessages << ("fallback: " + sbaFailureDetails.call(fallbackFailure))
+                                        }
+                                    }
+                                    requestedVersions.each { ga, versions ->
+                                        def unique = versions.findAll { it != null }.unique()
+                                        if (unique.size() > 1) {
+                                            def parts = ga.split(':')
+                                            report.dependencyConflicts << [
                                                 projectPath: project.path,
-                                                configuration: configuration.name,
-                                                notation: dependency.group && dependency.name ? "${dependency.group}:${dependency.name}:${dependency.version ?: ''}".replaceAll(':$','') : dependency.toString(),
-                                                group: dependency.group,
-                                                artifact: dependency.name,
-                                                version: dependency.version
+                                                configuration: configurationName,
+                                                group: parts[0],
+                                                artifact: parts[1],
+                                                requestedVersions: unique.join(', '),
+                                                selectedVersion: null
                                             ]
                                         }
                                     }
-
-                                    if (project.extensions.findByType(JavaPluginExtension) != null) {
-                                        def sourceSets = project.extensions.findByName('sourceSets')
-                                        if (sourceSets instanceof SourceSetContainer) {
-                                            sourceSets.each { sourceSet ->
-                                                report.sourceSets << [
-                                                    projectPath: project.path,
-                                                    name: sourceSet.name,
-                                                    javaDirs: sourceSet.allJava.srcDirs.collect { sbaRelativePath.call(project, it) },
-                                                    resourceDirs: sourceSet.resources.srcDirs.collect { sbaRelativePath.call(project, it) }
-                                                ]
-                                            }
+                                    int resolvedCount = configurationResolvedDependencies.size()
+                                    if (!dependencyBearing) {
+                                        if (resolvedCount > 0) {
+                                            report.resolvedDependencies.addAll(configurationResolvedDependencies)
                                         }
-                                        def toolchain = project.extensions.getByType(JavaPluginExtension).toolchain
-                                        report.javaToolchains << [
+                                        report.resolutionResults << [
                                             projectPath: project.path,
-                                            languageVersion: toolchain.languageVersion.present ? toolchain.languageVersion.get().toString() : null,
-                                            vendor: toolchain.vendor.present ? toolchain.vendor.get().toString() : null,
-                                            implementation: toolchain.implementation.present ? toolchain.implementation.get().toString() : null
+                                            configuration: configurationName,
+                                            attempted: true,
+                                            successful: true,
+                                            fallbackUsed: fallbackUsed,
+                                            errorType: null,
+                                            errorMessage: null,
+                                            resolvedDependencyCount: resolvedCount
+                                        ]
+                                    } else if (resolvedCount > 0) {
+                                        report.resolvedDependencies.addAll(configurationResolvedDependencies)
+                                        report.resolutionResults << [
+                                            projectPath: project.path,
+                                            configuration: configurationName,
+                                            attempted: true,
+                                            successful: true,
+                                            fallbackUsed: fallbackUsed,
+                                            errorType: null,
+                                            errorMessage: null,
+                                            resolvedDependencyCount: resolvedCount
+                                        ]
+                                    } else {
+                                        report.resolutionResults << [
+                                            projectPath: project.path,
+                                            configuration: configurationName,
+                                            attempted: true,
+                                            successful: false,
+                                            fallbackUsed: fallbackUsed,
+                                            errorType: 'DEPENDENCY_RESOLUTION_FAILED',
+                                            errorMessage: unresolvedMessages.findAll { it != null && !it.isBlank() }.join('; ')
+                                                    ?: "No resolved external module components were collected. Component IDs seen: " + componentTypes.findAll { it != null }.unique().take(10).join(', '),
+                                            resolvedDependencyCount: 0
                                         ]
                                     }
-
-                                    project.tasks.each { task ->
-                                        report.tasks << [
-                                            projectPath: project.path,
-                                            name: task.name,
-                                            group: task.group,
-                                            description: task.description
-                                        ]
-                                    }
-
-                                    ['compileClasspath', 'runtimeClasspath', 'testCompileClasspath', 'testRuntimeClasspath', 'annotationProcessor', 'testAnnotationProcessor', 'productionRuntimeClasspath', 'developmentOnly']
-                                            .findAll { project.configurations.findByName(it) != null }
-                                            .each { configurationName ->
-                                                def configuration = project.configurations.getByName(configurationName)
-                                                if (!configuration.canBeResolved || resolvedLimit.get() <= 0) {
-                                                    return
-                                                }
-                                                def requestedVersions = [:].withDefault { [] }
-                                                def declaredKeys = [] as Set
-                                                configuration.allDependencies.each { dep ->
-                                                    if (dep.group && dep.name) {
-                                                        declaredKeys << sbaGroupArtifactKey.call(dep.group, dep.name)
-                                                    }
-                                                    if (dep.group && dep.name && dep.version) {
-                                                        requestedVersions["${dep.group}:${dep.name}"] << dep.version
-                                                    }
-                                                }
-                                                def configurationResolvedDependencies = []
-                                                boolean fallbackUsed = false
-                                                boolean dependencyBearing = sbaHasExternalRequestedDependencies.call(configuration)
-                                                def unresolvedMessages = [] as Set
-                                                try {
-                                                    def resolutionResult = configuration.incoming.resolutionResult
-                                                    def directKeys = [] as Set
-                                                    def componentTypes = [] as Set
-                                                    resolutionResult.root.dependencies.each { dep ->
-                                                        if (dep instanceof ResolvedDependencyResult) {
-                                                            def selectedId = dep.selected?.id
-                                                            componentTypes << selectedId?.class?.name
-                                                            def requestedKey = sbaRequestedKeyIfPresent.call(dep.requested)
-                                                            def selectedGaKey = sbaGroupArtifactKeyIfPresent.call(selectedId)
-                                                            if (sbaIsModuleComponentId.call(selectedId)
-                                                                    && ((requestedKey != null && declaredKeys.contains(requestedKey))
-                                                                    || (selectedGaKey != null && declaredKeys.contains(selectedGaKey)))) {
-                                                                directKeys << sbaModuleKey.call(selectedId.group, selectedId.module, selectedId.version)
-                                                            }
-                                                        } else if (dep instanceof UnresolvedDependencyResult) {
-                                                            unresolvedMessages << sbaUnresolvedMessage.call(
-                                                                    project.path,
-                                                                    configurationName,
-                                                                    dep.requested,
-                                                                    dep.from?.id,
-                                                                    dep.failure
-                                                            )
-                                                        }
-                                                    }
-                                                    resolutionResult.allDependencies.each { dep ->
-                                                        if (dep instanceof ResolvedDependencyResult) {
-                                                            def selectedId = dep.selected?.id
-                                                            componentTypes << selectedId?.class?.name
-                                                            sbaAddResolvedModule.call(
-                                                                    project.path,
-                                                                    configurationName,
-                                                                    selectedId,
-                                                                    directKeys.contains(sbaModuleKeyIfPresent.call(selectedId)),
-                                                                    sbaSelectionReason.call(dep.selected?.selectionReason),
-                                                                    configurationResolvedDependencies,
-                                                                    resolvedLimit
-                                                            )
-                                                        } else if (dep instanceof UnresolvedDependencyResult) {
-                                                            unresolvedMessages << sbaUnresolvedMessage.call(
-                                                                    project.path,
-                                                                    configurationName,
-                                                                    dep.requested,
-                                                                    dep.from?.id,
-                                                                    dep.failure
-                                                            )
-                                                        }
-                                                    }
-                                                    def seen = [] as Set
-                                                    resolutionResult.allComponents.each { component ->
-                                                        def id = component.id
-                                                        componentTypes << id?.class?.name
-                                                        if (resolvedLimit.get() <= 0) {
-                                                            return
-                                                        }
-                                                        if (sbaIsModuleComponentId.call(id)) {
-                                                            def key = sbaModuleKey.call(id.group, id.module, id.version)
-                                                            if (seen.add(key)) {
-                                                                sbaAddResolvedModule.call(
-                                                                        project.path,
-                                                                        configurationName,
-                                                                        id,
-                                                                        directKeys.contains(key),
-                                                                        sbaSelectionReason.call(component.selectionReason),
-                                                                        configurationResolvedDependencies,
-                                                                        resolvedLimit
-                                                                )
-                                                            }
-                                                        }
-                                                    }
-                                                    if (configurationResolvedDependencies.isEmpty() && dependencyBearing) {
-                                                        fallbackUsed = true
-                                                        try {
-                                                            configuration.resolve()
-                                                        } catch (Throwable forceResolveFailure) {
-                                                            unresolvedMessages << ("resolve(): " + sbaSanitizeValue.call(forceResolveFailure.message ?: forceResolveFailure.class.name))
-                                                        }
-                                                        def forcedResult = configuration.incoming.resolutionResult
-                                                        forcedResult.allDependencies.each { dep ->
-                                                            if (dep instanceof ResolvedDependencyResult) {
-                                                                def selectedId = dep.selected?.id
-                                                                componentTypes << selectedId?.class?.name
-                                                                sbaAddResolvedModule.call(
-                                                                        project.path,
-                                                                        configurationName,
-                                                                        selectedId,
-                                                                        directKeys.contains(sbaModuleKey.call(selectedId?.group, selectedId?.module, selectedId?.version)),
-                                                                        sbaSelectionReason.call(dep.selected?.selectionReason),
-                                                                        configurationResolvedDependencies,
-                                                                        resolvedLimit
-                                                                )
-                                                            } else if (dep instanceof UnresolvedDependencyResult) {
-                                                                unresolvedMessages << sbaUnresolvedMessage.call(
-                                                                        project.path,
-                                                                        configurationName,
-                                                                        dep.requested,
-                                                                        dep.from?.id,
-                                                                        dep.failure
-                                                                )
-                                                            }
-                                                        }
-                                                        forcedResult.allComponents.each { component ->
-                                                            def forcedId = component.id
-                                                            componentTypes << forcedId?.class?.name
-                                                            sbaAddResolvedModule.call(
-                                                                    project.path,
-                                                                    configurationName,
-                                                                    forcedId,
-                                                                    directKeys.contains(sbaModuleKeyIfPresent.call(forcedId)),
-                                                                    sbaSelectionReason.call(component.selectionReason),
-                                                                    configurationResolvedDependencies,
-                                                                    resolvedLimit
-                                                            )
-                                                        }
-                                                    }
-                                                    if (configurationResolvedDependencies.isEmpty() && dependencyBearing) {
-                                                        def artifacts = configuration.incoming.artifactView {
-                                                            lenient(true)
-                                                        }.artifacts
-                                                        artifacts.artifacts.each { artifact ->
-                                                            def artifactId = artifact.id?.componentIdentifier ?: artifact.variant?.owner
-                                                            componentTypes << artifactId?.class?.name
-                                                            sbaAddResolvedModule.call(
-                                                                    project.path,
-                                                                    configurationName,
-                                                                    artifactId,
-                                                                    false,
-                                                                    'artifactView',
-                                                                    configurationResolvedDependencies,
-                                                                    resolvedLimit
-                                                            )
-                                                        }
-                                                        try {
-                                                            artifacts.failures.each { failure ->
-                                                            unresolvedMessages << sbaFailureDetails.call(failure)
-                                                        }
-                                                    } catch (Throwable ignoredArtifactFailure) {
-                                                    }
-                                                    }
-                                                    if (configurationResolvedDependencies.isEmpty() && dependencyBearing) {
-                                                        fallbackUsed = true
-                                                        try {
-                                                            configuration.resolvedConfiguration.lenientConfiguration.allModuleDependencies.each { dep ->
-                                                                def lenientKey = sbaModuleKey.call(dep.moduleGroup, dep.moduleName, dep.moduleVersion)
-                                                                sbaAddResolvedModule.call(
-                                                                        project.path,
-                                                                        configurationName,
-                                                                        [
-                                                                            group: dep.moduleGroup,
-                                                                            module: dep.moduleName,
-                                                                            version: dep.moduleVersion
-                                                                        ],
-                                                                        directKeys.contains(lenientKey),
-                                                                        'lenientConfiguration',
-                                                                        configurationResolvedDependencies,
-                                                                        resolvedLimit
-                                                                )
-                                                            }
-                                                        } catch (Throwable fallbackFailure) {
-                                                            unresolvedMessages << ("fallback: " + sbaFailureDetails.call(fallbackFailure))
-                                                        }
-                                                    }
-                                                    requestedVersions.each { ga, versions ->
-                                                        def unique = versions.findAll { it != null }.unique()
-                                                        if (unique.size() > 1) {
-                                                            def parts = ga.split(':')
-                                                            report.dependencyConflicts << [
-                                                                projectPath: project.path,
-                                                                configuration: configurationName,
-                                                                group: parts[0],
-                                                                artifact: parts[1],
-                                                                requestedVersions: unique.join(', '),
-                                                                selectedVersion: null
-                                                            ]
-                                                        }
-                                                    }
-                                                    int resolvedCount = configurationResolvedDependencies.size()
-                                                    if (!dependencyBearing) {
-                                                        if (resolvedCount > 0) {
-                                                            report.resolvedDependencies.addAll(configurationResolvedDependencies)
-                                                        }
-                                                        report.resolutionResults << [
-                                                            projectPath: project.path,
-                                                            configuration: configurationName,
-                                                            attempted: true,
-                                                            successful: true,
-                                                            fallbackUsed: fallbackUsed,
-                                                            errorType: null,
-                                                            errorMessage: null,
-                                                            resolvedDependencyCount: resolvedCount
-                                                        ]
-                                                    } else if (resolvedCount > 0) {
-                                                        report.resolvedDependencies.addAll(configurationResolvedDependencies)
-                                                        report.resolutionResults << [
-                                                            projectPath: project.path,
-                                                            configuration: configurationName,
-                                                            attempted: true,
-                                                            successful: true,
-                                                            fallbackUsed: fallbackUsed,
-                                                            errorType: null,
-                                                            errorMessage: null,
-                                                            resolvedDependencyCount: resolvedCount
-                                                        ]
-                                                    } else {
-                                                        report.resolutionResults << [
-                                                            projectPath: project.path,
-                                                            configuration: configurationName,
-                                                            attempted: true,
-                                                            successful: false,
-                                                            fallbackUsed: fallbackUsed,
-                                                            errorType: 'DEPENDENCY_RESOLUTION_FAILED',
-                                                            errorMessage: unresolvedMessages.findAll { it != null && !it.isBlank() }.join('; ')
-                                                                    ?: "No resolved external module components were collected. Component IDs seen: " + componentTypes.findAll { it != null }.unique().take(10).join(', '),
-                                                            resolvedDependencyCount: 0
-                                                        ]
-                                                    }
-                                                } catch (Throwable primaryEx) {
-                                                    report.resolutionResults << [
-                                                        projectPath: project.path,
-                                                        configuration: configurationName,
-                                                        attempted: true,
-                                                        successful: false,
-                                                        fallbackUsed: fallbackUsed,
-                                                        errorType: primaryEx.class.name,
-                                                        errorMessage: sbaFailureDetails.call(primaryEx),
-                                                        resolvedDependencyCount: 0
-                                                    ]
-                                                }
-                                            }
+                                } catch (Throwable primaryEx) {
+                                    report.resolutionResults << [
+                                        projectPath: project.path,
+                                        configuration: configurationName,
+                                        attempted: true,
+                                        successful: false,
+                                        fallbackUsed: fallbackUsed,
+                                        errorType: primaryEx.class.name,
+                                        errorMessage: sbaFailureDetails.call(primaryEx),
+                                        resolvedDependencyCount: 0
+                                    ]
                                 }
-
-                                new File(reportFilePath).text = JsonOutput.prettyPrint(JsonOutput.toJson(report))
                             }
-                        }
-                    }
                 }
-                """.formatted(pluginRepositoriesBlock);
+
+                new File(reportFilePath).text = JsonOutput.prettyPrint(JsonOutput.toJson(report))
+            }
+        }
+    }
+}
+"""
+                .formatted(pluginRepositoriesBlock);
     }
 
     static void validateInitScript(String script) throws InvalidGradleInitScriptException {
         for (Pattern pattern : UNSAFE_WINDOWS_URI_PATTERNS) {
             if (pattern.matcher(script).find()) {
                 throw new InvalidGradleInitScriptException(
-                        "Generated Gradle init script contains an unsafe Windows path. This is an analyzer bug."
-                );
+                        "Generated Gradle init script contains an unsafe Windows path. This is an"
+                                + " analyzer bug.");
             }
         }
     }
@@ -826,8 +849,7 @@ public final class GradleExecutionSupport {
     private static String pluginRepositoriesBlock(
             AnalyzerProperties.GradleProperties properties,
             Path localPluginRepository,
-            GradleScriptValueRenderer renderer
-    ) {
+            GradleScriptValueRenderer renderer) {
         if (!properties.injectPluginRepositories()) {
             return "";
         }
@@ -838,11 +860,13 @@ public final class GradleExecutionSupport {
         if (localPluginRepository != null) {
             builder.append("            maven {\n");
             builder.append("                name = ")
-                    .append(renderer.groovyStringLiteral(
-                            properties.pluginResolutionBridge() == null
-                                    ? "Spring Boot Analyzer plugin cache"
-                                    : properties.pluginResolutionBridge().localRepositoryName()
-                    ))
+                    .append(
+                            renderer.groovyStringLiteral(
+                                    properties.pluginResolutionBridge() == null
+                                            ? "Spring Boot Analyzer plugin cache"
+                                            : properties
+                                                    .pluginResolutionBridge()
+                                                    .localRepositoryName()))
                     .append("\n");
             builder.append("                url = uri(")
                     .append(renderer.groovyFileUriLiteral(localPluginRepository))
@@ -866,11 +890,13 @@ public final class GradleExecutionSupport {
             builder.append("    repositories {\n");
             builder.append("        maven {\n");
             builder.append("            name = ")
-                    .append(renderer.groovyStringLiteral(
-                            properties.pluginResolutionBridge() == null
-                                    ? "Spring Boot Analyzer plugin cache"
-                                    : properties.pluginResolutionBridge().localRepositoryName()
-                    ))
+                    .append(
+                            renderer.groovyStringLiteral(
+                                    properties.pluginResolutionBridge() == null
+                                            ? "Spring Boot Analyzer plugin cache"
+                                            : properties
+                                                    .pluginResolutionBridge()
+                                                    .localRepositoryName()))
                     .append("\n");
             builder.append("            url = uri(")
                     .append(renderer.groovyFileUriLiteral(localPluginRepository))
@@ -894,13 +920,17 @@ public final class GradleExecutionSupport {
         return builder.toString();
     }
 
-    private static void writeIsolatedGradleProperties(Path gradleUserHome, AnalyzerProperties.GradleProperties properties) throws IOException {
+    private static void writeIsolatedGradleProperties(
+            Path gradleUserHome, AnalyzerProperties.GradleProperties properties)
+            throws IOException {
         Properties fileProperties = new Properties();
         if (properties.copyHostGradleProxyProperties()) {
             Map<String, String> hostProxyProperties = hostGradleProxyProperties();
             fileProperties.putAll(hostProxyProperties);
             if (!hostProxyProperties.isEmpty()) {
-                LOGGER.info("Copied host Gradle proxy settings into isolated Gradle user home: {}", redact(hostProxyProperties.toString()));
+                LOGGER.info(
+                        "Copied host Gradle proxy settings into isolated Gradle user home: {}",
+                        redact(hostProxyProperties.toString()));
             }
         }
         AnalyzerProperties.ProxyProperties proxy = properties.proxy();
@@ -934,10 +964,5 @@ public final class GradleExecutionSupport {
     }
 
     public record ExecutionFiles(
-            Path tempDir,
-            Path reportFile,
-            Path initScript,
-            Path gradleUserHome
-    ) {
-    }
+            Path tempDir, Path reportFile, Path initScript, Path gradleUserHome) {}
 }

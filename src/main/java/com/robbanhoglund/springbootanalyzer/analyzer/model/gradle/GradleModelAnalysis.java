@@ -31,9 +31,9 @@ public record GradleModelAnalysis(
         List<GradleSourceSetModel> sourceSets,
         List<GradleTaskModel> tasks,
         List<GradleJavaToolchainModel> javaToolchains,
-        List<Finding> findings
-) {
-    public static GradleModelAnalysis empty(GradleAnalysisStatus status, String executionMode, List<Finding> findings) {
+        List<Finding> findings) {
+    public static GradleModelAnalysis empty(
+            GradleAnalysisStatus status, String executionMode, List<Finding> findings) {
         return empty(status, executionMode, null, null, null, null, findings);
     }
 
@@ -44,8 +44,7 @@ public record GradleModelAnalysis(
             String javaVersion,
             String errorType,
             String errorMessage,
-            List<Finding> findings
-    ) {
+            List<Finding> findings) {
         return new GradleModelAnalysis(
                 status,
                 gradleVersion,
@@ -74,7 +73,6 @@ public record GradleModelAnalysis(
                 List.of(),
                 List.of(),
                 List.of(),
-                List.copyOf(findings)
-        );
+                List.copyOf(findings));
     }
 }

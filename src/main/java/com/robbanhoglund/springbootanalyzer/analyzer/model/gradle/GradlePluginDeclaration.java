@@ -6,6 +6,4 @@ public record GradlePluginDeclaration(
         String sourceFile,
         Integer line,
         GradlePluginDeclarationSource source,
-        boolean applyFalse
-) {
-}
+        boolean applyFalse) {}

@@ -17,24 +17,25 @@ import org.junit.jupiter.api.io.TempDir;
 class ConfigurationAnalyzerTest {
 
     private final PropertyNameNormalizer propertyNameNormalizer = new PropertyNameNormalizer();
-    private final ConfigurationAnalyzer analyzer = new ConfigurationAnalyzer(
-            new ConfigurationFileScanner(),
-            new PropertiesFileParser(),
-            new YamlConfigurationParser(),
-            new SpringConfigurationMetadataCatalog(),
-            new ConfigurationPropertiesClassAnalyzer(propertyNameNormalizer),
-            new PropertyReferenceAnalyzer(propertyNameNormalizer),
-            new SensitivePropertyValueRedactor(),
-            propertyNameNormalizer
-    );
+    private final ConfigurationAnalyzer analyzer =
+            new ConfigurationAnalyzer(
+                    new ConfigurationFileScanner(),
+                    new PropertiesFileParser(),
+                    new YamlConfigurationParser(),
+                    new SpringConfigurationMetadataCatalog(),
+                    new ConfigurationPropertiesClassAnalyzer(propertyNameNormalizer),
+                    new PropertyReferenceAnalyzer(propertyNameNormalizer),
+                    new SensitivePropertyValueRedactor(),
+                    propertyNameNormalizer);
 
-    @TempDir
-    Path tempDir;
+    @TempDir Path tempDir;
 
     @Test
     void analyzesConfigurationFilesMetadataCustomPropertiesAndReferences() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources/META-INF"));
-        Files.writeString(tempDir.resolve("src/main/resources/application.properties"), """
+        Files.writeString(
+                tempDir.resolve("src/main/resources/application.properties"),
+                """
                 server.port=8080
                 trading.enabled=true
                 trading.api-key=secret-value
@@ -42,14 +43,18 @@ class ConfigurationAnalyzerTest {
                 mystery.value=surprise
                 spring.mail.properties.mail.smtp.auth=true
                 """);
-        Files.writeString(tempDir.resolve("src/main/resources/application-prod.properties"), """
+        Files.writeString(
+                tempDir.resolve("src/main/resources/application-prod.properties"),
+                """
                 spring.jpa.hibernate.ddl-auto=update
                 management.endpoints.web.exposure.include=*
                 management.endpoint.health.show-details=always
                 springdoc.api-docs.enabled=true
                 trading.api-key=${TRADING_API_KEY}
                 """);
-        Files.writeString(tempDir.resolve("src/main/resources/application-dev.yml"), """
+        Files.writeString(
+                tempDir.resolve("src/main/resources/application-dev.yml"),
+                """
                 management:
                   endpoints:
                     web:
@@ -60,7 +65,10 @@ class ConfigurationAnalyzerTest {
                 trading:
                   risk-per-trade: 2
                 """);
-        Files.writeString(tempDir.resolve("src/main/resources/META-INF/additional-spring-configuration-metadata.json"), """
+        Files.writeString(
+                tempDir.resolve(
+                        "src/main/resources/META-INF/additional-spring-configuration-metadata.json"),
+                """
                 {
                   "properties": [
                     {
@@ -76,8 +84,11 @@ class ConfigurationAnalyzerTest {
                 }
                 """);
 
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("TradingProperties.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("TradingProperties.java"),
+                """
                 package com.example.demo;
 
                 import jakarta.validation.constraints.NotNull;
@@ -99,114 +110,136 @@ class ConfigurationAnalyzerTest {
                     }
                 }
                 """);
-        Files.writeString(sourceRoot.resolve("TradingService.java"), """
-                package com.example.demo;
+        Files.writeString(
+                sourceRoot.resolve("TradingService.java"),
+                """
+package com.example.demo;
 
-                import org.springframework.beans.factory.annotation.Value;
-                import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-                import org.springframework.scheduling.annotation.Scheduled;
-                import org.springframework.core.env.Environment;
-                import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.core.env.Environment;
+import org.springframework.stereotype.Component;
 
-                @Component
-                @ConditionalOnProperty(prefix = "trading", name = "enabled", havingValue = "true", matchIfMissing = true)
-                public class TradingService {
+@Component
+@ConditionalOnProperty(prefix = "trading", name = "enabled", havingValue = "true", matchIfMissing = true)
+public class TradingService {
 
-                    @Value("${trading.enabled:false}")
-                    private boolean enabled;
+    @Value("${trading.enabled:false}")
+    private boolean enabled;
 
-                    @Scheduled(fixedDelayString = "${trading.jobs.strategy.fixed-delay:PT5M}")
-                    void runJob() {
-                    }
+    @Scheduled(fixedDelayString = "${trading.jobs.strategy.fixed-delay:PT5M}")
+    void runJob() {
+    }
 
-                    public boolean isEnabled(Environment environment) {
-                        return environment.getProperty("trading.enabled", "false").equals("true")
-                                && environment.containsProperty("trading.missing")
-                                && environment.getRequiredProperty("trading.api-key") != null;
-                    }
-                }
-                """);
+    public boolean isEnabled(Environment environment) {
+        return environment.getProperty("trading.enabled", "false").equals("true")
+                && environment.containsProperty("trading.missing")
+                && environment.getRequiredProperty("trading.api-key") != null;
+    }
+}
+""");
 
-        var result = analyzer.analyze(
-                tempDir,
-                new BuildInfo(
-                        BuildTool.GRADLE,
-                        true,
-                        "25",
-                        java.util.List.of(
-                                "org.springframework.boot:spring-boot-starter-mail",
-                                "org.springframework.boot:spring-boot-starter-data-jpa",
-                                "org.springdoc:springdoc-openapi-starter-webmvc-ui:2.3.0"
-                        ),
-                        "3.5.13",
-                        "build.gradle plugin",
-                        "HIGH"
-                )
-        );
+        var result =
+                analyzer.analyze(
+                        tempDir,
+                        new BuildInfo(
+                                BuildTool.GRADLE,
+                                true,
+                                "25",
+                                java.util.List.of(
+                                        "org.springframework.boot:spring-boot-starter-mail",
+                                        "org.springframework.boot:spring-boot-starter-data-jpa",
+                                        "org.springdoc:springdoc-openapi-starter-webmvc-ui:2.3.0"),
+                                "3.5.13",
+                                "build.gradle plugin",
+                                "HIGH"));
         var analysis = result.configurationAnalysis();
 
-        assertThat(analysis.files()).extracting(file -> file.path())
-                .contains("src/main/resources/application.properties", "src/main/resources/application-dev.yml");
+        assertThat(analysis.files())
+                .extracting(file -> file.path())
+                .contains(
+                        "src/main/resources/application.properties",
+                        "src/main/resources/application-dev.yml");
         assertThat(analysis.files()).extracting(file -> file.profile()).contains("default", "dev");
 
-        assertThat(analysis.properties()).extracting(property -> property.name())
+        assertThat(analysis.properties())
+                .extracting(property -> property.name())
                 .contains(
                         "server.port",
                         "management.endpoints.web.exposure.include[0]",
                         "trading.enabled",
                         "trading.risk-per-trade",
                         "trading.notifications.events.order-fills",
-                        "trading.notifications.events.stop-loss"
-                );
+                        "trading.notifications.events.stop-loss");
 
-        var serverPort = analysis.properties().stream()
-                .filter(property -> property.name().equals("server.port"))
-                .findFirst()
-                .orElseThrow();
+        var serverPort =
+                analysis.properties().stream()
+                        .filter(property -> property.name().equals("server.port"))
+                        .findFirst()
+                        .orElseThrow();
         assertThat(serverPort.documentation().known()).isTrue();
         assertThat(serverPort.kind()).isEqualTo(PropertyKind.SPRING_BOOT);
 
-        var customProperty = analysis.properties().stream()
-                .filter(property -> property.name().equals("trading.enabled"))
-                .findFirst()
-                .orElseThrow();
+        var customProperty =
+                analysis.properties().stream()
+                        .filter(property -> property.name().equals("trading.enabled"))
+                        .findFirst()
+                        .orElseThrow();
         assertThat(customProperty.kind()).isEqualTo(PropertyKind.CUSTOM_CONFIGURATION_PROPERTIES);
-        assertThat(customProperty.references()).extracting(reference -> reference.referenceType())
+        assertThat(customProperty.references())
+                .extracting(reference -> reference.referenceType())
                 .contains("@Value", "Environment#getProperty", "@ConditionalOnProperty");
         assertThat(customProperty.references())
-                .anyMatch(reference -> "true".equals(reference.expectedValue()) && Boolean.TRUE.equals(reference.matchIfMissing()));
+                .anyMatch(
+                        reference ->
+                                "true".equals(reference.expectedValue())
+                                        && Boolean.TRUE.equals(reference.matchIfMissing()));
 
-        var sensitiveProperty = analysis.properties().stream()
-                .filter(property -> property.name().equals("trading.api-key"))
-                .findFirst()
-                .orElseThrow();
+        var sensitiveProperty =
+                analysis.properties().stream()
+                        .filter(property -> property.name().equals("trading.api-key"))
+                        .findFirst()
+                        .orElseThrow();
         assertThat(sensitiveProperty.valueRedacted()).isTrue();
         assertThat(sensitiveProperty.value()).isEqualTo("[redacted]");
 
-        var mailMapProperty = analysis.properties().stream()
-                .filter(property -> property.name().equals("spring.mail.properties.mail.smtp.auth"))
-                .findFirst()
-                .orElseThrow();
+        var mailMapProperty =
+                analysis.properties().stream()
+                        .filter(
+                                property ->
+                                        property.name()
+                                                .equals("spring.mail.properties.mail.smtp.auth"))
+                        .findFirst()
+                        .orElseThrow();
         assertThat(mailMapProperty.kind()).isEqualTo(PropertyKind.SPRING_BOOT_MAP_PROPERTY);
         assertThat(mailMapProperty.documentation().sourceType()).contains("MailProperties");
 
-        var springdocProperty = analysis.properties().stream()
-                .filter(property -> property.name().equals("springdoc.api-docs.enabled"))
-                .findFirst()
-                .orElseThrow();
+        var springdocProperty =
+                analysis.properties().stream()
+                        .filter(property -> property.name().equals("springdoc.api-docs.enabled"))
+                        .findFirst()
+                        .orElseThrow();
         assertThat(springdocProperty.kind()).isEqualTo(PropertyKind.THIRD_PARTY);
 
-        assertThat(analysis.codeReferences()).extracting(reference -> reference.propertyName())
-                .contains("trading.enabled", "trading.missing", "trading.api-key", "trading.jobs.strategy.fixed-delay");
+        assertThat(analysis.codeReferences())
+                .extracting(reference -> reference.propertyName())
+                .contains(
+                        "trading.enabled",
+                        "trading.missing",
+                        "trading.api-key",
+                        "trading.jobs.strategy.fixed-delay");
         assertThat(analysis.codeReferences())
                 .anyMatch(reference -> "@Scheduled".equals(reference.referenceType()));
 
         assertThat(analysis.summary().configuredPropertyCount()).isGreaterThanOrEqualTo(5);
         assertThat(analysis.summary().profiles()).contains("default", "dev", "prod");
 
-        assertThat(result.findings()).extracting(finding -> finding.severity())
+        assertThat(result.findings())
+                .extracting(finding -> finding.severity())
                 .contains(FindingSeverity.WARNING, FindingSeverity.INFO);
-        assertThat(result.findings()).extracting(finding -> finding.message())
+        assertThat(result.findings())
+                .extracting(finding -> finding.message())
                 .anyMatch(message -> message.contains("could not be matched"))
                 .anyMatch(message -> message.contains("trading.missing"))
                 .anyMatch(message -> message.contains("Deprecated configuration property"))
@@ -220,7 +253,9 @@ class ConfigurationAnalyzerTest {
     @Test
     void distinguishesCredentialTokensFromTokenLimitsAndFlagsLiteralFallbacks() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Files.writeString(tempDir.resolve("src/main/resources/application.properties"), """
+        Files.writeString(
+                tempDir.resolve("src/main/resources/application.properties"),
+                """
                 summary.ai.max-output-tokens=900
                 openai.max-output-tokens=1200
                 token-limit=1000
@@ -233,35 +268,55 @@ class ConfigurationAnalyzerTest {
         var result = analyzer.analyze(tempDir, emptyBuildInfo());
         var analysis = result.configurationAnalysis();
 
-        assertThat(analysis.properties()).anyMatch(property ->
-                "summary.ai.max-output-tokens".equals(property.name()) && !property.valueRedacted()
-        );
-        assertThat(analysis.properties()).anyMatch(property ->
-                "openai.max-output-tokens".equals(property.name()) && !property.valueRedacted()
-        );
-        assertThat(analysis.properties()).anyMatch(property ->
-                "token-limit".equals(property.name()) && !property.valueRedacted()
-        );
-        assertThat(analysis.properties()).anyMatch(property ->
-                "openai.api-key".equals(property.name()) && property.valueRedacted()
-        );
-        assertThat(analysis.properties()).anyMatch(property ->
-                "openai.safe-api-key".equals(property.name()) && property.placeholderValue()
-        );
+        assertThat(analysis.properties())
+                .anyMatch(
+                        property ->
+                                "summary.ai.max-output-tokens".equals(property.name())
+                                        && !property.valueRedacted());
+        assertThat(analysis.properties())
+                .anyMatch(
+                        property ->
+                                "openai.max-output-tokens".equals(property.name())
+                                        && !property.valueRedacted());
+        assertThat(analysis.properties())
+                .anyMatch(
+                        property ->
+                                "token-limit".equals(property.name()) && !property.valueRedacted());
+        assertThat(analysis.properties())
+                .anyMatch(
+                        property ->
+                                "openai.api-key".equals(property.name())
+                                        && property.valueRedacted());
+        assertThat(analysis.properties())
+                .anyMatch(
+                        property ->
+                                "openai.safe-api-key".equals(property.name())
+                                        && property.placeholderValue());
 
-        assertThat(result.findings()).filteredOn(finding -> "SPRING_SECRET_LITERAL".equals(finding.ruleId()))
+        assertThat(result.findings())
+                .filteredOn(finding -> "SPRING_SECRET_LITERAL".equals(finding.ruleId()))
                 .extracting(finding -> finding.target())
                 .contains("openai.api-key", "openai.fallback-api-key")
-                .doesNotContain("summary.ai.max-output-tokens", "openai.max-output-tokens", "openai.safe-api-key", "token-limit");
-        assertThat(result.findings()).filteredOn(finding -> "SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT".equals(finding.ruleId()))
+                .doesNotContain(
+                        "summary.ai.max-output-tokens",
+                        "openai.max-output-tokens",
+                        "openai.safe-api-key",
+                        "token-limit");
+        assertThat(result.findings())
+                .filteredOn(
+                        finding ->
+                                "SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT".equals(finding.ruleId()))
                 .extracting(finding -> finding.target())
                 .contains("spring.datasource.password");
     }
 
     @Test
-    void recognizesWildcardSpringBootPropertiesAndIgnoresJvmSystemPropertyReferences() throws IOException {
+    void recognizesWildcardSpringBootPropertiesAndIgnoresJvmSystemPropertyReferences()
+            throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Files.writeString(tempDir.resolve("src/main/resources/application.properties"), """
+        Files.writeString(
+                tempDir.resolve("src/main/resources/application.properties"),
+                """
                 logging.level.xfeeder=INFO
                 logging.level.org.springframework.web.client=WARN
                 management.endpoint.health.show-details=always
@@ -270,8 +325,11 @@ class ConfigurationAnalyzerTest {
                 spring.datasource.hikari.maximum-pool-size=10
                 custom.unknown.property=value
                 """);
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("ConfigReferences.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ConfigReferences.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.beans.factory.annotation.Value;
@@ -296,56 +354,86 @@ class ConfigurationAnalyzerTest {
         var result = analyzer.analyze(tempDir, emptyBuildInfo());
         var analysis = result.configurationAnalysis();
 
-        assertThat(analysis.properties()).anyMatch(property ->
-                "logging.level.xfeeder".equals(property.name()) && property.kind() == PropertyKind.SPRING_BOOT_MAP_PROPERTY
-        );
-        assertThat(analysis.properties()).anyMatch(property ->
-                "logging.level.org.springframework.web.client".equals(property.name()) && property.kind() == PropertyKind.SPRING_BOOT_MAP_PROPERTY
-        );
-        assertThat(analysis.properties()).anyMatch(property ->
-                "management.endpoint.health.show-details".equals(property.name()) && property.kind() == PropertyKind.SPRING_BOOT
-        );
-        assertThat(analysis.properties()).anyMatch(property ->
-                "management.endpoints.web.exposure.include".equals(property.name()) && property.kind() == PropertyKind.SPRING_BOOT
-        );
-        assertThat(analysis.properties()).anyMatch(property ->
-                "spring.mail.properties.mail.smtp.auth".equals(property.name()) && property.kind() == PropertyKind.SPRING_BOOT_MAP_PROPERTY
-        );
-        assertThat(analysis.properties()).anyMatch(property ->
-                "spring.datasource.hikari.maximum-pool-size".equals(property.name()) && property.kind() == PropertyKind.SPRING_BOOT
-        );
-        assertThat(analysis.properties()).anyMatch(property ->
-                "custom.unknown.property".equals(property.name()) && property.kind() == PropertyKind.UNKNOWN
-        );
-        assertThat(analysis.properties()).noneMatch(property ->
-                "java.version".equals(property.name())
-                        || "java.vm.name".equals(property.name())
-                        || "java.runtime.version".equals(property.name())
-        );
+        assertThat(analysis.properties())
+                .anyMatch(
+                        property ->
+                                "logging.level.xfeeder".equals(property.name())
+                                        && property.kind()
+                                                == PropertyKind.SPRING_BOOT_MAP_PROPERTY);
+        assertThat(analysis.properties())
+                .anyMatch(
+                        property ->
+                                "logging.level.org.springframework.web.client"
+                                                .equals(property.name())
+                                        && property.kind()
+                                                == PropertyKind.SPRING_BOOT_MAP_PROPERTY);
+        assertThat(analysis.properties())
+                .anyMatch(
+                        property ->
+                                "management.endpoint.health.show-details".equals(property.name())
+                                        && property.kind() == PropertyKind.SPRING_BOOT);
+        assertThat(analysis.properties())
+                .anyMatch(
+                        property ->
+                                "management.endpoints.web.exposure.include".equals(property.name())
+                                        && property.kind() == PropertyKind.SPRING_BOOT);
+        assertThat(analysis.properties())
+                .anyMatch(
+                        property ->
+                                "spring.mail.properties.mail.smtp.auth".equals(property.name())
+                                        && property.kind()
+                                                == PropertyKind.SPRING_BOOT_MAP_PROPERTY);
+        assertThat(analysis.properties())
+                .anyMatch(
+                        property ->
+                                "spring.datasource.hikari.maximum-pool-size".equals(property.name())
+                                        && property.kind() == PropertyKind.SPRING_BOOT);
+        assertThat(analysis.properties())
+                .anyMatch(
+                        property ->
+                                "custom.unknown.property".equals(property.name())
+                                        && property.kind() == PropertyKind.UNKNOWN);
+        assertThat(analysis.properties())
+                .noneMatch(
+                        property ->
+                                "java.version".equals(property.name())
+                                        || "java.vm.name".equals(property.name())
+                                        || "java.runtime.version".equals(property.name()));
 
-        assertThat(result.findings()).extracting(finding -> finding.message())
+        assertThat(result.findings())
+                .extracting(finding -> finding.message())
                 .noneMatch(message -> message != null && message.contains("java.version"))
                 .noneMatch(message -> message != null && message.contains("java.vm.name"))
                 .noneMatch(message -> message != null && message.contains("java.runtime.version"))
                 .anyMatch(message -> message != null && message.contains("my.application.setting"));
-        assertThat(result.findings()).filteredOn(finding -> "CONFIG_CODE_REFERENCE_MISSING".equals(finding.ruleId()))
+        assertThat(result.findings())
+                .filteredOn(finding -> "CONFIG_CODE_REFERENCE_MISSING".equals(finding.ruleId()))
                 .singleElement()
-                .satisfies(finding -> {
-                    assertThat(finding.primaryLocation()).isNotNull();
-                    assertThat(finding.primaryLocation().filePath()).isEqualTo("src/main/java/com/example/demo/ConfigReferences.java");
-                    assertThat(finding.primaryLocation().startLine()).isGreaterThan(0);
-                    assertThat(finding.occurrences()).hasSize(2);
-                });
+                .satisfies(
+                        finding -> {
+                            assertThat(finding.primaryLocation()).isNotNull();
+                            assertThat(finding.primaryLocation().filePath())
+                                    .isEqualTo(
+                                            "src/main/java/com/example/demo/ConfigReferences.java");
+                            assertThat(finding.primaryLocation().startLine()).isGreaterThan(0);
+                            assertThat(finding.occurrences()).hasSize(2);
+                        });
     }
 
     @Test
-    void ignoresGradleAndWrapperPropertyLookupsWhenCheckingMissingSpringConfiguration() throws IOException {
+    void ignoresGradleAndWrapperPropertyLookupsWhenCheckingMissingSpringConfiguration()
+            throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Files.writeString(tempDir.resolve("src/main/resources/application.properties"), """
+        Files.writeString(
+                tempDir.resolve("src/main/resources/application.properties"),
+                """
                 app.mode=demo
                 """);
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("BuildSupport.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("BuildSupport.java"),
+                """
                 package com.example.demo;
 
                 import java.util.Properties;
@@ -371,7 +459,8 @@ class ConfigurationAnalyzerTest {
                 .contains("spring.application.name")
                 .doesNotContain("distributionurl", "org.gradle.jvmargs", "java_version");
 
-        assertThat(result.findings()).filteredOn(finding -> "CONFIG_CODE_REFERENCE_MISSING".equals(finding.ruleId()))
+        assertThat(result.findings())
+                .filteredOn(finding -> "CONFIG_CODE_REFERENCE_MISSING".equals(finding.ruleId()))
                 .extracting(Finding::target)
                 .contains("spring.application.name")
                 .doesNotContain("distributionurl", "org.gradle.jvmargs", "java_version");
@@ -380,32 +469,47 @@ class ConfigurationAnalyzerTest {
     @Test
     void attachesProfileSpecificFilesAsOccurrencesWithoutFakeLineNumbers() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Files.writeString(tempDir.resolve("src/main/resources/application.properties"), "app.mode=default");
-        Files.writeString(tempDir.resolve("src/main/resources/application-prod.properties"), "app.mode=prod");
-        Files.writeString(tempDir.resolve("src/main/resources/application-dev.yml"), """
+        Files.writeString(
+                tempDir.resolve("src/main/resources/application.properties"), "app.mode=default");
+        Files.writeString(
+                tempDir.resolve("src/main/resources/application-prod.properties"), "app.mode=prod");
+        Files.writeString(
+                tempDir.resolve("src/main/resources/application-dev.yml"),
+                """
                 app:
                   mode: dev
                 """);
 
         var result = analyzer.analyze(tempDir, emptyBuildInfo());
 
-        assertThat(result.findings()).filteredOn(finding -> "SPRING_PROFILE_SPECIFIC_CONFIG".equals(finding.ruleId()))
+        assertThat(result.findings())
+                .filteredOn(finding -> "SPRING_PROFILE_SPECIFIC_CONFIG".equals(finding.ruleId()))
                 .singleElement()
-                .satisfies(finding -> {
-                    assertThat(finding.primaryLocation()).isNotNull();
-                    assertThat(finding.primaryLocation().filePath()).isEqualTo("src/main/resources/application-dev.yml");
-                    assertThat(finding.primaryLocation().startLine()).isZero();
-                    assertThat(finding.occurrences()).extracting(occurrence -> occurrence.location().filePath())
-                            .contains("src/main/resources/application-dev.yml", "src/main/resources/application-prod.properties");
-                    assertThat(finding.occurrences()).allSatisfy(occurrence ->
-                            assertThat(occurrence.location().startLine()).isZero());
-                });
+                .satisfies(
+                        finding -> {
+                            assertThat(finding.primaryLocation()).isNotNull();
+                            assertThat(finding.primaryLocation().filePath())
+                                    .isEqualTo("src/main/resources/application-dev.yml");
+                            assertThat(finding.primaryLocation().startLine()).isZero();
+                            assertThat(finding.occurrences())
+                                    .extracting(occurrence -> occurrence.location().filePath())
+                                    .contains(
+                                            "src/main/resources/application-dev.yml",
+                                            "src/main/resources/application-prod.properties");
+                            assertThat(finding.occurrences())
+                                    .allSatisfy(
+                                            occurrence ->
+                                                    assertThat(occurrence.location().startLine())
+                                                            .isZero());
+                        });
     }
 
     @Test
     void flagsWeakSecretPlaceholderDefaultsWithoutFlaggingSafePlaceholders() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Files.writeString(tempDir.resolve("src/main/resources/application.properties"), """
+        Files.writeString(
+                tempDir.resolve("src/main/resources/application.properties"),
+                """
                 admin.security.password=${ADMIN_PASSWORD:admin}
                 spring.datasource.password=${DB_PASSWORD:password}
                 external.api.key=${API_KEY:}
@@ -414,25 +518,33 @@ class ConfigurationAnalyzerTest {
 
         var result = analyzer.analyze(tempDir, emptyBuildInfo());
 
-        assertThat(result.findings()).filteredOn(finding ->
-                        "SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT".equals(finding.ruleId()))
+        assertThat(result.findings())
+                .filteredOn(
+                        finding ->
+                                "SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT".equals(finding.ruleId()))
                 .extracting(finding -> finding.target())
                 .contains("admin.security.password", "spring.datasource.password")
                 .doesNotContain("external.api.key", "external.other.password");
     }
 
     @Test
-    void classifiesNestedAndMapStyleCustomPropertiesUnderConfigurationPrefixes() throws IOException {
+    void classifiesNestedAndMapStyleCustomPropertiesUnderConfigurationPrefixes()
+            throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Files.writeString(tempDir.resolve("src/main/resources/application.properties"), """
+        Files.writeString(
+                tempDir.resolve("src/main/resources/application.properties"),
+                """
                 reports.cleanup.initial-delay-ms=15000
                 ticker.overrides[saab]=SAAB-B.ST
                 logging.level.xfeeder=INFO
                 unknown.custom.typo=true
                 """);
 
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("ReportCleanupProperties.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ReportCleanupProperties.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -441,7 +553,9 @@ class ConfigurationAnalyzerTest {
                 public record ReportCleanupProperties(Long retentionDays) {
                 }
                 """);
-        Files.writeString(sourceRoot.resolve("TickerProperties.java"), """
+        Files.writeString(
+                sourceRoot.resolve("TickerProperties.java"),
+                """
                 package com.example.demo;
 
                 import java.util.Map;
@@ -455,28 +569,38 @@ class ConfigurationAnalyzerTest {
         var result = analyzer.analyze(tempDir, emptyBuildInfo());
         var analysis = result.configurationAnalysis();
 
-        assertThat(analysis.properties()).anyMatch(property ->
-                "reports.cleanup.initial-delay-ms".equals(property.name())
-                        && property.kind() == PropertyKind.CUSTOM_CONFIGURATION_PROPERTIES
-        );
-        assertThat(analysis.properties()).anyMatch(property ->
-                "ticker.overrides[saab]".equals(property.name())
-                        && property.kind() == PropertyKind.CUSTOM_CONFIGURATION_PROPERTIES
-        );
-        assertThat(analysis.properties()).anyMatch(property ->
-                "logging.level.xfeeder".equals(property.name())
-                        && property.kind() == PropertyKind.SPRING_BOOT_MAP_PROPERTY
-        );
-        assertThat(analysis.properties()).anyMatch(property ->
-                "unknown.custom.typo".equals(property.name())
-                        && property.kind() == PropertyKind.UNKNOWN
-        );
+        assertThat(analysis.properties())
+                .anyMatch(
+                        property ->
+                                "reports.cleanup.initial-delay-ms".equals(property.name())
+                                        && property.kind()
+                                                == PropertyKind.CUSTOM_CONFIGURATION_PROPERTIES);
+        assertThat(analysis.properties())
+                .anyMatch(
+                        property ->
+                                "ticker.overrides[saab]".equals(property.name())
+                                        && property.kind()
+                                                == PropertyKind.CUSTOM_CONFIGURATION_PROPERTIES);
+        assertThat(analysis.properties())
+                .anyMatch(
+                        property ->
+                                "logging.level.xfeeder".equals(property.name())
+                                        && property.kind()
+                                                == PropertyKind.SPRING_BOOT_MAP_PROPERTY);
+        assertThat(analysis.properties())
+                .anyMatch(
+                        property ->
+                                "unknown.custom.typo".equals(property.name())
+                                        && property.kind() == PropertyKind.UNKNOWN);
 
-        assertThat(result.findings()).filteredOn(finding -> "CONFIG_UNKNOWN_PROPERTY".equals(finding.ruleId()))
+        assertThat(result.findings())
+                .filteredOn(finding -> "CONFIG_UNKNOWN_PROPERTY".equals(finding.ruleId()))
                 .extracting(finding -> finding.evidence())
-                .allMatch(evidence -> evidence != null
-                        && !evidence.contains("reports.cleanup.initial-delay-ms")
-                        && !evidence.contains("ticker.overrides[saab]"));
+                .allMatch(
+                        evidence ->
+                                evidence != null
+                                        && !evidence.contains("reports.cleanup.initial-delay-ms")
+                                        && !evidence.contains("ticker.overrides[saab]"));
     }
 
     private BuildInfo emptyBuildInfo() {
@@ -487,7 +611,6 @@ class ConfigurationAnalyzerTest {
                 java.util.List.of(),
                 "3.5.13",
                 "build.gradle plugin",
-                "HIGH"
-        );
+                "HIGH");
     }
 }

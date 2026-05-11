@@ -7,6 +7,4 @@ public record ConfigurationPropertiesClass(
         String className,
         String sourceFile,
         String description,
-        List<CustomPropertyDefinition> properties
-) {
-}
+        List<CustomPropertyDefinition> properties) {}

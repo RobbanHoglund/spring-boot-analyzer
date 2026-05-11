@@ -1,9 +1,7 @@
 package com.robbanhoglund.springbootanalyzer.analyzer;
 
-import com.robbanhoglund.springbootanalyzer.analyzer.model.DetectedClass;
-import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
-import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
-import com.robbanhoglund.springbootanalyzer.analyzer.model.SpringComponentType;
+import static java.util.Map.entry;
+
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParseResult;
 import com.github.javaparser.ParserConfiguration;
@@ -11,6 +9,10 @@ import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.DetectedClass;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.SpringComponentType;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -25,34 +27,69 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
-import static java.util.Map.entry;
 import org.springframework.stereotype.Component;
 
+/**
+ * Scans the Java source tree ({@code src/main/java}) and produces a list of every class
+ * annotated with a recognised Spring stereotype.
+ *
+ * <p>Parsing is performed with <a href="https://javaparser.org/">JavaParser</a> configured
+ * at Java 25 language level. Nested types are handled by walking the AST upward and joining
+ * the enclosing type names with dots so that, for example, an inner {@code @Configuration}
+ * class resolves to {@code com.example.Outer.InnerConfig} rather than just {@code InnerConfig}.
+ *
+ * <p>The recognised stereotypes and the {@link SpringComponentType} they map to are defined
+ * in the {@code COMPONENT_TYPES} map. {@code MAIN_APPLICATION} ({@code @SpringBootApplication})
+ * always wins over any other annotation on the same type declaration; for all other annotations
+ * the first recognised one wins.
+ *
+ * <p>Parse failures and files that contain no recognised Spring types are silently skipped.
+ * A class declared without a package statement produces a {@link Finding} with severity
+ * {@code WARNING} rather than a hard error.
+ */
 @Component
 public class JavaSourceAnalyzer {
 
-    private static final Map<String, SpringComponentType> COMPONENT_TYPES = Map.ofEntries(
-            entry("SpringBootApplication", SpringComponentType.MAIN_APPLICATION),
-            entry("RestController", SpringComponentType.REST_CONTROLLER),
-            entry("Controller", SpringComponentType.CONTROLLER),
-            entry("ControllerAdvice", SpringComponentType.CONTROLLER_ADVICE),
-            entry("RestControllerAdvice", SpringComponentType.CONTROLLER_ADVICE),
-            entry("Service", SpringComponentType.SERVICE),
-            entry("Repository", SpringComponentType.REPOSITORY),
-            entry("Component", SpringComponentType.COMPONENT),
-            entry("Configuration", SpringComponentType.CONFIGURATION),
-            entry("Entity", SpringComponentType.ENTITY),
-            entry("ConfigurationProperties", SpringComponentType.CONFIGURATION_PROPERTIES)
-    );
+    private static final Map<String, SpringComponentType> COMPONENT_TYPES =
+            Map.ofEntries(
+                    entry("SpringBootApplication", SpringComponentType.MAIN_APPLICATION),
+                    entry("RestController", SpringComponentType.REST_CONTROLLER),
+                    entry("Controller", SpringComponentType.CONTROLLER),
+                    entry("ControllerAdvice", SpringComponentType.CONTROLLER_ADVICE),
+                    entry("RestControllerAdvice", SpringComponentType.CONTROLLER_ADVICE),
+                    entry("Service", SpringComponentType.SERVICE),
+                    entry("Repository", SpringComponentType.REPOSITORY),
+                    entry("Component", SpringComponentType.COMPONENT),
+                    entry("Configuration", SpringComponentType.CONFIGURATION),
+                    entry("Entity", SpringComponentType.ENTITY),
+                    entry("ConfigurationProperties", SpringComponentType.CONFIGURATION_PROPERTIES));
 
     private final JavaParser javaParser;
 
     public JavaSourceAnalyzer() {
-        this.javaParser = new JavaParser(new ParserConfiguration()
-                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                .setCharacterEncoding(StandardCharsets.UTF_8));
+        this.javaParser =
+                new JavaParser(
+                        new ParserConfiguration()
+                                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
+                                .setCharacterEncoding(StandardCharsets.UTF_8));
     }
 
+    /**
+     * Walks every {@code .java} file under {@code <repositoryRoot>/src/main/java}, parses each
+     * one with JavaParser, and returns a {@link SourceAnalysis} containing:
+     * <ul>
+     *   <li>all {@link DetectedClass} instances for types carrying a recognised Spring stereotype</li>
+     *   <li>any structural {@link Finding}s (e.g. classes in the default package)</li>
+     * </ul>
+     *
+     * <p>Files that fail to parse or that contain no recognised Spring types are silently
+     * excluded from the result. If {@code src/main/java} does not exist under the repository
+     * root an empty {@code SourceAnalysis} is returned immediately.
+     *
+     * @param repositoryRoot root directory of the project being analysed
+     * @return the combined source analysis result; never null
+     * @throws IllegalStateException if the source tree cannot be walked due to an I/O error
+     */
     public SourceAnalysis analyze(Path repositoryRoot) {
         Path sourceRoot = repositoryRoot.resolve("src/main/java");
         if (Files.notExists(sourceRoot)) {
@@ -66,9 +103,13 @@ public class JavaSourceAnalyzer {
             files.filter(Files::isRegularFile)
                     .filter(path -> path.toString().endsWith(".java"))
                     .sorted(Comparator.naturalOrder())
-                    .forEach(path -> analyzeSourceFile(repositoryRoot, path, detectedClasses, findings));
+                    .forEach(
+                            path ->
+                                    analyzeSourceFile(
+                                            repositoryRoot, path, detectedClasses, findings));
         } catch (IOException exception) {
-            throw new IllegalStateException("Failed to scan Java sources under " + sourceRoot, exception);
+            throw new IllegalStateException(
+                    "Failed to scan Java sources under " + sourceRoot, exception);
         }
 
         return new SourceAnalysis(List.copyOf(detectedClasses), List.copyOf(findings));
@@ -78,44 +119,37 @@ public class JavaSourceAnalyzer {
             Path repositoryRoot,
             Path sourceFile,
             List<DetectedClass> detectedClasses,
-            List<Finding> findings
-    ) {
+            List<Finding> findings) {
         ParseResult<CompilationUnit> parseResult;
         try {
             parseResult = javaParser.parse(sourceFile);
         } catch (IOException exception) {
-            findings.add(new Finding(
-                    FindingSeverity.WARNING,
-                    "Failed to read Java source file: " + sourceFile.getFileName(),
-                    normalizePath(repositoryRoot, sourceFile)
-            ));
             return;
         }
 
         if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
-            findings.add(new Finding(
-                    FindingSeverity.WARNING,
-                    buildParseFailureMessage(sourceFile, parseResult),
-                    normalizePath(repositoryRoot, sourceFile)
-            ));
             return;
         }
 
         CompilationUnit compilationUnit = parseResult.getResult().orElseThrow();
-        String packageName = compilationUnit.getPackageDeclaration()
-                .map(declaration -> declaration.getNameAsString())
-                .orElse("");
+        String packageName =
+                compilationUnit
+                        .getPackageDeclaration()
+                        .map(declaration -> declaration.getNameAsString())
+                        .orElse("");
 
         if (packageName.isBlank()) {
-            findings.add(new Finding(
-                    FindingSeverity.WARNING,
-                    "Class is declared in the default package. Spring Boot recommends avoiding the default package.",
-                    normalizePath(repositoryRoot, sourceFile)
-            ));
+            findings.add(
+                    new Finding(
+                            FindingSeverity.WARNING,
+                            "Class is declared in the default package. Spring Boot recommends"
+                                    + " avoiding the default package.",
+                            normalizePath(repositoryRoot, sourceFile)));
         }
 
         for (TypeDeclaration<?> typeDeclaration : compilationUnit.findAll(TypeDeclaration.class)) {
-            createDetectedClass(repositoryRoot, sourceFile, packageName, typeDeclaration).ifPresent(detectedClasses::add);
+            createDetectedClass(repositoryRoot, sourceFile, packageName, typeDeclaration)
+                    .ifPresent(detectedClasses::add);
         }
     }
 
@@ -123,8 +157,7 @@ public class JavaSourceAnalyzer {
             Path repositoryRoot,
             Path sourceFile,
             String packageName,
-            TypeDeclaration<?> typeDeclaration
-    ) {
+            TypeDeclaration<?> typeDeclaration) {
         Set<String> annotationNames = new LinkedHashSet<>();
         SpringComponentType componentType = null;
 
@@ -140,17 +173,18 @@ public class JavaSourceAnalyzer {
 
         String qualifiedClassName = buildQualifiedClassName(typeDeclaration, packageName);
 
-        return Optional.of(new DetectedClass(
-                qualifiedClassName,
-                typeDeclaration.getNameAsString(),
-                packageName,
-                normalizePath(repositoryRoot, sourceFile),
-                componentType,
-                List.copyOf(annotationNames)
-        ));
+        return Optional.of(
+                new DetectedClass(
+                        qualifiedClassName,
+                        typeDeclaration.getNameAsString(),
+                        packageName,
+                        normalizePath(repositoryRoot, sourceFile),
+                        componentType,
+                        List.copyOf(annotationNames)));
     }
 
-    private SpringComponentType chooseComponentType(SpringComponentType currentType, String annotationName) {
+    private SpringComponentType chooseComponentType(
+            SpringComponentType currentType, String annotationName) {
         SpringComponentType candidate = COMPONENT_TYPES.get(annotationName);
         if (candidate == null) {
             return currentType;
@@ -189,24 +223,12 @@ public class JavaSourceAnalyzer {
         return name.substring(separatorIndex + 1);
     }
 
-    private String buildParseFailureMessage(Path sourceFile, ParseResult<CompilationUnit> parseResult) {
-        String baseMessage = "Failed to parse Java source file: " + sourceFile.getFileName();
-        String problemSummary = parseResult.getProblems().stream()
-                .map(problem -> problem.getVerboseMessage().replace(System.lineSeparator(), " ").trim())
-                .filter(message -> !message.isBlank())
-                .findFirst()
-                .orElse("");
-
-        if (problemSummary.isBlank()) {
-            return baseMessage;
-        }
-
-        return baseMessage + ". " + problemSummary;
-    }
-
-    public record SourceAnalysis(
-            List<DetectedClass> detectedClasses,
-            List<Finding> findings
-    ) {
-    }
+    /**
+     * The result of scanning the Java source tree.
+     *
+     * @param detectedClasses every class annotated with a recognised Spring stereotype,
+     *                        in the order they were discovered (sorted by file path)
+     * @param findings        structural findings such as default-package warnings; never null
+     */
+    public record SourceAnalysis(List<DetectedClass> detectedClasses, List<Finding> findings) {}
 }

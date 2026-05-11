@@ -1,5 +1,7 @@
 package com.robbanhoglund.springbootanalyzer.analyzer.gradle;
 
+import com.robbanhoglund.springbootanalyzer.analyzer.gradle.plugin.GradlePluginDeclarationScanner;
+import com.robbanhoglund.springbootanalyzer.analyzer.gradle.plugin.GradlePluginResolutionBridge;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
@@ -12,12 +14,10 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradlePluginDe
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradlePluginDeclarationSource;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradlePluginResolutionBridgeResult;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradlePluginResolutionFailure;
-import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleResolvedDependencyModel;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleResolutionResult;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleResolvedDependencyModel;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleSettingsPluginModel;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleSettingsPluginWorkaround;
-import com.robbanhoglund.springbootanalyzer.analyzer.gradle.plugin.GradlePluginDeclarationScanner;
-import com.robbanhoglund.springbootanalyzer.analyzer.gradle.plugin.GradlePluginResolutionBridge;
 import com.robbanhoglund.springbootanalyzer.config.AnalyzerProperties;
 import com.robbanhoglund.springbootanalyzer.git.GitRepositoryReference;
 import java.nio.file.Files;
@@ -52,8 +52,7 @@ public class GradleModelAnalyzer {
             GradleModelReportParser gradleModelReportParser,
             GradleSettingsPluginScanner gradleSettingsPluginScanner,
             GradlePluginDeclarationScanner gradlePluginDeclarationScanner,
-            GradlePluginResolutionBridge gradlePluginResolutionBridge
-    ) {
+            GradlePluginResolutionBridge gradlePluginResolutionBridge) {
         this.gradleSafetyPolicy = gradleSafetyPolicy;
         this.gradleJavaCompatibilityService = gradleJavaCompatibilityService;
         this.gradleToolingApiExecutionService = gradleToolingApiExecutionService;
@@ -68,39 +67,49 @@ public class GradleModelAnalyzer {
             GitRepositoryReference repositoryReference,
             Path repositoryRoot,
             BuildInfo buildInfo,
-            AnalyzerProperties analyzerProperties
-    ) {
+            AnalyzerProperties analyzerProperties) {
         GradleSafetyPolicy.Decision decision =
-                gradleSafetyPolicy.decide(repositoryReference, repositoryRoot, buildInfo, analyzerProperties);
+                gradleSafetyPolicy.decide(
+                        repositoryReference, repositoryRoot, buildInfo, analyzerProperties);
         List<Finding> findings = new ArrayList<>();
-        List<GradleSettingsPluginModel> settingsPlugins = gradleSettingsPluginScanner.scan(repositoryRoot);
-        List<GradlePluginDeclaration> pluginDeclarations = gradlePluginDeclarationScanner.scan(repositoryRoot);
-        GradlePluginResolutionBridgeResult pluginBridgeResult = GradlePluginResolutionBridgeResult.empty();
+        List<GradleSettingsPluginModel> settingsPlugins =
+                gradleSettingsPluginScanner.scan(repositoryRoot);
+        List<GradlePluginDeclaration> pluginDeclarations =
+                gradlePluginDeclarationScanner.scan(repositoryRoot);
+        GradlePluginResolutionBridgeResult pluginBridgeResult =
+                GradlePluginResolutionBridgeResult.empty();
         List<GradleSettingsPluginWorkaround> appliedWorkarounds = new ArrayList<>();
         String sanitizedBuildReason = null;
         boolean sanitizedBuildModel = false;
 
         LOGGER.info(
-                "Gradle model analysis decision: repositoryUrl={}, analysisMode={}, buildTool={}, execute={}, executionMode={}, reason={}",
+                "Gradle model analysis decision: repositoryUrl={}, analysisMode={}, buildTool={},"
+                        + " execute={}, executionMode={}, reason={}",
                 repositoryReference.repositoryUrl(),
                 repositoryReference.analysisMode(),
                 buildInfo.buildTool(),
                 decision.execute(),
                 decision.executionMode(),
-                decision.reason()
-        );
+                decision.reason());
 
         if (!decision.execute()) {
-            return handleSkippedDecision(decision, buildInfo, settingsPlugins, pluginDeclarations, pluginBridgeResult, findings);
+            return handleSkippedDecision(
+                    decision,
+                    buildInfo,
+                    settingsPlugins,
+                    pluginDeclarations,
+                    pluginBridgeResult,
+                    findings);
         }
 
         if (decision.gradleVersion() != null && shouldSkipForCompatibility(decision)) {
-            String message = incompatibilityMessage(decision.gradleVersion(), decision.javaFeatureVersion());
+            String message =
+                    incompatibilityMessage(decision.gradleVersion(), decision.javaFeatureVersion());
             LOGGER.warn(
-                    "Gradle model analysis skipped: diagnostic Gradle {} is not compatible with Java {}. Use Gradle 9.1.0+.",
+                    "Gradle model analysis skipped: diagnostic Gradle {} is not compatible with"
+                            + " Java {}. Use Gradle 9.1.0+.",
                     decision.gradleVersion(),
-                    decision.javaFeatureVersion()
-            );
+                    decision.javaFeatureVersion());
             findings.add(new Finding(FindingSeverity.WARNING, message, null));
             addFallbackUnavailableFinding(findings, decision);
             return new Result(
@@ -118,63 +127,71 @@ public class GradleModelAnalyzer {
                             List.of(),
                             pluginDeclarations,
                             pluginBridgeResult,
-                            findings
-                    ),
-                    findings
-            );
+                            findings),
+                    findings);
         }
 
         Path localPluginRepository = null;
         if (shouldPrefetchBeforeGradle(analyzerProperties.gradle())) {
-            pluginBridgeResult = gradlePluginResolutionBridge.prefetch(repositoryRoot, pluginDeclarations, analyzerProperties.gradle());
+            pluginBridgeResult =
+                    gradlePluginResolutionBridge.prefetch(
+                            repositoryRoot, pluginDeclarations, analyzerProperties.gradle());
             findings.addAll(pluginBridgeResult.findings());
-            localPluginRepository = pluginBridgeResult.localMavenRepository() == null
-                    ? null
-                    : Path.of(pluginBridgeResult.localMavenRepository());
+            localPluginRepository =
+                    pluginBridgeResult.localMavenRepository() == null
+                            ? null
+                            : Path.of(pluginBridgeResult.localMavenRepository());
         }
 
-        GradleExecutionResult executionResult = executePrimary(decision, repositoryRoot, analyzerProperties, localPluginRepository);
+        GradleExecutionResult executionResult =
+                executePrimary(decision, repositoryRoot, analyzerProperties, localPluginRepository);
         int pluginBridgeRetries = 0;
-        while (shouldRetryWithPluginBridge(executionResult, analyzerProperties.gradle(), pluginBridgeRetries, pluginBridgeResult)) {
-            GradlePluginDeclaration missingPlugin = declarationForFailure(executionResult.pluginResolutionFailure());
+        while (shouldRetryWithPluginBridge(
+                executionResult,
+                analyzerProperties.gradle(),
+                pluginBridgeRetries,
+                pluginBridgeResult)) {
+            GradlePluginDeclaration missingPlugin =
+                    declarationForFailure(executionResult.pluginResolutionFailure());
             if (missingPlugin == null) {
                 break;
             }
-            findings.add(new Finding(
-                    FindingSeverity.WARNING,
-                    "Gradle plugin resolution failed for %s:%s. The analyzer will try resolving declared plugins into a local analyzer plugin cache and retry."
-                            .formatted(missingPlugin.pluginId(), missingPlugin.version()),
-                    sourceLocation(missingPlugin.sourceFile(), missingPlugin.line())
-            ));
-            GradlePluginResolutionBridgeResult retriedBridgeResult = gradlePluginResolutionBridge.prefetch(
-                    repositoryRoot,
-                    List.of(missingPlugin),
-                    analyzerProperties.gradle()
-            );
+            findings.add(
+                    new Finding(
+                            FindingSeverity.WARNING,
+                            "Gradle plugin resolution failed for %s:%s. The analyzer will try resolving declared plugins into a local analyzer plugin cache and retry."
+                                    .formatted(missingPlugin.pluginId(), missingPlugin.version()),
+                            sourceLocation(missingPlugin.sourceFile(), missingPlugin.line())));
+            GradlePluginResolutionBridgeResult retriedBridgeResult =
+                    gradlePluginResolutionBridge.prefetch(
+                            repositoryRoot, List.of(missingPlugin), analyzerProperties.gradle());
             pluginBridgeResult = mergeBridgeResults(pluginBridgeResult, retriedBridgeResult);
             findings.addAll(retriedBridgeResult.findings());
-            localPluginRepository = pluginBridgeResult.localMavenRepository() == null
-                    ? localPluginRepository
-                    : Path.of(pluginBridgeResult.localMavenRepository());
+            localPluginRepository =
+                    pluginBridgeResult.localMavenRepository() == null
+                            ? localPluginRepository
+                            : Path.of(pluginBridgeResult.localMavenRepository());
             pluginBridgeRetries++;
-            executionResult = executePrimary(decision, repositoryRoot, analyzerProperties, localPluginRepository);
+            executionResult =
+                    executePrimary(
+                            decision, repositoryRoot, analyzerProperties, localPluginRepository);
         }
         if (shouldAttemptFallback(decision, executionResult)) {
             LOGGER.warn(
-                    "Tooling API Gradle execution did not produce a usable report; falling back to external Gradle process: executionMode={}, failureType={}, exitCode={}",
+                    "Tooling API Gradle execution did not produce a usable report; falling back to"
+                        + " external Gradle process: executionMode={}, failureType={}, exitCode={}",
                     executionResult.executionMode(),
                     executionResult.failureType(),
-                    executionResult.exitCode()
-            );
-            executionResult = gradleExecutionService.execute(
-                    repositoryRoot,
-                    GradleExecutionMode.SYSTEM_GRADLE,
-                    null,
-                    null,
-                    decision.javaFeatureVersion(),
-                    analyzerProperties.gradle(),
-                    localPluginRepository
-            );
+                    executionResult.exitCode());
+            executionResult =
+                    gradleExecutionService.execute(
+                            repositoryRoot,
+                            GradleExecutionMode.SYSTEM_GRADLE,
+                            null,
+                            null,
+                            decision.javaFeatureVersion(),
+                            analyzerProperties.gradle(),
+                            localPluginRepository);
         } else if (shouldExplainMissingFallback(decision, executionResult)) {
             addFallbackUnavailableFinding(findings, decision);
         }
@@ -184,11 +201,14 @@ public class GradleModelAnalyzer {
                 executionResult.successful(),
                 executionResult.timedOut(),
                 executionResult.exitCode(),
-                executionResult.reportFile()
-        );
+                executionResult.reportFile());
 
         if (executionResult.timedOut()) {
-            findings.add(new Finding(FindingSeverity.WARNING, "Gradle analysis timed out; partial static analysis is shown.", null));
+            findings.add(
+                    new Finding(
+                            FindingSeverity.WARNING,
+                            "Gradle analysis timed out; partial static analysis is shown.",
+                            null));
             return new Result(
                     emptyAnalysis(
                             GradleAnalysisStatus.TIMED_OUT,
@@ -204,20 +224,20 @@ public class GradleModelAnalyzer {
                             resolutionFailures(executionResult),
                             pluginDeclarations,
                             pluginBridgeResult,
-                            findings
-                    ),
-                    findings
-            );
+                            findings),
+                    findings);
         }
 
-        GradleModelAnalysis parsed = gradleModelReportParser.parse(executionResult.reportFile(), executionResult.executionMode());
+        GradleModelAnalysis parsed =
+                gradleModelReportParser.parse(
+                        executionResult.reportFile(), executionResult.executionMode());
         LOGGER.info(
-                "Parsed Gradle model report: status={}, projects={}, resolvedDependencies={}, conflicts={}",
+                "Parsed Gradle model report: status={}, projects={}, resolvedDependencies={},"
+                        + " conflicts={}",
                 parsed.status(),
                 parsed.projects().size(),
                 parsed.resolvedDependencies().size(),
-                parsed.dependencyConflicts().size()
-        );
+                parsed.dependencyConflicts().size());
         findings.addAll(parsed.findings());
 
         if (!executionResult.successful()) {
@@ -236,10 +256,8 @@ public class GradleModelAnalyzer {
                             resolutionFailures(executionResult),
                             pluginDeclarations,
                             pluginBridgeResult,
-                            findings
-                    ),
-                    findings
-            );
+                            findings),
+                    findings);
         }
 
         addModelFindings(parsed, buildInfo, findings);
@@ -247,7 +265,9 @@ public class GradleModelAnalyzer {
                 withStatus(
                         parsed,
                         executionResult,
-                        sanitizedBuildModel ? GradleAnalysisStatus.SUCCESS_WITH_WORKAROUND : GradleAnalysisStatus.SUCCESS,
+                        sanitizedBuildModel
+                                ? GradleAnalysisStatus.SUCCESS_WITH_WORKAROUND
+                                : GradleAnalysisStatus.SUCCESS,
                         sanitizedBuildModel,
                         sanitizedBuildReason,
                         appliedWorkarounds,
@@ -255,10 +275,8 @@ public class GradleModelAnalyzer {
                         resolutionFailures(executionResult),
                         pluginDeclarations,
                         pluginBridgeResult,
-                        findings
-                ),
-                findings
-        );
+                        findings),
+                findings);
     }
 
     private Result handleSkippedDecision(
@@ -267,93 +285,99 @@ public class GradleModelAnalyzer {
             List<GradleSettingsPluginModel> settingsPlugins,
             List<GradlePluginDeclaration> pluginDeclarations,
             GradlePluginResolutionBridgeResult pluginBridgeResult,
-            List<Finding> findings
-    ) {
-        if ("STATIC_ONLY".equals(decision.reason()) && buildInfo.buildTool().name().equals("GRADLE")) {
+            List<Finding> findings) {
+        if ("STATIC_ONLY".equals(decision.reason())
+                && buildInfo.buildTool().name().equals("GRADLE")) {
             LOGGER.info("Skipping Gradle model analysis because analysisMode=STATIC_ONLY");
-            return new Result(emptyAnalysis(
-                    GradleAnalysisStatus.NOT_REQUESTED,
-                    decision.executionMode().name(),
-                    decision.gradleVersion(),
-                    String.valueOf(decision.javaFeatureVersion()),
-                    null,
-                    null,
-                    false,
-                    null,
-                    List.of(),
-                    settingsPlugins,
-                    List.of(),
-                    pluginDeclarations,
-                    pluginBridgeResult,
-                    findings
-            ), findings);
+            return new Result(
+                    emptyAnalysis(
+                            GradleAnalysisStatus.NOT_REQUESTED,
+                            decision.executionMode().name(),
+                            decision.gradleVersion(),
+                            String.valueOf(decision.javaFeatureVersion()),
+                            null,
+                            null,
+                            false,
+                            null,
+                            List.of(),
+                            settingsPlugins,
+                            List.of(),
+                            pluginDeclarations,
+                            pluginBridgeResult,
+                            findings),
+                    findings);
         }
         if ("DISABLED".equals(decision.reason())) {
             LOGGER.info("Gradle model analysis requested but analyzer.gradle.enabled=false");
-            return new Result(emptyAnalysis(
-                    GradleAnalysisStatus.DISABLED,
-                    decision.executionMode().name(),
-                    decision.gradleVersion(),
-                    String.valueOf(decision.javaFeatureVersion()),
-                    GradleExecutionFailureType.NONE.name(),
-                    "Gradle model analysis was requested, but analyzer.gradle.enabled=false.",
-                    false,
-                    null,
-                    List.of(),
-                    settingsPlugins,
-                    List.of(),
-                    pluginDeclarations,
-                    pluginBridgeResult,
-                    findings
-            ), findings);
+            return new Result(
+                    emptyAnalysis(
+                            GradleAnalysisStatus.DISABLED,
+                            decision.executionMode().name(),
+                            decision.gradleVersion(),
+                            String.valueOf(decision.javaFeatureVersion()),
+                            GradleExecutionFailureType.NONE.name(),
+                            "Gradle model analysis was requested, but"
+                                    + " analyzer.gradle.enabled=false.",
+                            false,
+                            null,
+                            List.of(),
+                            settingsPlugins,
+                            List.of(),
+                            pluginDeclarations,
+                            pluginBridgeResult,
+                            findings),
+                    findings);
         }
         if ("WRAPPER_NOT_FOUND".equals(decision.reason())) {
-            findings.add(new Finding(
-                    FindingSeverity.WARNING,
-                    "Gradle wrapper execution was requested, but no wrapper script was found.",
-                    null
-            ));
-            return new Result(emptyAnalysis(
-                    GradleAnalysisStatus.FAILED,
-                    decision.executionMode().name(),
-                    decision.gradleVersion(),
-                    String.valueOf(decision.javaFeatureVersion()),
-                    GradleExecutionFailureType.EXECUTABLE_NOT_FOUND.name(),
-                    "Gradle wrapper execution was requested, but no wrapper script was found.",
-                    false,
-                    null,
-                    List.of(),
-                    settingsPlugins,
-                    List.of(),
-                    pluginDeclarations,
-                    pluginBridgeResult,
-                    findings
-            ), findings);
+            findings.add(
+                    new Finding(
+                            FindingSeverity.WARNING,
+                            "Gradle wrapper execution was requested, but no wrapper script was"
+                                    + " found.",
+                            null));
+            return new Result(
+                    emptyAnalysis(
+                            GradleAnalysisStatus.FAILED,
+                            decision.executionMode().name(),
+                            decision.gradleVersion(),
+                            String.valueOf(decision.javaFeatureVersion()),
+                            GradleExecutionFailureType.EXECUTABLE_NOT_FOUND.name(),
+                            "Gradle wrapper execution was requested, but no wrapper script was"
+                                    + " found.",
+                            false,
+                            null,
+                            List.of(),
+                            settingsPlugins,
+                            List.of(),
+                            pluginDeclarations,
+                            pluginBridgeResult,
+                            findings),
+                    findings);
         }
-        return new Result(emptyAnalysis(
-                GradleAnalysisStatus.SKIPPED,
-                decision.executionMode().name(),
-                decision.gradleVersion(),
-                String.valueOf(decision.javaFeatureVersion()),
-                null,
-                null,
-                false,
-                null,
-                List.of(),
-                settingsPlugins,
-                List.of(),
-                pluginDeclarations,
-                pluginBridgeResult,
-                findings
-        ), findings);
+        return new Result(
+                emptyAnalysis(
+                        GradleAnalysisStatus.SKIPPED,
+                        decision.executionMode().name(),
+                        decision.gradleVersion(),
+                        String.valueOf(decision.javaFeatureVersion()),
+                        null,
+                        null,
+                        false,
+                        null,
+                        List.of(),
+                        settingsPlugins,
+                        List.of(),
+                        pluginDeclarations,
+                        pluginBridgeResult,
+                        findings),
+                findings);
     }
 
     private GradleExecutionResult executePrimary(
             GradleSafetyPolicy.Decision decision,
             Path repositoryRoot,
             AnalyzerProperties analyzerProperties,
-            Path localPluginRepository
-    ) {
+            Path localPluginRepository) {
         if (decision.executionMode() == GradleExecutionMode.SYSTEM_GRADLE) {
             return gradleExecutionService.execute(
                     repositoryRoot,
@@ -362,8 +386,7 @@ public class GradleModelAnalyzer {
                     decision.gradleVersion(),
                     decision.javaFeatureVersion(),
                     analyzerProperties.gradle(),
-                    localPluginRepository
-            );
+                    localPluginRepository);
         }
         return gradleToolingApiExecutionService.execute(
                 repositoryRoot,
@@ -372,8 +395,7 @@ public class GradleModelAnalyzer {
                 decision.gradleVersion(),
                 decision.javaFeatureVersion(),
                 analyzerProperties.gradle(),
-                localPluginRepository
-        );
+                localPluginRepository);
     }
 
     private boolean shouldSkipForCompatibility(GradleSafetyPolicy.Decision decision) {
@@ -382,35 +404,45 @@ public class GradleModelAnalyzer {
                 .compatible();
     }
 
-    private boolean shouldAttemptFallback(GradleSafetyPolicy.Decision decision, GradleExecutionResult executionResult) {
+    private boolean shouldAttemptFallback(
+            GradleSafetyPolicy.Decision decision, GradleExecutionResult executionResult) {
         return decision.allowSystemGradleFallback()
                 && decision.executionMode() != GradleExecutionMode.SYSTEM_GRADLE
                 && !executionResult.timedOut()
                 && !executionResult.successful()
-                && (executionResult.reportFile() == null || Files.notExists(executionResult.reportFile()))
-                && (executionResult.failureType() == GradleExecutionFailureType.TOOLING_API_TRANSPORT_FAILED
-                || executionResult.failureType() == GradleExecutionFailureType.REPORT_NOT_CREATED
-                || executionResult.failureType() == GradleExecutionFailureType.EXECUTABLE_NOT_FOUND);
+                && (executionResult.reportFile() == null
+                        || Files.notExists(executionResult.reportFile()))
+                && (executionResult.failureType()
+                                == GradleExecutionFailureType.TOOLING_API_TRANSPORT_FAILED
+                        || executionResult.failureType()
+                                == GradleExecutionFailureType.REPORT_NOT_CREATED
+                        || executionResult.failureType()
+                                == GradleExecutionFailureType.EXECUTABLE_NOT_FOUND);
     }
 
-    private boolean shouldExplainMissingFallback(GradleSafetyPolicy.Decision decision, GradleExecutionResult executionResult) {
+    private boolean shouldExplainMissingFallback(
+            GradleSafetyPolicy.Decision decision, GradleExecutionResult executionResult) {
         return !executionResult.successful()
                 && !executionResult.timedOut()
                 && decision.executionMode() != GradleExecutionMode.SYSTEM_GRADLE
                 && !decision.allowSystemGradleFallback()
-                && (executionResult.failureType() == GradleExecutionFailureType.TOOLING_API_TRANSPORT_FAILED
-                || executionResult.failureType() == GradleExecutionFailureType.REPORT_NOT_CREATED);
+                && (executionResult.failureType()
+                                == GradleExecutionFailureType.TOOLING_API_TRANSPORT_FAILED
+                        || executionResult.failureType()
+                                == GradleExecutionFailureType.REPORT_NOT_CREATED);
     }
 
-    private void addFallbackUnavailableFinding(List<Finding> findings, GradleSafetyPolicy.Decision decision) {
+    private void addFallbackUnavailableFinding(
+            List<Finding> findings, GradleSafetyPolicy.Decision decision) {
         if (decision.allowSystemGradleFallback()) {
             return;
         }
-        findings.add(new Finding(
-                FindingSeverity.INFO,
-                "External Gradle fallback was skipped because no Gradle executable was configured or found on PATH.",
-                null
-        ));
+        findings.add(
+                new Finding(
+                        FindingSeverity.INFO,
+                        "External Gradle fallback was skipped because no Gradle executable was"
+                                + " configured or found on PATH.",
+                        null));
     }
 
     private String incompatibilityMessage(String gradleVersion, int javaFeatureVersion) {
@@ -428,9 +460,9 @@ public class GradleModelAnalyzer {
     private GradleAnalysisStatus effectiveStatus(
             GradleModelAnalysis parsed,
             GradleExecutionResult executionResult,
-            GradleAnalysisStatus fallbackStatus
-    ) {
-        if (fallbackStatus != GradleAnalysisStatus.SUCCESS && fallbackStatus != GradleAnalysisStatus.SUCCESS_WITH_WORKAROUND) {
+            GradleAnalysisStatus fallbackStatus) {
+        if (fallbackStatus != GradleAnalysisStatus.SUCCESS
+                && fallbackStatus != GradleAnalysisStatus.SUCCESS_WITH_WORKAROUND) {
             return fallbackStatus;
         }
         if (hasResolutionProblems(parsed)) {
@@ -440,23 +472,31 @@ public class GradleModelAnalyzer {
     }
 
     private boolean hasResolutionProblems(GradleModelAnalysis parsed) {
-        List<GradleResolutionResult> dependencyBearingResults = dependencyBearingResolutionResults(parsed);
-        boolean hasFailedResolution = dependencyBearingResults.stream()
-                .anyMatch(result -> result.attempted() && !result.successful());
+        List<GradleResolutionResult> dependencyBearingResults =
+                dependencyBearingResolutionResults(parsed);
+        boolean hasFailedResolution =
+                dependencyBearingResults.stream()
+                        .anyMatch(result -> result.attempted() && !result.successful());
         if (hasFailedResolution) {
             return true;
         }
-        boolean attemptedResolutions = dependencyBearingResults.stream()
-                .anyMatch(GradleResolutionResult::attempted);
-        boolean hasResolvedModules = dependencyBearingResults.stream()
-                .anyMatch(result -> result.successful() && result.resolvedDependencyCount() > 0);
+        boolean attemptedResolutions =
+                dependencyBearingResults.stream().anyMatch(GradleResolutionResult::attempted);
+        boolean hasResolvedModules =
+                dependencyBearingResults.stream()
+                        .anyMatch(
+                                result ->
+                                        result.successful()
+                                                && result.resolvedDependencyCount() > 0);
         return attemptedResolutions
                 && !hasResolvedModules
                 && !parsed.declaredDependencies().isEmpty();
     }
 
-    private String normalizedFailureType(GradleModelAnalysis parsed, GradleExecutionResult executionResult) {
-        if (executionResult.failureType() == null || executionResult.failureType() == GradleExecutionFailureType.NONE) {
+    private String normalizedFailureType(
+            GradleModelAnalysis parsed, GradleExecutionResult executionResult) {
+        if (executionResult.failureType() == null
+                || executionResult.failureType() == GradleExecutionFailureType.NONE) {
             if (hasResolutionProblems(parsed)) {
                 return GradleExecutionFailureType.DEPENDENCY_RESOLUTION_FAILED.name();
             }
@@ -465,16 +505,24 @@ public class GradleModelAnalyzer {
         return executionResult.failureType().name();
     }
 
-    private String normalizedErrorMessage(GradleModelAnalysis parsed, GradleExecutionResult executionResult) {
+    private String normalizedErrorMessage(
+            GradleModelAnalysis parsed, GradleExecutionResult executionResult) {
         if (executionResult.errorMessage() == null || executionResult.errorMessage().isBlank()) {
             if (hasResolutionProblems(parsed)) {
-                List<GradleResolutionResult> dependencyBearingResults = dependencyBearingResolutionResults(parsed);
-                long failedCount = dependencyBearingResults.stream()
-                        .filter(result -> result.attempted() && !result.successful())
-                        .count();
-                long successfulCount = dependencyBearingResults.stream()
-                        .filter(result -> result.attempted() && result.successful() && result.resolvedDependencyCount() > 0)
-                        .count();
+                List<GradleResolutionResult> dependencyBearingResults =
+                        dependencyBearingResolutionResults(parsed);
+                long failedCount =
+                        dependencyBearingResults.stream()
+                                .filter(result -> result.attempted() && !result.successful())
+                                .count();
+                long successfulCount =
+                        dependencyBearingResults.stream()
+                                .filter(
+                                        result ->
+                                                result.attempted()
+                                                        && result.successful()
+                                                        && result.resolvedDependencyCount() > 0)
+                                .count();
                 return "Dependency graph resolution failed for dependency-bearing Gradle configurations (%d resolved, %d failed)."
                         .formatted(successfulCount, failedCount);
             }
@@ -494,11 +542,12 @@ public class GradleModelAnalyzer {
             List<GradlePluginResolutionFailure> pluginResolutionFailures,
             List<GradlePluginDeclaration> pluginDeclarations,
             GradlePluginResolutionBridgeResult pluginBridgeResult,
-            List<Finding> findings
-    ) {
+            List<Finding> findings) {
         return new GradleModelAnalysis(
                 effectiveStatus(parsed, executionResult, status),
-                parsed.gradleVersion() != null ? parsed.gradleVersion() : executionResult.gradleVersion(),
+                parsed.gradleVersion() != null
+                        ? parsed.gradleVersion()
+                        : executionResult.gradleVersion(),
                 executionResult.javaVersion(),
                 parsed.executionMode(),
                 parsed.reportFile(),
@@ -524,8 +573,7 @@ public class GradleModelAnalyzer {
                 parsed.sourceSets(),
                 parsed.tasks(),
                 parsed.javaToolchains(),
-                List.copyOf(findings)
-        );
+                List.copyOf(findings));
     }
 
     private GradleModelAnalysis emptyAnalysis(
@@ -542,8 +590,7 @@ public class GradleModelAnalyzer {
             List<GradlePluginResolutionFailure> pluginResolutionFailures,
             List<GradlePluginDeclaration> pluginDeclarations,
             GradlePluginResolutionBridgeResult pluginBridgeResult,
-            List<Finding> findings
-    ) {
+            List<Finding> findings) {
         return new GradleModelAnalysis(
                 status,
                 gradleVersion,
@@ -572,11 +619,11 @@ public class GradleModelAnalyzer {
                 List.of(),
                 List.of(),
                 List.of(),
-                List.copyOf(findings)
-        );
+                List.copyOf(findings));
     }
 
-    private List<GradlePluginResolutionFailure> resolutionFailures(GradleExecutionResult executionResult) {
+    private List<GradlePluginResolutionFailure> resolutionFailures(
+            GradleExecutionResult executionResult) {
         return executionResult.pluginResolutionFailure() == null
                 ? List.of()
                 : List.of(executionResult.pluginResolutionFailure());
@@ -586,8 +633,7 @@ public class GradleModelAnalyzer {
             GradleExecutionResult executionResult,
             AnalyzerProperties.GradleProperties properties,
             int retries,
-            GradlePluginResolutionBridgeResult pluginBridgeResult
-    ) {
+            GradlePluginResolutionBridgeResult pluginBridgeResult) {
         if (properties == null
                 || properties.pluginResolutionBridge() == null
                 || !properties.pluginResolutionBridge().enabled()
@@ -597,67 +643,79 @@ public class GradleModelAnalyzer {
         if (retries >= properties.pluginResolutionBridge().maxRetries()) {
             return false;
         }
-        if ((executionResult.failureType() != GradleExecutionFailureType.SETTINGS_PLUGIN_RESOLUTION_FAILED
-                && executionResult.failureType() != GradleExecutionFailureType.PLUGIN_RESOLUTION_FAILED)
+        if ((executionResult.failureType()
+                                != GradleExecutionFailureType.SETTINGS_PLUGIN_RESOLUTION_FAILED
+                        && executionResult.failureType()
+                                != GradleExecutionFailureType.PLUGIN_RESOLUTION_FAILED)
                 || executionResult.pluginResolutionFailure() == null) {
             return false;
         }
-        String pluginKey = executionResult.pluginResolutionFailure().pluginId() + ":" + executionResult.pluginResolutionFailure().version();
+        String pluginKey =
+                executionResult.pluginResolutionFailure().pluginId()
+                        + ":"
+                        + executionResult.pluginResolutionFailure().version();
         return pluginBridgeResult.resolvedPlugins().stream()
                 .noneMatch(plugin -> pluginKey.equals(plugin.pluginId() + ":" + plugin.version()));
     }
 
     private void logKnownFailure(GradleExecutionResult executionResult) {
-        if ((executionResult.failureType() == GradleExecutionFailureType.SETTINGS_PLUGIN_RESOLUTION_FAILED
-                || executionResult.failureType() == GradleExecutionFailureType.PLUGIN_RESOLUTION_FAILED)
+        if ((executionResult.failureType()
+                                == GradleExecutionFailureType.SETTINGS_PLUGIN_RESOLUTION_FAILED
+                        || executionResult.failureType()
+                                == GradleExecutionFailureType.PLUGIN_RESOLUTION_FAILED)
                 && executionResult.pluginResolutionFailure() != null) {
             GradlePluginResolutionFailure failure = executionResult.pluginResolutionFailure();
             LOGGER.warn(
-                    "Gradle model analysis failed during plugin resolution: pluginId={}, version={}, source={}:{}, searchedRepositories={}",
+                    "Gradle model analysis failed during plugin resolution: pluginId={},"
+                            + " version={}, source={}:{}, searchedRepositories={}",
                     failure.pluginId(),
                     failure.version(),
                     failure.settingsFile(),
                     failure.line(),
-                    failure.searchedRepositories()
-            );
+                    failure.searchedRepositories());
             return;
         }
-        if (executionResult.failureType() == GradleExecutionFailureType.INIT_SCRIPT_COMPILATION_FAILED) {
-            LOGGER.warn("Gradle model analysis failed because the analyzer generated an invalid init script");
+        if (executionResult.failureType()
+                == GradleExecutionFailureType.INIT_SCRIPT_COMPILATION_FAILED) {
+            LOGGER.warn(
+                    "Gradle model analysis failed because the analyzer generated an invalid init"
+                            + " script");
             return;
         }
         LOGGER.warn("Gradle model analysis failed; returning partial result");
     }
 
     private void addFailureFinding(List<Finding> findings, GradleExecutionResult executionResult) {
-        if (executionResult.failureType() == GradleExecutionFailureType.SETTINGS_PLUGIN_RESOLUTION_FAILED
+        if (executionResult.failureType()
+                        == GradleExecutionFailureType.SETTINGS_PLUGIN_RESOLUTION_FAILED
                 && executionResult.pluginResolutionFailure() != null) {
             GradlePluginResolutionFailure failure = executionResult.pluginResolutionFailure();
-            findings.add(new Finding(
-                    FindingSeverity.WARNING,
-                    "Gradle model analysis could not run because a settings plugin could not be resolved: %s:%s. The analyzer can bridge declared Gradle plugins through a local analyzer plugin cache, but this plugin still did not resolve."
-                            .formatted(failure.pluginId(), failure.version()),
-                    "%s:%s".formatted(failure.settingsFile(), failure.line())
-            ));
+            findings.add(
+                    new Finding(
+                            FindingSeverity.WARNING,
+                            "Gradle model analysis could not run because a settings plugin could not be resolved: %s:%s. The analyzer can bridge declared Gradle plugins through a local analyzer plugin cache, but this plugin still did not resolve."
+                                    .formatted(failure.pluginId(), failure.version()),
+                            "%s:%s".formatted(failure.settingsFile(), failure.line())));
             return;
         }
         if (executionResult.failureType() == GradleExecutionFailureType.PLUGIN_RESOLUTION_FAILED
                 && executionResult.pluginResolutionFailure() != null) {
             GradlePluginResolutionFailure failure = executionResult.pluginResolutionFailure();
-            findings.add(new Finding(
-                    FindingSeverity.WARNING,
-                    "Gradle model analysis could not resolve plugin %s:%s even after local plugin cache bridging."
-                            .formatted(failure.pluginId(), failure.version()),
-                    sourceLocation(failure.settingsFile(), failure.line())
-            ));
+            findings.add(
+                    new Finding(
+                            FindingSeverity.WARNING,
+                            "Gradle model analysis could not resolve plugin %s:%s even after local plugin cache bridging."
+                                    .formatted(failure.pluginId(), failure.version()),
+                            sourceLocation(failure.settingsFile(), failure.line())));
             return;
         }
-        if (executionResult.failureType() == GradleExecutionFailureType.INIT_SCRIPT_COMPILATION_FAILED) {
-            findings.add(new Finding(
-                    FindingSeverity.ERROR,
-                    helperScopeFindingMessage(executionResult.errorMessage()),
-                    null
-            ));
+        if (executionResult.failureType()
+                == GradleExecutionFailureType.INIT_SCRIPT_COMPILATION_FAILED) {
+            findings.add(
+                    new Finding(
+                            FindingSeverity.ERROR,
+                            helperScopeFindingMessage(executionResult.errorMessage()),
+                            null));
             return;
         }
         findings.add(new Finding(FindingSeverity.WARNING, failureMessage(executionResult), null));
@@ -666,105 +724,140 @@ public class GradleModelAnalyzer {
     private void maybeLogRetainedWorkspace(
             AnalyzerProperties analyzerProperties,
             Path repositoryRoot,
-            GradleExecutionResult executionResult
-    ) {
+            GradleExecutionResult executionResult) {
         if (!analyzerProperties.workspaceKeepOnGradleFailure()) {
             return;
         }
         LOGGER.info(
-                "Workspace retained because Gradle model analysis failed: path={}, initScript={}, reportFile={}",
+                "Workspace retained because Gradle model analysis failed: path={}, initScript={},"
+                        + " reportFile={}",
                 repositoryRoot.getParent(),
                 executionResult.initScriptFile(),
-                executionResult.reportFile()
-        );
+                executionResult.reportFile());
         if (executionResult.initScriptFile() != null && executionResult.reportFile() != null) {
             LOGGER.info(
                     "Gradle diagnostic reproduction hint: {}",
                     GradleExecutionSupport.externalCommandHint(
                             executionResult.initScriptFile(),
                             executionResult.reportFile(),
-                            analyzerProperties.gradle()
-                    )
-            );
+                            analyzerProperties.gradle()));
         }
     }
 
-    private void addModelFindings(GradleModelAnalysis parsed, BuildInfo buildInfo, List<Finding> findings) {
+    private void addModelFindings(
+            GradleModelAnalysis parsed, BuildInfo buildInfo, List<Finding> findings) {
         if (!parsed.dependencyConflicts().isEmpty()) {
             for (GradleDependencyConflict conflict : parsed.dependencyConflicts()) {
-                findings.add(new Finding(
-                        FindingSeverity.WARNING,
-                        "Dependency conflict detected for " + join(conflict.group(), conflict.artifact()) + ".",
-                        conflict.configuration()
-                ));
+                findings.add(
+                        new Finding(
+                                FindingSeverity.WARNING,
+                                "Dependency conflict detected for "
+                                        + join(conflict.group(), conflict.artifact())
+                                        + ".",
+                                conflict.configuration()));
             }
         }
 
         if (!parsed.resolutionResults().isEmpty()) {
-            List<GradleResolutionResult> dependencyBearingResults = dependencyBearingResolutionResults(parsed);
-            long successfulConfigurations = dependencyBearingResults.stream()
-                    .filter(result -> result.successful() && result.resolvedDependencyCount() > 0)
-                    .count();
+            List<GradleResolutionResult> dependencyBearingResults =
+                    dependencyBearingResolutionResults(parsed);
+            long successfulConfigurations =
+                    dependencyBearingResults.stream()
+                            .filter(
+                                    result ->
+                                            result.successful()
+                                                    && result.resolvedDependencyCount() > 0)
+                            .count();
             if (!dependencyBearingResults.isEmpty() && successfulConfigurations == 0) {
-                findings.add(new Finding(
-                        FindingSeverity.WARNING,
-                        "Gradle executed successfully, but no dependency-bearing configuration resolved a dependency graph.",
-                        "Gradle model"
-                ));
+                findings.add(
+                        new Finding(
+                                FindingSeverity.WARNING,
+                                "Gradle executed successfully, but no dependency-bearing"
+                                        + " configuration resolved a dependency graph.",
+                                "Gradle model"));
             }
             for (GradleResolutionResult result : dependencyBearingResults) {
                 if (result.attempted() && !result.successful()) {
-                    findings.add(new Finding(
-                            FindingSeverity.WARNING,
-                            "Dependency resolution failed for %s%s"
-                                    .formatted(
-                                            result.configuration(),
-                                            result.errorMessage() == null || result.errorMessage().isBlank()
-                                                    ? "."
-                                                    : ": " + result.errorMessage()
-                                    ),
-                            result.projectPath()
-                    ));
+                    findings.add(
+                            new Finding(
+                                    FindingSeverity.WARNING,
+                                    "Dependency resolution failed for %s%s"
+                                            .formatted(
+                                                    result.configuration(),
+                                                    result.errorMessage() == null
+                                                                    || result.errorMessage()
+                                                                            .isBlank()
+                                                            ? "."
+                                                            : ": " + result.errorMessage()),
+                                    result.projectPath()));
                 }
             }
         }
 
-        List<String> coordinates = parsed.resolvedDependencies().stream()
-                .map(this::coordinate)
-                .toList();
+        List<String> coordinates =
+                parsed.resolvedDependencies().stream().map(this::coordinate).toList();
         if (containsDependency(coordinates, "org.projectlombok", "lombok")) {
-            findings.add(new Finding(FindingSeverity.INFO, "Lombok detected; generated methods may not be visible to the static parser.", null));
+            findings.add(
+                    new Finding(
+                            FindingSeverity.INFO,
+                            "Lombok detected; generated methods may not be visible to the static"
+                                    + " parser.",
+                            null));
         }
         if (containsDependency(coordinates, "org.mapstruct", "mapstruct-processor")) {
-            findings.add(new Finding(FindingSeverity.INFO, "MapStruct detected; generated mappers may not be visible to the static parser.", null));
+            findings.add(
+                    new Finding(
+                            FindingSeverity.INFO,
+                            "MapStruct detected; generated mappers may not be visible to the static"
+                                    + " parser.",
+                            null));
         }
-        if (parsed.configurations().stream().anyMatch(configuration -> configuration.name().toLowerCase(Locale.ROOT).contains("annotationprocessor") && configuration.allDependencyCount() > 0)) {
-            findings.add(new Finding(FindingSeverity.INFO, "Annotation processors are configured.", null));
+        if (parsed.configurations().stream()
+                .anyMatch(
+                        configuration ->
+                                configuration
+                                                .name()
+                                                .toLowerCase(Locale.ROOT)
+                                                .contains("annotationprocessor")
+                                        && configuration.allDependencyCount() > 0)) {
+            findings.add(
+                    new Finding(
+                            FindingSeverity.INFO, "Annotation processors are configured.", null));
         }
         if (containsDependency(coordinates, "org.springframework.boot", "spring-boot-starter-web")
-                && containsDependency(coordinates, "org.springframework.boot", "spring-boot-starter-webflux")) {
-            findings.add(new Finding(FindingSeverity.WARNING, "Spring Boot starter web and webflux are both resolved.", null));
+                && containsDependency(
+                        coordinates, "org.springframework.boot", "spring-boot-starter-webflux")) {
+            findings.add(
+                    new Finding(
+                            FindingSeverity.WARNING,
+                            "Spring Boot starter web and webflux are both resolved.",
+                            null));
         }
 
-        String resolvedBootVersion = parsed.resolvedDependencies().stream()
-                .filter(dependency -> "org.springframework.boot".equals(dependency.group()) && "spring-boot".equals(dependency.artifact()))
-                .map(GradleResolvedDependencyModel::version)
-                .filter(version -> version != null && !version.isBlank())
-                .findFirst()
-                .orElse(null);
+        String resolvedBootVersion =
+                parsed.resolvedDependencies().stream()
+                        .filter(
+                                dependency ->
+                                        "org.springframework.boot".equals(dependency.group())
+                                                && "spring-boot".equals(dependency.artifact()))
+                        .map(GradleResolvedDependencyModel::version)
+                        .filter(version -> version != null && !version.isBlank())
+                        .findFirst()
+                        .orElse(null);
         if (resolvedBootVersion != null
                 && buildInfo.springBootVersion() != null
                 && !resolvedBootVersion.equals(buildInfo.springBootVersion())) {
-            findings.add(new Finding(
-                    FindingSeverity.WARNING,
-                    "Resolved Spring Boot version differs from declared plugin version.",
-                    buildInfo.springBootVersion() + " -> " + resolvedBootVersion
-            ));
+            findings.add(
+                    new Finding(
+                            FindingSeverity.WARNING,
+                            "Resolved Spring Boot version differs from declared plugin version.",
+                            buildInfo.springBootVersion() + " -> " + resolvedBootVersion));
         }
     }
 
     private boolean containsDependency(List<String> coordinates, String group, String artifact) {
-        return coordinates.stream().anyMatch(coordinate -> coordinate.equals(group + ":" + artifact));
+        return coordinates.stream()
+                .anyMatch(coordinate -> coordinate.equals(group + ":" + artifact));
     }
 
     private String coordinate(GradleResolvedDependencyModel dependency) {
@@ -775,16 +868,25 @@ public class GradleModelAnalyzer {
         return (group == null ? "" : group) + ":" + (artifact == null ? "" : artifact);
     }
 
-    private List<GradleResolutionResult> dependencyBearingResolutionResults(GradleModelAnalysis parsed) {
+    private List<GradleResolutionResult> dependencyBearingResolutionResults(
+            GradleModelAnalysis parsed) {
         return parsed.resolutionResults().stream()
-                .filter(result -> configurationHasDependencies(parsed, result.projectPath(), result.configuration()))
+                .filter(
+                        result ->
+                                configurationHasDependencies(
+                                        parsed, result.projectPath(), result.configuration()))
                 .toList();
     }
 
-    private boolean configurationHasDependencies(GradleModelAnalysis parsed, String projectPath, String configurationName) {
+    private boolean configurationHasDependencies(
+            GradleModelAnalysis parsed, String projectPath, String configurationName) {
         return parsed.configurations().stream()
-                .filter(configuration -> java.util.Objects.equals(configuration.projectPath(), projectPath))
-                .filter(configuration -> java.util.Objects.equals(configuration.name(), configurationName))
+                .filter(
+                        configuration ->
+                                java.util.Objects.equals(configuration.projectPath(), projectPath))
+                .filter(
+                        configuration ->
+                                java.util.Objects.equals(configuration.name(), configurationName))
                 .findFirst()
                 .map(configuration -> configuration.allDependencyCount() > 0)
                 .orElse(false);
@@ -807,22 +909,27 @@ public class GradleModelAnalyzer {
                 failure.settingsFile(),
                 failure.line(),
                 GradlePluginDeclarationSource.UNKNOWN,
-                false
-        );
+                false);
     }
 
     private GradlePluginResolutionBridgeResult mergeBridgeResults(
-            GradlePluginResolutionBridgeResult left,
-            GradlePluginResolutionBridgeResult right
-    ) {
-        LinkedHashMap<String, com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.ResolvedGradlePlugin> resolved = new LinkedHashMap<>();
+            GradlePluginResolutionBridgeResult left, GradlePluginResolutionBridgeResult right) {
+        LinkedHashMap<
+                        String,
+                        com.robbanhoglund.springbootanalyzer.analyzer.model.gradle
+                                .ResolvedGradlePlugin>
+                resolved = new LinkedHashMap<>();
         for (var plugin : left.resolvedPlugins()) {
             resolved.put(plugin.pluginId() + ":" + plugin.version(), plugin);
         }
         for (var plugin : right.resolvedPlugins()) {
             resolved.put(plugin.pluginId() + ":" + plugin.version(), plugin);
         }
-        LinkedHashMap<String, com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradlePluginBridgeFailure> failures = new LinkedHashMap<>();
+        LinkedHashMap<
+                        String,
+                        com.robbanhoglund.springbootanalyzer.analyzer.model.gradle
+                                .GradlePluginBridgeFailure>
+                failures = new LinkedHashMap<>();
         for (var failure : left.failures()) {
             failures.put(failure.pluginId() + ":" + failure.version(), failure);
         }
@@ -834,18 +941,22 @@ public class GradleModelAnalyzer {
         findings.addAll(right.findings());
         return new GradlePluginResolutionBridgeResult(
                 left.successful() && right.successful(),
-                right.localMavenRepository() != null ? right.localMavenRepository() : left.localMavenRepository(),
+                right.localMavenRepository() != null
+                        ? right.localMavenRepository()
+                        : left.localMavenRepository(),
                 List.copyOf(resolved.values()),
                 List.copyOf(failures.values()),
-                List.copyOf(findings)
-        );
+                List.copyOf(findings));
     }
 
     private String bridgeStatus(GradlePluginResolutionBridgeResult pluginBridgeResult) {
-        if (pluginBridgeResult == null || (pluginBridgeResult.resolvedPlugins().isEmpty() && pluginBridgeResult.failures().isEmpty())) {
+        if (pluginBridgeResult == null
+                || (pluginBridgeResult.resolvedPlugins().isEmpty()
+                        && pluginBridgeResult.failures().isEmpty())) {
             return null;
         }
-        if (!pluginBridgeResult.resolvedPlugins().isEmpty() && pluginBridgeResult.failures().isEmpty()) {
+        if (!pluginBridgeResult.resolvedPlugins().isEmpty()
+                && pluginBridgeResult.failures().isEmpty()) {
             return "LOCAL_PLUGIN_CACHE_USED";
         }
         if (!pluginBridgeResult.resolvedPlugins().isEmpty()) {
@@ -865,14 +976,13 @@ public class GradleModelAnalyzer {
         String normalized = errorMessage == null ? "" : errorMessage.toLowerCase(Locale.ROOT);
         if (normalized.contains("could not find method sanitizevalue()")
                 || normalized.contains("could not find method sbasanitizevalue()")) {
-            return "Gradle model analysis failed because the generated init script called helper method sanitizeValue from a Gradle task closure. This is an analyzer init-script scoping bug.";
+            return "Gradle model analysis failed because the generated init script called helper"
+                    + " method sanitizeValue from a Gradle task closure. This is an analyzer"
+                    + " init-script scoping bug.";
         }
-        return "Gradle model analysis failed because the analyzer generated an invalid Gradle init script. This is likely a path escaping or helper scoping issue.";
+        return "Gradle model analysis failed because the analyzer generated an invalid Gradle init"
+                + " script. This is likely a path escaping or helper scoping issue.";
     }
 
-    public record Result(
-            GradleModelAnalysis gradleModelAnalysis,
-            List<Finding> findings
-    ) {
-    }
+    public record Result(GradleModelAnalysis gradleModelAnalysis, List<Finding> findings) {}
 }

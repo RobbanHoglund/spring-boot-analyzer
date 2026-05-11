@@ -1,0 +1,153 @@
+# CI pipeline for Spring Boot Analyzer
+#
+# Runs on every push to main and on every pull request that targets main.
+# The pipeline has two independent jobs that run in parallel:
+#
+#   backend  — compiles the Java source and runs the JUnit test suite via Gradle.
+#   frontend — type-checks the TypeScript source and runs the Vitest unit tests.
+#
+# Both jobs must pass for the workflow to be considered successful, which is
+# enforced by adding this workflow as a required status check on the main branch.
+#
+# Caching strategy
+# ----------------
+# Gradle's build cache and local Maven/Gradle caches are persisted between runs
+# using actions/cache keyed on the hash of build.gradle. A cache hit skips
+# dependency resolution entirely, keeping the average backend job under 90 s.
+#
+# Node modules are cached using actions/setup-node's built-in cache support
+# keyed on package-lock.json. This covers the devDependencies (TypeScript,
+# Vite, Vitest, jsdom) and typically saves 20–30 s on each frontend run.
+#
+# Java version
+# ------------
+# The project requires Java 25 (configured via the Gradle toolchain in build.gradle).
+# actions/setup-java uses the 'temurin' distribution, which provides EA builds
+# for unreleased Java versions. If the EA build is unavailable on a given runner
+# image, the toolchain will fall back to downloading it automatically.
+
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Backend — Java 25 / Spring Boot / Gradle
+  # ---------------------------------------------------------------------------
+  backend:
+    name: Backend (Java ${{ matrix.java }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      # Run against a single Java version for now. The matrix is left in place
+      # so additional versions (e.g. the next EA) can be added with one line.
+      matrix:
+        java: [ "25" ]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Install the JDK declared in build.gradle. The 'temurin' distribution
+      # supports EA versions; 'ea' must be set to true for non-GA releases.
+      - name: Set up Java ${{ matrix.java }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ matrix.java }}
+          distribution: temurin
+          java-package: jdk
+          check-latest: true
+
+      # Restore Gradle's build cache and the local dependency cache between runs.
+      # The cache key includes the build file hash so it is invalidated whenever
+      # a dependency version changes.
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('build.gradle', 'settings.gradle', 'gradle/libs.versions.toml') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      # Make the wrapper executable. The repository ships without a local
+      # Gradle installation; the wrapper downloads the declared version on
+      # first use (cached by the step above on subsequent runs).
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      # Compile all sources. Running compileJava separately surfaces compilation
+      # errors faster than waiting for the full test run.
+      - name: Compile
+        run: ./gradlew compileJava compileTestJava --no-daemon
+
+      # Run the full test suite. --continue ensures all test failures are
+      # collected and reported rather than stopping at the first failure.
+      - name: Test
+        run: ./gradlew test --no-daemon --continue
+
+      # Verify that all Java sources conform to the Spotless-enforced format.
+      # Developers should run ./gradlew spotlessApply locally before pushing.
+      - name: Check code formatting
+        run: ./gradlew spotlessCheck --no-daemon
+
+      # Publish the JUnit XML report so GitHub renders individual test results
+      # in the Actions UI and on the PR checks page.
+      - name: Publish test report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-test-results-java${{ matrix.java }}
+          path: build/reports/tests/test/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Frontend — TypeScript / Vite / Vitest
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: Frontend (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node: [ "22" ]
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # setup-node's built-in cache support keys on package-lock.json and
+      # avoids a separate actions/cache step for node_modules.
+      - name: Set up Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # tsc --noEmit type-checks the source without producing output files.
+      # Errors here indicate type mismatches that would survive the build step.
+      - name: Type check
+        run: npx tsc --noEmit
+
+      # Vitest runs in non-interactive mode via 'npm test' (mapped to 'vitest run').
+      - name: Test
+        run: npm test
+
+      # Build the production bundle. This catches any Vite bundling errors that
+      # are not caught by type-checking alone (e.g. missing assets, bad imports).
+      - name: Build
+        run: npm run build

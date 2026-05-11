@@ -13,12 +13,13 @@ class BuildFileAnalyzerTest {
 
     private final BuildFileAnalyzer analyzer = new BuildFileAnalyzer();
 
-    @TempDir
-    Path tempDir;
+    @TempDir Path tempDir;
 
     @Test
     void detectsGradleSpringBootProject() throws IOException {
-        Files.writeString(tempDir.resolve("build.gradle"), """
+        Files.writeString(
+                tempDir.resolve("build.gradle"),
+                """
                 plugins {
                     id 'org.springframework.boot' version '3.5.13'
                 }
@@ -40,7 +41,8 @@ class BuildFileAnalyzerTest {
         assertThat(buildInfo.buildTool()).isEqualTo(BuildTool.GRADLE);
         assertThat(buildInfo.springBootDetected()).isTrue();
         assertThat(buildInfo.javaVersionHint()).isEqualTo("25");
-        assertThat(buildInfo.dependencies()).contains("org.springframework.boot:spring-boot-starter-web");
+        assertThat(buildInfo.dependencies())
+                .contains("org.springframework.boot:spring-boot-starter-web");
         assertThat(buildInfo.dependencies()).contains("com.example:library:1.0.0");
         assertThat(buildInfo.springBootVersion()).isEqualTo("3.5.13");
         assertThat(buildInfo.springBootVersionSource()).isEqualTo("Gradle plugins");
@@ -49,7 +51,9 @@ class BuildFileAnalyzerTest {
 
     @Test
     void detectsMavenSpringBootProject() throws IOException {
-        Files.writeString(tempDir.resolve("pom.xml"), """
+        Files.writeString(
+                tempDir.resolve("pom.xml"),
+                """
                 <project>
                     <properties>
                         <java.version>25</java.version>
@@ -76,12 +80,15 @@ class BuildFileAnalyzerTest {
         assertThat(buildInfo.buildTool()).isEqualTo(BuildTool.MAVEN);
         assertThat(buildInfo.springBootDetected()).isTrue();
         assertThat(buildInfo.javaVersionHint()).isEqualTo("25");
-        assertThat(buildInfo.dependencies()).contains("org.springframework.boot:spring-boot-starter-web");
+        assertThat(buildInfo.dependencies())
+                .contains("org.springframework.boot:spring-boot-starter-web");
     }
 
     @Test
     void detectsSpringBootVersionFromMavenParent() throws IOException {
-        Files.writeString(tempDir.resolve("pom.xml"), """
+        Files.writeString(
+                tempDir.resolve("pom.xml"),
+                """
                 <project>
                     <parent>
                         <groupId>org.springframework.boot</groupId>
@@ -99,7 +106,9 @@ class BuildFileAnalyzerTest {
 
     @Test
     void detectsSpringBootVersionFromMavenBom() throws IOException {
-        Files.writeString(tempDir.resolve("pom.xml"), """
+        Files.writeString(
+                tempDir.resolve("pom.xml"),
+                """
                 <project>
                     <dependencyManagement>
                         <dependencies>

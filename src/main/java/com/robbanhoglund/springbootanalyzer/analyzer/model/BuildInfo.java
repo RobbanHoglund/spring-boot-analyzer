@@ -9,6 +9,4 @@ public record BuildInfo(
         List<String> dependencies,
         String springBootVersion,
         String springBootVersionSource,
-        String springBootVersionConfidence
-) {
-}
+        String springBootVersionConfidence) {}

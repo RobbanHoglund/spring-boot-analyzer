@@ -4,21 +4,18 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
-import static org.mockito.BDDMockito.willThrow;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import com.robbanhoglund.springbootanalyzer.api.dto.AnalysisMode;
-import com.robbanhoglund.springbootanalyzer.api.dto.SourceSnippetResponse;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.AnalysisResult;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildTool;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.DetectedClass;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
-import com.robbanhoglund.springbootanalyzer.analyzer.model.HighlightRange;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.HighlightRange;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.SpringComponentType;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleAnalysisStatus;
@@ -27,6 +24,8 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.http.HttpSurfaceAnaly
 import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.RuntimeStackAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.VirtualThreadAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.WebStack;
+import com.robbanhoglund.springbootanalyzer.api.dto.AnalysisMode;
+import com.robbanhoglund.springbootanalyzer.api.dto.SourceSnippetResponse;
 import com.robbanhoglund.springbootanalyzer.application.InvalidSourceSnippetRequestException;
 import com.robbanhoglund.springbootanalyzer.application.RepositoryAnalysisService;
 import com.robbanhoglund.springbootanalyzer.application.SourceSnippetNotFoundException;
@@ -48,50 +47,54 @@ import org.springframework.test.web.servlet.MockMvc;
 @Import(GlobalExceptionHandler.class)
 class AnalysisControllerTest {
 
-    @Autowired
-    private MockMvc mockMvc;
+    @Autowired private MockMvc mockMvc;
 
-    @MockitoBean
-    private RepositoryAnalysisService repositoryAnalysisService;
+    @MockitoBean private RepositoryAnalysisService repositoryAnalysisService;
 
-    @MockitoBean
-    private SourceSnippetService sourceSnippetService;
+    @MockitoBean private SourceSnippetService sourceSnippetService;
 
     @Test
     void acceptsValidAnalyzeRequest() throws Exception {
-        AnalysisResult analysisResult = new AnalysisResult(
-                "https://github.com/example/demo.git",
-                "main",
-                "workspace-123",
-                "workspace-123",
-                "abc123",
-                buildInfo("25"),
-                List.of("com.example.demo.DemoApplication"),
-                List.of(new DetectedClass(
-                        "com.example.demo.DemoApplication",
-                        "DemoApplication",
-                        "com.example.demo",
-                        "src/main/java/com/example/demo/DemoApplication.java",
-                        SpringComponentType.MAIN_APPLICATION,
-                        List.of("SpringBootApplication")
-                )),
-                List.of(new Finding(FindingSeverity.INFO, "Looks good", null)),
-                ConfigurationAnalysis.empty(),
-                runtimeStack("25", "com.example.demo.DemoApplication"),
-                HttpSurfaceAnalysis.empty(),
-                GradleModelAnalysis.empty(GradleAnalysisStatus.NOT_REQUESTED, "SYSTEM_GRADLE", List.of())
-        );
+        AnalysisResult analysisResult =
+                new AnalysisResult(
+                        "https://github.com/example/demo.git",
+                        "main",
+                        "workspace-123",
+                        "workspace-123",
+                        "abc123",
+                        buildInfo("25"),
+                        List.of("com.example.demo.DemoApplication"),
+                        List.of(
+                                new DetectedClass(
+                                        "com.example.demo.DemoApplication",
+                                        "DemoApplication",
+                                        "com.example.demo",
+                                        "src/main/java/com/example/demo/DemoApplication.java",
+                                        SpringComponentType.MAIN_APPLICATION,
+                                        List.of("SpringBootApplication"))),
+                        List.of(new Finding(FindingSeverity.INFO, "Looks good", null)),
+                        ConfigurationAnalysis.empty(),
+                        runtimeStack("25", "com.example.demo.DemoApplication"),
+                        HttpSurfaceAnalysis.empty(),
+                        GradleModelAnalysis.empty(
+                                GradleAnalysisStatus.NOT_REQUESTED, "SYSTEM_GRADLE", List.of()),
+                        com.robbanhoglund.springbootanalyzer.analyzer.model.scheduling
+                                .SchedulingAnalysis.empty(),
+                        com.robbanhoglund.springbootanalyzer.analyzer.model.messaging
+                                .MessagingAnalysis.empty());
 
         given(repositoryAnalysisService.analyze(any())).willReturn(analysisResult);
 
-        mockMvc.perform(post("/api/analyze")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "repositoryUrl": "https://github.com/example/demo.git",
-                                  "branch": "main"
-                                }
-                                """))
+        mockMvc.perform(
+                        post("/api/analyze")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(
+                                        """
+                                        {
+                                          "repositoryUrl": "https://github.com/example/demo.git",
+                                          "branch": "main"
+                                        }
+                                        """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.repositoryUrl").value("https://github.com/example/demo.git"))
                 .andExpect(jsonPath("$.branch").value("main"))
@@ -101,9 +104,13 @@ class AnalysisControllerTest {
                 .andExpect(jsonPath("$.buildTool").value("GRADLE"))
                 .andExpect(jsonPath("$.javaVersionHint").value("25"))
                 .andExpect(jsonPath("$.springBootDetected").value(true))
-                .andExpect(jsonPath("$.mainApplicationClasses[0]").value("com.example.demo.DemoApplication"))
+                .andExpect(
+                        jsonPath("$.mainApplicationClasses[0]")
+                                .value("com.example.demo.DemoApplication"))
                 .andExpect(jsonPath("$.runtimeStackAnalysis.springBootVersion").value("3.5.13"))
-                .andExpect(jsonPath("$.dependencies[0]").value("org.springframework.boot:spring-boot-starter-web"))
+                .andExpect(
+                        jsonPath("$.dependencies[0]")
+                                .value("org.springframework.boot:spring-boot-starter-web"))
                 .andExpect(jsonPath("$.findings[0].severity").value("INFO"))
                 .andExpect(jsonPath("$.credentials").doesNotExist())
                 .andExpect(jsonPath("$.gradleModelAnalysis.status").value("NOT_REQUESTED"));
@@ -111,41 +118,51 @@ class AnalysisControllerTest {
 
     @Test
     void mapsCredentialsIntoRepositoryReferenceWithoutReturningThem() throws Exception {
-        AnalysisResult analysisResult = new AnalysisResult(
-                "https://github.com/example/private-demo.git",
-                "main",
-                "workspace-credentials",
-                "workspace-credentials",
-                null,
-                buildInfo("21"),
-                List.of(),
-                List.of(),
-                List.of(),
-                ConfigurationAnalysis.empty(),
-                runtimeStack("21", null),
-                HttpSurfaceAnalysis.empty(),
-                GradleModelAnalysis.empty(GradleAnalysisStatus.NOT_REQUESTED, "SYSTEM_GRADLE", List.of())
-        );
+        AnalysisResult analysisResult =
+                new AnalysisResult(
+                        "https://github.com/example/private-demo.git",
+                        "main",
+                        "workspace-credentials",
+                        "workspace-credentials",
+                        null,
+                        buildInfo("21"),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        ConfigurationAnalysis.empty(),
+                        runtimeStack("21", null),
+                        HttpSurfaceAnalysis.empty(),
+                        GradleModelAnalysis.empty(
+                                GradleAnalysisStatus.NOT_REQUESTED, "SYSTEM_GRADLE", List.of()),
+                        com.robbanhoglund.springbootanalyzer.analyzer.model.scheduling
+                                .SchedulingAnalysis.empty(),
+                        com.robbanhoglund.springbootanalyzer.analyzer.model.messaging
+                                .MessagingAnalysis.empty());
 
         given(repositoryAnalysisService.analyze(any())).willReturn(analysisResult);
 
-        mockMvc.perform(post("/api/analyze")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "repositoryUrl": "https://github.com/example/private-demo.git",
-                                  "branch": "main",
-                                  "credentials": {
-                                    "username": "octocat",
-                                    "token": "ghp_example"
-                                  }
-                                }
-                                """))
+        mockMvc.perform(
+                        post("/api/analyze")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(
+                                        """
+{
+  "repositoryUrl": "https://github.com/example/private-demo.git",
+  "branch": "main",
+  "credentials": {
+    "username": "octocat",
+    "token": "ghp_example"
+  }
+}
+"""))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.repositoryUrl").value("https://github.com/example/private-demo.git"))
+                .andExpect(
+                        jsonPath("$.repositoryUrl")
+                                .value("https://github.com/example/private-demo.git"))
                 .andExpect(jsonPath("$.credentials").doesNotExist());
 
-        ArgumentCaptor<GitRepositoryReference> referenceCaptor = ArgumentCaptor.forClass(GitRepositoryReference.class);
+        ArgumentCaptor<GitRepositoryReference> referenceCaptor =
+                ArgumentCaptor.forClass(GitRepositoryReference.class);
         then(repositoryAnalysisService).should().analyze(referenceCaptor.capture());
 
         GitRepositoryReference repositoryReference = referenceCaptor.getValue();
@@ -153,56 +170,128 @@ class AnalysisControllerTest {
                 .isEqualTo("https://github.com/example/private-demo.git");
         org.assertj.core.api.Assertions.assertThat(repositoryReference.branch()).isEqualTo("main");
         org.assertj.core.api.Assertions.assertThat(repositoryReference.hasCredentials()).isTrue();
-        org.assertj.core.api.Assertions.assertThat(repositoryReference.credentials().username()).isEqualTo("octocat");
-        org.assertj.core.api.Assertions.assertThat(repositoryReference.credentials().token()).isEqualTo("ghp_example");
-        org.assertj.core.api.Assertions.assertThat(repositoryReference.analysisMode()).isEqualTo(AnalysisMode.STATIC_ONLY);
+        org.assertj.core.api.Assertions.assertThat(repositoryReference.credentials().username())
+                .isEqualTo("octocat");
+        org.assertj.core.api.Assertions.assertThat(repositoryReference.credentials().token())
+                .isEqualTo("ghp_example");
+        org.assertj.core.api.Assertions.assertThat(repositoryReference.analysisMode())
+                .isEqualTo(AnalysisMode.STATIC_ONLY);
     }
 
     @Test
     void mapsAnalysisModeIntoRepositoryReference() throws Exception {
-        AnalysisResult analysisResult = new AnalysisResult(
-                "https://github.com/example/private-demo.git",
-                "main",
-                "workspace-credentials",
-                "workspace-credentials",
-                null,
-                buildInfo("21"),
-                List.of(),
-                List.of(),
-                List.of(),
-                ConfigurationAnalysis.empty(),
-                runtimeStack("21", null),
-                HttpSurfaceAnalysis.empty(),
-                GradleModelAnalysis.empty(GradleAnalysisStatus.NOT_REQUESTED, "SYSTEM_GRADLE", List.of())
-        );
+        AnalysisResult analysisResult =
+                new AnalysisResult(
+                        "https://github.com/example/private-demo.git",
+                        "main",
+                        "workspace-credentials",
+                        "workspace-credentials",
+                        null,
+                        buildInfo("21"),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        ConfigurationAnalysis.empty(),
+                        runtimeStack("21", null),
+                        HttpSurfaceAnalysis.empty(),
+                        GradleModelAnalysis.empty(
+                                GradleAnalysisStatus.NOT_REQUESTED, "SYSTEM_GRADLE", List.of()),
+                        com.robbanhoglund.springbootanalyzer.analyzer.model.scheduling
+                                .SchedulingAnalysis.empty(),
+                        com.robbanhoglund.springbootanalyzer.analyzer.model.messaging
+                                .MessagingAnalysis.empty());
 
         given(repositoryAnalysisService.analyze(any())).willReturn(analysisResult);
 
-        mockMvc.perform(post("/api/analyze")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "repositoryUrl": "https://github.com/example/private-demo.git",
-                                  "analysisMode": "STATIC_PLUS_GRADLE_MODEL"
-                                }
-                                """))
+        mockMvc.perform(
+                        post("/api/analyze")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(
+                                        """
+{
+  "repositoryUrl": "https://github.com/example/private-demo.git",
+  "analysisMode": "EXTENDED"
+}
+"""))
                 .andExpect(status().isOk());
 
-        ArgumentCaptor<GitRepositoryReference> referenceCaptor = ArgumentCaptor.forClass(GitRepositoryReference.class);
+        ArgumentCaptor<GitRepositoryReference> referenceCaptor =
+                ArgumentCaptor.forClass(GitRepositoryReference.class);
         then(repositoryAnalysisService).should().analyze(referenceCaptor.capture());
         org.assertj.core.api.Assertions.assertThat(referenceCaptor.getValue().analysisMode())
-                .isEqualTo(AnalysisMode.STATIC_PLUS_GRADLE_MODEL);
+                .isEqualTo(AnalysisMode.EXTENDED);
+    }
+
+    @Test
+    void rejectsUnknownAnalysisMode() throws Exception {
+        mockMvc.perform(
+                        post("/api/analyze")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(
+                                        """
+                                        {
+                                          "repositoryUrl": "https://github.com/example/demo.git",
+                                          "analysisMode": "UNKNOWN_MODE"
+                                        }
+                                        """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.title").value("Malformed request"));
+    }
+
+    @Test
+    void defaultsAnalysisModeToStaticOnlyWhenOmitted() throws Exception {
+        AnalysisResult analysisResult =
+                new AnalysisResult(
+                        "https://github.com/example/demo.git",
+                        "main",
+                        "workspace-mode-default",
+                        "workspace-mode-default",
+                        null,
+                        buildInfo("21"),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        ConfigurationAnalysis.empty(),
+                        runtimeStack("21", null),
+                        HttpSurfaceAnalysis.empty(),
+                        GradleModelAnalysis.empty(
+                                GradleAnalysisStatus.NOT_REQUESTED, "SYSTEM_GRADLE", List.of()),
+                        com.robbanhoglund.springbootanalyzer.analyzer.model.scheduling
+                                .SchedulingAnalysis.empty(),
+                        com.robbanhoglund.springbootanalyzer.analyzer.model.messaging
+                                .MessagingAnalysis.empty());
+
+        given(repositoryAnalysisService.analyze(any())).willReturn(analysisResult);
+
+        mockMvc.perform(
+                        post("/api/analyze")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(
+                                        """
+                                        {
+                                          "repositoryUrl": "https://github.com/example/demo.git"
+                                        }
+                                        """))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<GitRepositoryReference> referenceCaptor =
+                ArgumentCaptor.forClass(GitRepositoryReference.class);
+        then(repositoryAnalysisService).should().analyze(referenceCaptor.capture());
+        org.assertj.core.api.Assertions.assertThat(referenceCaptor.getValue().analysisMode())
+                .isEqualTo(AnalysisMode.STATIC_ONLY);
     }
 
     @Test
     void rejectsBlankRepositoryUrl() throws Exception {
-        mockMvc.perform(post("/api/analyze")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "repositoryUrl": ""
-                                }
-                                """))
+        mockMvc.perform(
+                        post("/api/analyze")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(
+                                        """
+                                        {
+                                          "repositoryUrl": ""
+                                        }
+                                        """))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.title").value("Validation failed"))
                 .andExpect(jsonPath("$.errors.repositoryUrl").value("repositoryUrl is required"));
@@ -210,22 +299,30 @@ class AnalysisControllerTest {
 
     @Test
     void servesSourceSnippet() throws Exception {
-        given(sourceSnippetService.loadSnippet("workspace-123", "src/main/java/com/example/demo/Demo.java", 10, 12, 4))
-                .willReturn(new SourceSnippetResponse(
-                        "src/main/java/com/example/demo/Demo.java",
-                        "java",
-                        6,
-                        16,
-                        "https://github.com/example/demo/blob/abc123/src/main/java/com/example/demo/Demo.java#L10-L12",
-                        List.of(),
-                        List.of(new HighlightRange(10, 12, null, null, "issue"))
-                ));
+        given(
+                        sourceSnippetService.loadSnippet(
+                                "workspace-123",
+                                "src/main/java/com/example/demo/Demo.java",
+                                10,
+                                12,
+                                4))
+                .willReturn(
+                        new SourceSnippetResponse(
+                                "src/main/java/com/example/demo/Demo.java",
+                                "java",
+                                6,
+                                16,
+                                "https://github.com/example/demo/blob/abc123/src/main/java/com/example/demo/Demo.java#L10-L12",
+                                List.of(),
+                                List.of(new HighlightRange(10, 12, null, null, "issue"))));
 
-        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/analyses/workspace-123/source-snippet")
-                        .param("path", "src/main/java/com/example/demo/Demo.java")
-                        .param("startLine", "10")
-                        .param("endLine", "12")
-                        .param("context", "4"))
+        mockMvc.perform(
+                        org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
+                                        "/api/analyses/workspace-123/source-snippet")
+                                .param("path", "src/main/java/com/example/demo/Demo.java")
+                                .param("startLine", "10")
+                                .param("endLine", "12")
+                                .param("context", "4"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.filePath").value("src/main/java/com/example/demo/Demo.java"))
                 .andExpect(jsonPath("$.language").value("java"))
@@ -234,20 +331,28 @@ class AnalysisControllerTest {
 
     @Test
     void servesSourceSnippetWithoutExactLineRange() throws Exception {
-        given(sourceSnippetService.loadSnippet("workspace-123", "src/main/java/com/example/demo/Demo.java", null, null, 6))
-                .willReturn(new SourceSnippetResponse(
-                        "src/main/java/com/example/demo/Demo.java",
-                        "java",
-                        1,
-                        20,
-                        "https://github.com/example/demo/blob/abc123/src/main/java/com/example/demo/Demo.java",
-                        List.of(),
-                        List.of()
-                ));
+        given(
+                        sourceSnippetService.loadSnippet(
+                                "workspace-123",
+                                "src/main/java/com/example/demo/Demo.java",
+                                null,
+                                null,
+                                6))
+                .willReturn(
+                        new SourceSnippetResponse(
+                                "src/main/java/com/example/demo/Demo.java",
+                                "java",
+                                1,
+                                20,
+                                "https://github.com/example/demo/blob/abc123/src/main/java/com/example/demo/Demo.java",
+                                List.of(),
+                                List.of()));
 
-        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/analyses/workspace-123/source-snippet")
-                        .param("path", "src/main/java/com/example/demo/Demo.java")
-                        .param("context", "6"))
+        mockMvc.perform(
+                        org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
+                                        "/api/analyses/workspace-123/source-snippet")
+                                .param("path", "src/main/java/com/example/demo/Demo.java")
+                                .param("context", "6"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.filePath").value("src/main/java/com/example/demo/Demo.java"))
                 .andExpect(jsonPath("$.highlightRanges").isArray())
@@ -256,9 +361,7 @@ class AnalysisControllerTest {
 
     @Test
     void rejectsMissingRepositoryUrl() throws Exception {
-        mockMvc.perform(post("/api/analyze")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{}"))
+        mockMvc.perform(post("/api/analyze").contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.title").value("Validation failed"))
                 .andExpect(jsonPath("$.errors.repositoryUrl").value("repositoryUrl is required"));
@@ -269,9 +372,10 @@ class AnalysisControllerTest {
         given(sourceSnippetService.loadSnippet(any(), any(), any(), any(), anyInt()))
                 .willThrow(new SourceSnippetNotFoundException("Analysis session was not found."));
 
-        mockMvc.perform(get("/api/analyses/unknown-id/source-snippet")
-                        .param("path", "src/main/java/Demo.java")
-                        .param("context", "4"))
+        mockMvc.perform(
+                        get("/api/analyses/unknown-id/source-snippet")
+                                .param("path", "src/main/java/Demo.java")
+                                .param("context", "4"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.title").value("Source snippet unavailable"));
     }
@@ -279,11 +383,14 @@ class AnalysisControllerTest {
     @Test
     void returnsBadRequestWhenSnippetPathIsInvalid() throws Exception {
         given(sourceSnippetService.loadSnippet(any(), any(), any(), any(), anyInt()))
-                .willThrow(new InvalidSourceSnippetRequestException("Source path must stay inside the analyzed repository."));
+                .willThrow(
+                        new InvalidSourceSnippetRequestException(
+                                "Source path must stay inside the analyzed repository."));
 
-        mockMvc.perform(get("/api/analyses/workspace-123/source-snippet")
-                        .param("path", "../secrets.txt")
-                        .param("context", "0"))
+        mockMvc.perform(
+                        get("/api/analyses/workspace-123/source-snippet")
+                                .param("path", "../secrets.txt")
+                                .param("context", "0"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.title").value("Invalid source snippet request"));
     }
@@ -293,13 +400,15 @@ class AnalysisControllerTest {
         given(repositoryAnalysisService.analyze(any()))
                 .willThrow(new GitCloneException("Could not connect to remote.", null));
 
-        mockMvc.perform(post("/api/analyze")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "repositoryUrl": "https://github.com/example/demo.git"
-                                }
-                                """))
+        mockMvc.perform(
+                        post("/api/analyze")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(
+                                        """
+                                        {
+                                          "repositoryUrl": "https://github.com/example/demo.git"
+                                        }
+                                        """))
                 .andExpect(status().isBadGateway())
                 .andExpect(jsonPath("$.title").value("Repository clone failed"));
     }
@@ -309,13 +418,15 @@ class AnalysisControllerTest {
         given(repositoryAnalysisService.analyze(any()))
                 .willThrow(new IllegalStateException("Unexpected analysis failure."));
 
-        mockMvc.perform(post("/api/analyze")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "repositoryUrl": "https://github.com/example/demo.git"
-                                }
-                                """))
+        mockMvc.perform(
+                        post("/api/analyze")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(
+                                        """
+                                        {
+                                          "repositoryUrl": "https://github.com/example/demo.git"
+                                        }
+                                        """))
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.title").value("Analysis failed"));
     }
@@ -328,8 +439,7 @@ class AnalysisControllerTest {
                 List.of("org.springframework.boot:spring-boot-starter-web"),
                 "3.5.13",
                 "build.gradle plugin",
-                "HIGH"
-        );
+                "HIGH");
     }
 
     private RuntimeStackAnalysis runtimeStack(String javaVersion, String mainClass) {
@@ -340,7 +450,6 @@ class AnalysisControllerTest {
                 WebStack.SERVLET_MVC,
                 "Servlet web dependencies were detected in the build.",
                 new VirtualThreadAnalysis(false, true, false, false, false, "Disabled", List.of()),
-                mainClass
-        );
+                mainClass);
     }
 }

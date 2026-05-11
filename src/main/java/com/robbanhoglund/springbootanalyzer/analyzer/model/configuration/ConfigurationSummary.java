@@ -9,6 +9,4 @@ public record ConfigurationSummary(
         int unknownPropertyCount,
         int codeReferenceCount,
         int sensitiveValueCount,
-        List<String> profiles
-) {
-}
+        List<String> profiles) {}

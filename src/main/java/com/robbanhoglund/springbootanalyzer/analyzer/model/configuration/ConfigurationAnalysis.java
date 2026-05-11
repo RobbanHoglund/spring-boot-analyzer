@@ -7,15 +7,13 @@ public record ConfigurationAnalysis(
         List<ApplicationProperty> properties,
         List<PropertyReference> codeReferences,
         List<ConfigurationPropertiesClass> configurationPropertiesClasses,
-        ConfigurationSummary summary
-) {
+        ConfigurationSummary summary) {
     public static ConfigurationAnalysis empty() {
         return new ConfigurationAnalysis(
                 List.of(),
                 List.of(),
                 List.of(),
                 List.of(),
-                new ConfigurationSummary(0, 0, 0, 0, 0, 0, List.of())
-        );
+                new ConfigurationSummary(0, 0, 0, 0, 0, 0, List.of()));
     }
 }

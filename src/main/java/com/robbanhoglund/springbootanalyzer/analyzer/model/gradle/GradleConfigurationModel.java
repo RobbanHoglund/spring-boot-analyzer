@@ -10,6 +10,4 @@ public record GradleConfigurationModel(
         int dependencyCount,
         int declaredDependencyCount,
         int allDependencyCount,
-        List<String> extendsFrom
-) {
-}
+        List<String> extendsFrom) {}

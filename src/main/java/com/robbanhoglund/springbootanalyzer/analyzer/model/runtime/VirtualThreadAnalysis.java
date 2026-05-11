@@ -9,6 +9,4 @@ public record VirtualThreadAnalysis(
         boolean scheduledWorkDetected,
         boolean keepAliveConfigured,
         String summary,
-        List<String> evidence
-) {
-}
+        List<String> evidence) {}

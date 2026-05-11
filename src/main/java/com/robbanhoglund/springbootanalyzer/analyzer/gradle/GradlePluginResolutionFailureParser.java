@@ -11,9 +11,13 @@ import org.springframework.stereotype.Component;
 public class GradlePluginResolutionFailureParser {
 
     private static final Pattern SETTINGS_FILE_PATTERN =
-            Pattern.compile("Settings file '([^']+settings\\.gradle(?:\\.kts)?)' line:\\s*(\\d+)", Pattern.CASE_INSENSITIVE);
+            Pattern.compile(
+                    "Settings file '([^']+settings\\.gradle(?:\\.kts)?)' line:\\s*(\\d+)",
+                    Pattern.CASE_INSENSITIVE);
     private static final Pattern PLUGIN_ID_PATTERN =
-            Pattern.compile("Plugin \\[id:\\s*'([^']+)'(?:,\\s*version:\\s*'([^']+)')?]", Pattern.CASE_INSENSITIVE);
+            Pattern.compile(
+                    "Plugin \\[id:\\s*'([^']+)'(?:,\\s*version:\\s*'([^']+)')?]",
+                    Pattern.CASE_INSENSITIVE);
     private static final Pattern PLUGIN_ARTIFACT_PATTERN =
             Pattern.compile("plugin artifact '?([^'\\r\\n]+)'?", Pattern.CASE_INSENSITIVE);
     private static final Pattern SEARCHED_REPOSITORY_PATTERN =
@@ -56,7 +60,10 @@ public class GradlePluginResolutionFailureParser {
             boolean first = true;
             while (repoMatcher.find()) {
                 String repository = repoMatcher.group(1).trim();
-                if (first && repository.toLowerCase().startsWith("searched in the following repositories")) {
+                if (first
+                        && repository
+                                .toLowerCase()
+                                .startsWith("searched in the following repositories")) {
                     first = false;
                     continue;
                 }
@@ -72,10 +79,11 @@ public class GradlePluginResolutionFailureParser {
                 pluginId,
                 version,
                 artifact,
-                settingsFile == null ? null : settingsFile.substring(settingsFile.lastIndexOf('\\') + 1),
+                settingsFile == null
+                        ? null
+                        : settingsFile.substring(settingsFile.lastIndexOf('\\') + 1),
                 line,
                 searchedRepositories,
-                message.trim()
-        );
+                message.trim());
     }
 }

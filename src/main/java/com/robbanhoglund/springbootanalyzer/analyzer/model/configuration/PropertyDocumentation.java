@@ -10,8 +10,7 @@ public record PropertyDocumentation(
         String sourceType,
         boolean deprecated,
         String deprecationReason,
-        List<PropertyValueHint> hints
-) {
+        List<PropertyValueHint> hints) {
     public static PropertyDocumentation unknown() {
         return new PropertyDocumentation(false, null, null, null, null, false, null, List.of());
     }

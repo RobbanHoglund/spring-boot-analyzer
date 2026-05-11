@@ -1,9 +1,9 @@
 package com.robbanhoglund.springbootanalyzer.analyzer.configuration;
 
-import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertyDocumentation;
-import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertyValueHint;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertyDocumentation;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertyValueHint;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -20,10 +20,10 @@ import org.springframework.stereotype.Component;
 @Component
 public class SpringConfigurationMetadataCatalog {
 
-    private static final List<String> REPOSITORY_METADATA_PATHS = List.of(
-            "src/main/resources/META-INF/spring-configuration-metadata.json",
-            "src/main/resources/META-INF/additional-spring-configuration-metadata.json"
-    );
+    private static final List<String> REPOSITORY_METADATA_PATHS =
+            List.of(
+                    "src/main/resources/META-INF/spring-configuration-metadata.json",
+                    "src/main/resources/META-INF/additional-spring-configuration-metadata.json");
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -31,15 +31,18 @@ public class SpringConfigurationMetadataCatalog {
         Map<String, MetadataProperty> properties = new LinkedHashMap<>();
 
         try {
-            Enumeration<java.net.URL> resources = getClass().getClassLoader()
-                    .getResources("META-INF/spring-configuration-metadata.json");
+            Enumeration<java.net.URL> resources =
+                    getClass()
+                            .getClassLoader()
+                            .getResources("META-INF/spring-configuration-metadata.json");
             while (resources.hasMoreElements()) {
                 try (InputStream stream = resources.nextElement().openStream()) {
                     mergeMetadata(properties, stream, false);
                 }
             }
         } catch (IOException exception) {
-            throw new IllegalStateException("Failed to load Spring configuration metadata from classpath.", exception);
+            throw new IllegalStateException(
+                    "Failed to load Spring configuration metadata from classpath.", exception);
         }
 
         for (String metadataPath : REPOSITORY_METADATA_PATHS) {
@@ -50,14 +53,16 @@ public class SpringConfigurationMetadataCatalog {
             try (InputStream stream = Files.newInputStream(path)) {
                 mergeMetadata(properties, stream, true);
             } catch (IOException exception) {
-                throw new IllegalStateException("Failed to load project configuration metadata: " + path, exception);
+                throw new IllegalStateException(
+                        "Failed to load project configuration metadata: " + path, exception);
             }
         }
 
         return new MetadataCatalog(Collections.unmodifiableMap(properties));
     }
 
-    private void mergeMetadata(Map<String, MetadataProperty> target, InputStream inputStream, boolean customSource)
+    private void mergeMetadata(
+            Map<String, MetadataProperty> target, InputStream inputStream, boolean customSource)
             throws IOException {
         JsonNode root = objectMapper.readTree(inputStream);
 
@@ -69,10 +74,10 @@ public class SpringConfigurationMetadataCatalog {
             }
             List<PropertyValueHint> hints = new ArrayList<>();
             for (JsonNode valueNode : hintNode.path("values")) {
-                hints.add(new PropertyValueHint(
-                        textValue(valueNode, "value"),
-                        textValue(valueNode, "description")
-                ));
+                hints.add(
+                        new PropertyValueHint(
+                                textValue(valueNode, "value"),
+                                textValue(valueNode, "description")));
             }
             hintsByName.put(name, List.copyOf(hints));
         }
@@ -84,19 +89,21 @@ public class SpringConfigurationMetadataCatalog {
             }
 
             JsonNode deprecationNode = propertyNode.path("deprecation");
-            boolean deprecated = propertyNode.path("deprecated").asBoolean(false) || !deprecationNode.isMissingNode();
+            boolean deprecated =
+                    propertyNode.path("deprecated").asBoolean(false)
+                            || !deprecationNode.isMissingNode();
             String deprecationReason = textValue(deprecationNode, "reason");
 
-            PropertyDocumentation documentation = new PropertyDocumentation(
-                    true,
-                    textValue(propertyNode, "type"),
-                    textValue(propertyNode, "description"),
-                    textValue(propertyNode, "defaultValue"),
-                    textValue(propertyNode, "sourceType"),
-                    deprecated,
-                    deprecationReason,
-                    hintsByName.getOrDefault(name, List.of())
-            );
+            PropertyDocumentation documentation =
+                    new PropertyDocumentation(
+                            true,
+                            textValue(propertyNode, "type"),
+                            textValue(propertyNode, "description"),
+                            textValue(propertyNode, "defaultValue"),
+                            textValue(propertyNode, "sourceType"),
+                            deprecated,
+                            deprecationReason,
+                            hintsByName.getOrDefault(name, List.of()));
             target.put(name, new MetadataProperty(name, documentation, customSource));
         }
     }
@@ -123,9 +130,5 @@ public class SpringConfigurationMetadataCatalog {
     }
 
     public record MetadataProperty(
-            String name,
-            PropertyDocumentation documentation,
-            boolean custom
-    ) {
-    }
+            String name, PropertyDocumentation documentation, boolean custom) {}
 }

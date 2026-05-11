@@ -1,5 +1,17 @@
 package com.robbanhoglund.springbootanalyzer.analyzer.http;
 
+import com.github.javaparser.JavaParser;
+import com.github.javaparser.ParserConfiguration;
+import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
+import com.github.javaparser.ast.body.FieldDeclaration;
+import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.expr.AnnotationExpr;
+import com.github.javaparser.ast.expr.BinaryExpr;
+import com.github.javaparser.ast.expr.Expression;
+import com.github.javaparser.ast.expr.MemberValuePair;
+import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
@@ -20,18 +32,6 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.http.InboundEndpoint;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.http.OutboundEndpoint;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.http.UrlKind;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.WebStack;
-import com.github.javaparser.JavaParser;
-import com.github.javaparser.ParserConfiguration;
-import com.github.javaparser.ast.CompilationUnit;
-import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
-import com.github.javaparser.ast.body.FieldDeclaration;
-import com.github.javaparser.ast.body.MethodDeclaration;
-import com.github.javaparser.ast.expr.AnnotationExpr;
-import com.github.javaparser.ast.expr.BinaryExpr;
-import com.github.javaparser.ast.expr.Expression;
-import com.github.javaparser.ast.expr.MemberValuePair;
-import com.github.javaparser.ast.expr.MethodCallExpr;
-import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -41,7 +41,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -57,57 +56,86 @@ import org.springframework.stereotype.Component;
 @Component
 public class HttpSurfaceAnalyzer {
 
-    private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\$\\{([^}:]+)(?::[^}]*)?}");
-    private static final Pattern URL_WITH_QUERY_PATTERN = Pattern.compile("([?&])(token|key|secret|password|access_token)=([^&]+)", Pattern.CASE_INSENSITIVE);
-    private static final Set<String> SENSITIVE_NAME_MARKERS = Set.of(
-            "password", "passwd", "secret", "token", "api-key", "apikey", "private-key", "credential", "authorization", "client-secret", "access-key", "refresh-token"
-    );
-    private static final Set<String> INBOUND_MAPPING_ANNOTATIONS = Set.of(
-            "RequestMapping",
-            "GetMapping",
-            "PostMapping",
-            "PutMapping",
-            "PatchMapping",
-            "DeleteMapping"
-    );
+    private static final Pattern PLACEHOLDER_PATTERN =
+            Pattern.compile("\\$\\{([^}:]+)(?::[^}]*)?}");
+    private static final Pattern URL_WITH_QUERY_PATTERN =
+            Pattern.compile(
+                    "([?&])(token|key|secret|password|access_token)=([^&]+)",
+                    Pattern.CASE_INSENSITIVE);
+    private static final Set<String> SENSITIVE_NAME_MARKERS =
+            Set.of(
+                    "password",
+                    "passwd",
+                    "secret",
+                    "token",
+                    "api-key",
+                    "apikey",
+                    "private-key",
+                    "credential",
+                    "authorization",
+                    "client-secret",
+                    "access-key",
+                    "refresh-token");
+    private static final Set<String> INBOUND_MAPPING_ANNOTATIONS =
+            Set.of(
+                    "RequestMapping",
+                    "GetMapping",
+                    "PostMapping",
+                    "PutMapping",
+                    "PatchMapping",
+                    "DeleteMapping");
 
     private final JavaParser javaParser;
 
     public HttpSurfaceAnalyzer() {
-        this.javaParser = new JavaParser(new ParserConfiguration()
-                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                .setCharacterEncoding(StandardCharsets.UTF_8));
+        this.javaParser =
+                new JavaParser(
+                        new ParserConfiguration()
+                                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
+                                .setCharacterEncoding(StandardCharsets.UTF_8));
     }
 
-    public Result analyze(Path repositoryRoot, ConfigurationAnalysis configurationAnalysis, BuildInfo buildInfo, WebStack webStack) {
+    public Result analyze(
+            Path repositoryRoot,
+            ConfigurationAnalysis configurationAnalysis,
+            BuildInfo buildInfo,
+            WebStack webStack) {
         BaseUrlCatalog baseUrlCatalog = new BaseUrlCatalog(configurationAnalysis);
         List<ConfiguredUrl> configuredUrls = detectConfiguredUrls(configurationAnalysis);
-        List<ActuatorEndpointExposure> actuatorExposures = detectActuatorExposures(configurationAnalysis);
+        List<ActuatorEndpointExposure> actuatorExposures =
+                detectActuatorExposures(configurationAnalysis);
         SourceSurface sourceSurface = scanJavaSources(repositoryRoot, baseUrlCatalog);
 
-        HttpSurfaceSummary summary = new HttpSurfaceSummary(
-                sourceSurface.inboundEndpoints().size(),
-                sourceSurface.outboundEndpoints().size(),
-                configuredUrls.size(),
-                actuatorExposures.size(),
-                sourceSurface.inboundEndpoints().stream()
-                        .map(InboundEndpoint::path)
-                        .filter(Objects::nonNull)
-                        .map(this::basePathOf)
-                        .filter(value -> !value.isBlank())
-                        .distinct()
-                        .toList(),
-                Stream.concat(
-                                configuredUrls.stream().map(ConfiguredUrl::host),
-                                sourceSurface.outboundEndpoints().stream().map(OutboundEndpoint::host)
-                        )
-                        .filter(value -> value != null && !value.isBlank())
-                        .distinct()
-                        .toList()
-        );
+        HttpSurfaceSummary summary =
+                new HttpSurfaceSummary(
+                        sourceSurface.inboundEndpoints().size(),
+                        sourceSurface.outboundEndpoints().size(),
+                        configuredUrls.size(),
+                        actuatorExposures.size(),
+                        sourceSurface.inboundEndpoints().stream()
+                                .map(InboundEndpoint::path)
+                                .filter(Objects::nonNull)
+                                .map(this::basePathOf)
+                                .filter(value -> !value.isBlank())
+                                .distinct()
+                                .toList(),
+                        Stream.concat(
+                                        configuredUrls.stream().map(ConfiguredUrl::host),
+                                        sourceSurface.outboundEndpoints().stream()
+                                                .map(OutboundEndpoint::host))
+                                .filter(value -> value != null && !value.isBlank())
+                                .distinct()
+                                .toList());
 
         List<Finding> findings = new ArrayList<>();
-        addHttpFindings(buildInfo, webStack, sourceSurface.inboundEndpoints(), configuredUrls, actuatorExposures, sourceSurface.outboundEndpoints(), findings);
+        addHttpFindings(
+                buildInfo,
+                webStack,
+                sourceSurface.inboundEndpoints(),
+                configuredUrls,
+                actuatorExposures,
+                sourceSurface.outboundEndpoints(),
+                findings);
 
         return new Result(
                 new HttpSurfaceAnalysis(
@@ -115,10 +143,8 @@ public class HttpSurfaceAnalyzer {
                         List.copyOf(sourceSurface.inboundEndpoints()),
                         List.copyOf(sourceSurface.outboundEndpoints()),
                         List.copyOf(configuredUrls),
-                        List.copyOf(actuatorExposures)
-                ),
-                List.copyOf(findings)
-        );
+                        List.copyOf(actuatorExposures)),
+                List.copyOf(findings));
     }
 
     private List<ConfiguredUrl> detectConfiguredUrls(ConfigurationAnalysis configurationAnalysis) {
@@ -131,29 +157,37 @@ public class HttpSurfaceAnalyzer {
             if (property.value() == null || property.value().isBlank()) {
                 continue;
             }
-            ConfiguredUrlMetadata metadata = classifyConfiguredUrl(property.name(), property.value(), property.valueRedacted());
+            ConfiguredUrlMetadata metadata =
+                    classifyConfiguredUrl(
+                            property.name(), property.value(), property.valueRedacted());
             UrlKind kind = metadata.kind();
             if (kind == null) {
                 continue;
             }
 
-            String value = property.valueRedacted() ? property.value() : sanitizeUrlValue(property.value());
-            configuredUrls.add(new ConfiguredUrl(
-                    property.name(),
-                    value,
-                    property.valueRedacted(),
-                    metadata.host() != null ? metadata.host() : hostForValue(property.name(), property.value(), kind),
-                    metadata.referencedPropertyName(),
-                    property.sourceFile(),
-                    property.line(),
-                    property.profile(),
-                    kind
-            ));
+            String value =
+                    property.valueRedacted()
+                            ? property.value()
+                            : sanitizeUrlValue(property.value());
+            configuredUrls.add(
+                    new ConfiguredUrl(
+                            property.name(),
+                            value,
+                            property.valueRedacted(),
+                            metadata.host() != null
+                                    ? metadata.host()
+                                    : hostForValue(property.name(), property.value(), kind),
+                            metadata.referencedPropertyName(),
+                            property.sourceFile(),
+                            property.line(),
+                            property.profile(),
+                            kind));
         }
         return List.copyOf(configuredUrls);
     }
 
-    private List<ActuatorEndpointExposure> detectActuatorExposures(ConfigurationAnalysis configurationAnalysis) {
+    private List<ActuatorEndpointExposure> detectActuatorExposures(
+            ConfigurationAnalysis configurationAnalysis) {
         if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
             return List.of();
         }
@@ -170,17 +204,16 @@ public class HttpSurfaceAnalyzer {
                 continue;
             }
 
-            List<String> exposedEndpoints = property.value().equals("[redacted]")
-                    ? List.of()
-                    : splitCsv(property.value());
-            exposures.add(new ActuatorEndpointExposure(
-                    property.name(),
-                    property.value(),
-                    property.sourceFile(),
-                    property.line(),
-                    property.profile(),
-                    exposedEndpoints
-            ));
+            List<String> exposedEndpoints =
+                    property.value().equals("[redacted]") ? List.of() : splitCsv(property.value());
+            exposures.add(
+                    new ActuatorEndpointExposure(
+                            property.name(),
+                            property.value(),
+                            property.sourceFile(),
+                            property.line(),
+                            property.profile(),
+                            exposedEndpoints));
         }
         return List.copyOf(exposures);
     }
@@ -195,14 +228,17 @@ public class HttpSurfaceAnalyzer {
         List<OutboundEndpoint> outboundEndpoints = new ArrayList<>();
 
         try (Stream<Path> files = Files.walk(sourceRoot)) {
-            for (Path file : files.filter(Files::isRegularFile)
-                    .filter(path -> path.toString().endsWith(".java"))
-                    .sorted(Comparator.naturalOrder())
-                    .toList()) {
-                parseSourceFile(repositoryRoot, file, inboundEndpoints, outboundEndpoints, baseUrlCatalog);
+            for (Path file :
+                    files.filter(Files::isRegularFile)
+                            .filter(path -> path.toString().endsWith(".java"))
+                            .sorted(Comparator.naturalOrder())
+                            .toList()) {
+                parseSourceFile(
+                        repositoryRoot, file, inboundEndpoints, outboundEndpoints, baseUrlCatalog);
             }
         } catch (IOException exception) {
-            throw new IllegalStateException("Failed to scan Java sources for HTTP surface analysis", exception);
+            throw new IllegalStateException(
+                    "Failed to scan Java sources for HTTP surface analysis", exception);
         }
         return new SourceSurface(List.copyOf(inboundEndpoints), List.copyOf(outboundEndpoints));
     }
@@ -212,39 +248,48 @@ public class HttpSurfaceAnalyzer {
             Path sourceFile,
             List<InboundEndpoint> inboundEndpoints,
             List<OutboundEndpoint> outboundEndpoints,
-            BaseUrlCatalog baseUrlCatalog
-    ) {
+            BaseUrlCatalog baseUrlCatalog) {
         try {
             var parseResult = javaParser.parse(sourceFile);
             if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
                 return;
             }
             CompilationUnit compilationUnit = parseResult.getResult().orElseThrow();
-            String packageName = compilationUnit.getPackageDeclaration()
-                    .map(declaration -> declaration.getNameAsString())
-                    .orElse("");
-            String relativePath = repositoryRoot.relativize(sourceFile).toString().replace('\\', '/');
+            String packageName =
+                    compilationUnit
+                            .getPackageDeclaration()
+                            .map(declaration -> declaration.getNameAsString())
+                            .orElse("");
+            String relativePath =
+                    repositoryRoot.relativize(sourceFile).toString().replace('\\', '/');
 
             Map<String, String> valueFieldIndex = buildValueFieldIndex(compilationUnit);
 
-            for (ClassOrInterfaceDeclaration type : compilationUnit.findAll(ClassOrInterfaceDeclaration.class)) {
-                String className = packageName.isBlank()
-                        ? type.getNameAsString()
-                        : packageName + "." + type.getNameAsString();
+            for (ClassOrInterfaceDeclaration type :
+                    compilationUnit.findAll(ClassOrInterfaceDeclaration.class)) {
+                String className =
+                        packageName.isBlank()
+                                ? type.getNameAsString()
+                                : packageName + "." + type.getNameAsString();
                 collectInboundEndpoints(type, className, relativePath, inboundEndpoints);
-                collectFeignEndpoints(type, className, relativePath, outboundEndpoints, baseUrlCatalog);
+                collectFeignEndpoints(
+                        type, className, relativePath, outboundEndpoints, baseUrlCatalog);
             }
 
             for (MethodCallExpr callExpr : compilationUnit.findAll(MethodCallExpr.class)) {
-                collectOutboundEndpoint(callExpr, relativePath, baseUrlCatalog, valueFieldIndex).ifPresent(outboundEndpoints::add);
-                collectFunctionalRoute(callExpr, relativePath, packageName).ifPresent(inboundEndpoints::add);
+                collectOutboundEndpoint(callExpr, relativePath, baseUrlCatalog, valueFieldIndex)
+                        .ifPresent(outboundEndpoints::add);
+                collectFunctionalRoute(callExpr, relativePath, packageName)
+                        .ifPresent(inboundEndpoints::add);
             }
 
             for (ObjectCreationExpr newExpr : compilationUnit.findAll(ObjectCreationExpr.class)) {
-                collectSocketEndpoint(newExpr, relativePath, valueFieldIndex).ifPresent(outboundEndpoints::add);
+                collectSocketEndpoint(newExpr, relativePath, valueFieldIndex)
+                        .ifPresent(outboundEndpoints::add);
             }
         } catch (IOException exception) {
-            throw new IllegalStateException("Failed to read Java source file: " + sourceFile, exception);
+            throw new IllegalStateException(
+                    "Failed to read Java source file: " + sourceFile, exception);
         }
     }
 
@@ -252,8 +297,7 @@ public class HttpSurfaceAnalyzer {
             ClassOrInterfaceDeclaration type,
             String className,
             String relativePath,
-            List<InboundEndpoint> inboundEndpoints
-    ) {
+            List<InboundEndpoint> inboundEndpoints) {
         if (!hasAnyAnnotation(type, Set.of("RestController", "Controller"))) {
             return;
         }
@@ -264,9 +308,13 @@ public class HttpSurfaceAnalyzer {
         }
 
         for (MethodDeclaration method : type.getMethods()) {
-            List<AnnotationExpr> methodAnnotations = method.getAnnotations().stream()
-                    .filter(annotation -> INBOUND_MAPPING_ANNOTATIONS.contains(simpleName(annotation.getNameAsString())))
-                    .toList();
+            List<AnnotationExpr> methodAnnotations =
+                    method.getAnnotations().stream()
+                            .filter(
+                                    annotation ->
+                                            INBOUND_MAPPING_ANNOTATIONS.contains(
+                                                    simpleName(annotation.getNameAsString())))
+                            .toList();
             if (methodAnnotations.isEmpty()) {
                 continue;
             }
@@ -280,23 +328,37 @@ public class HttpSurfaceAnalyzer {
 
                 for (String classPath : classPaths) {
                     for (String methodPath : methodPaths) {
-                        inboundEndpoints.add(new InboundEndpoint(
-                                httpMethod,
-                                combinePaths(classPath, methodPath),
-                                className,
-                                method.getNameAsString(),
-                                relativePath,
-                                method.getBegin().map(position -> position.line).orElse(null),
-                                annotationStringValue(annotation, "produces"),
-                                annotationStringValue(annotation, "consumes"),
-                                method.getParameters().stream()
-                                        .map(parameter -> parameter.getAnnotations().stream()
-                                                .map(expr -> "@" + simpleName(expr.getNameAsString()) + " " + parameter.getNameAsString())
-                                                .findFirst()
-                                                .orElse(parameter.getNameAsString()))
-                                        .toList(),
-                                EndpointSource.SPRING_MVC_ANNOTATION
-                        ));
+                        inboundEndpoints.add(
+                                new InboundEndpoint(
+                                        httpMethod,
+                                        combinePaths(classPath, methodPath),
+                                        className,
+                                        method.getNameAsString(),
+                                        relativePath,
+                                        method.getBegin()
+                                                .map(position -> position.line)
+                                                .orElse(null),
+                                        annotationStringValue(annotation, "produces"),
+                                        annotationStringValue(annotation, "consumes"),
+                                        method.getParameters().stream()
+                                                .map(
+                                                        parameter ->
+                                                                parameter.getAnnotations().stream()
+                                                                        .map(
+                                                                                expr ->
+                                                                                        "@"
+                                                                                                + simpleName(
+                                                                                                        expr
+                                                                                                                .getNameAsString())
+                                                                                                + " "
+                                                                                                + parameter
+                                                                                                        .getNameAsString())
+                                                                        .findFirst()
+                                                                        .orElse(
+                                                                                parameter
+                                                                                        .getNameAsString()))
+                                                .toList(),
+                                        EndpointSource.SPRING_MVC_ANNOTATION));
                     }
                 }
             }
@@ -308,35 +370,39 @@ public class HttpSurfaceAnalyzer {
             String className,
             String relativePath,
             List<OutboundEndpoint> outboundEndpoints,
-            BaseUrlCatalog baseUrlCatalog
-    ) {
+            BaseUrlCatalog baseUrlCatalog) {
         for (AnnotationExpr annotation : type.getAnnotations()) {
-            if (!"FeignClient".equals(simpleName(annotation.getNameAsString())) || !annotation.isNormalAnnotationExpr()) {
+            if (!"FeignClient".equals(simpleName(annotation.getNameAsString()))
+                    || !annotation.isNormalAnnotationExpr()) {
                 continue;
             }
             String urlValue = annotationStringValue(annotation, "url");
             String propertyName = placeholderName(urlValue);
-            BaseUrlMatch baseUrlMatch = propertyName == null
-                    ? null
-                    : baseUrlCatalog.byProperty(propertyName);
-            outboundEndpoints.add(new OutboundEndpoint(
-                    "HTTP",
-                    urlValue == null ? "Feign client" : sanitizeUrlValue(urlValue),
-                    baseUrlMatch != null ? baseUrlMatch.host() : hostForValue(propertyName, urlValue, UrlKind.HTTP_URL),
-                    baseUrlMatch != null ? baseUrlMatch.baseUrl() : null,
-                    baseUrlMatch != null ? sanitizeUrlValue(baseUrlMatch.baseUrl()) : sanitizeUrlValue(urlValue),
-                    "Feign",
-                    relativePath,
-                    annotation.getBegin().map(position -> position.line).orElse(null),
-                    className,
-                    null,
-                    propertyName != null,
-                    propertyName
-            ));
+            BaseUrlMatch baseUrlMatch =
+                    propertyName == null ? null : baseUrlCatalog.byProperty(propertyName);
+            outboundEndpoints.add(
+                    new OutboundEndpoint(
+                            "HTTP",
+                            urlValue == null ? "Feign client" : sanitizeUrlValue(urlValue),
+                            baseUrlMatch != null
+                                    ? baseUrlMatch.host()
+                                    : hostForValue(propertyName, urlValue, UrlKind.HTTP_URL),
+                            baseUrlMatch != null ? baseUrlMatch.baseUrl() : null,
+                            baseUrlMatch != null
+                                    ? sanitizeUrlValue(baseUrlMatch.baseUrl())
+                                    : sanitizeUrlValue(urlValue),
+                            "Feign",
+                            relativePath,
+                            annotation.getBegin().map(position -> position.line).orElse(null),
+                            className,
+                            null,
+                            propertyName != null,
+                            propertyName));
         }
     }
 
-    private Optional<InboundEndpoint> collectFunctionalRoute(MethodCallExpr callExpr, String relativePath, String packageName) {
+    private Optional<InboundEndpoint> collectFunctionalRoute(
+            MethodCallExpr callExpr, String relativePath, String packageName) {
         String methodName = callExpr.getNameAsString();
         if (!List.of("GET", "POST", "PUT", "PATCH", "DELETE").contains(methodName)) {
             return Optional.empty();
@@ -351,21 +417,27 @@ public class HttpSurfaceAnalyzer {
         }
 
         if (callExpr.findAncestor(MethodCallExpr.class)
-                .map(ancestor -> ancestor.getNameAsString().equals("route") || ancestor.getNameAsString().equals("routeBuilder"))
-                .orElse(false)
+                        .map(
+                                ancestor ->
+                                        ancestor.getNameAsString().equals("route")
+                                                || ancestor.getNameAsString()
+                                                        .equals("routeBuilder"))
+                        .orElse(false)
                 || callExpr.toString().contains("RequestPredicates.")) {
-            return Optional.of(new InboundEndpoint(
-                    methodName,
-                    path.get(),
-                    packageName.isBlank() ? "RouterFunction" : packageName + ".RouterFunction",
-                    "functional route",
-                    relativePath,
-                    callExpr.getBegin().map(position -> position.line).orElse(null),
-                    null,
-                    null,
-                    List.of(),
-                    EndpointSource.WEBFLUX_FUNCTIONAL_ROUTE
-            ));
+            return Optional.of(
+                    new InboundEndpoint(
+                            methodName,
+                            path.get(),
+                            packageName.isBlank()
+                                    ? "RouterFunction"
+                                    : packageName + ".RouterFunction",
+                            "functional route",
+                            relativePath,
+                            callExpr.getBegin().map(position -> position.line).orElse(null),
+                            null,
+                            null,
+                            List.of(),
+                            EndpointSource.WEBFLUX_FUNCTIONAL_ROUTE));
         }
         return Optional.empty();
     }
@@ -374,13 +446,26 @@ public class HttpSurfaceAnalyzer {
             MethodCallExpr callExpr,
             String relativePath,
             BaseUrlCatalog baseUrlCatalog,
-            Map<String, String> valueFieldIndex
-    ) {
+            Map<String, String> valueFieldIndex) {
         String methodName = callExpr.getNameAsString();
-        if (List.of("getForObject", "getForEntity", "postForObject", "postForEntity", "exchange", "execute").contains(methodName)) {
+        if (List.of(
+                        "getForObject",
+                        "getForEntity",
+                        "postForObject",
+                        "postForEntity",
+                        "exchange",
+                        "execute")
+                .contains(methodName)) {
             Optional<String> url = extractUrlArgument(callExpr, 0, valueFieldIndex);
             if (url.isPresent()) {
-                return Optional.of(outboundEndpointFor("RestTemplate", restTemplateMethod(methodName, callExpr), url.get(), relativePath, callExpr, baseUrlCatalog));
+                return Optional.of(
+                        outboundEndpointFor(
+                                "RestTemplate",
+                                restTemplateMethod(methodName, callExpr),
+                                url.get(),
+                                relativePath,
+                                callExpr,
+                                baseUrlCatalog));
             }
         }
 
@@ -388,38 +473,62 @@ public class HttpSurfaceAnalyzer {
             Optional<String> value = extractUrlArgument(callExpr, 0, valueFieldIndex);
             if (value.isPresent()) {
                 String clientType = resolveClientType(callExpr).orElse("HTTP client");
-                String httpMethod = inferHttpMethod(callExpr).orElse(methodName.equals("uri") ? "REQUEST" : "BASE_URL");
-                return Optional.of(outboundEndpointFor(clientType, httpMethod, value.get(), relativePath, callExpr, baseUrlCatalog));
+                String httpMethod =
+                        inferHttpMethod(callExpr)
+                                .orElse(methodName.equals("uri") ? "REQUEST" : "BASE_URL");
+                return Optional.of(
+                        outboundEndpointFor(
+                                clientType,
+                                httpMethod,
+                                value.get(),
+                                relativePath,
+                                callExpr,
+                                baseUrlCatalog));
             }
         }
 
-        if ("newBuilder".equals(methodName) && callExpr.toString().contains("HttpRequest.newBuilder")) {
+        if ("newBuilder".equals(methodName)
+                && callExpr.toString().contains("HttpRequest.newBuilder")) {
             Optional<String> value = extractUrlArgument(callExpr, 0, valueFieldIndex);
             if (value.isPresent()) {
-                return Optional.of(outboundEndpointFor(
-                        "HttpClient",
-                        inferHttpRequestBuilderMethod(callExpr).orElse("REQUEST"),
-                        value.get(),
-                        relativePath,
-                        callExpr,
-                        baseUrlCatalog
-                ));
+                return Optional.of(
+                        outboundEndpointFor(
+                                "HttpClient",
+                                inferHttpRequestBuilderMethod(callExpr).orElse("REQUEST"),
+                                value.get(),
+                                relativePath,
+                                callExpr,
+                                baseUrlCatalog));
             }
         }
 
         if ("open".equals(methodName)) {
             Optional<String> scope = callExpr.getScope().map(Expression::toString);
-            if (scope.map(s -> s.equals("SocketChannel") || s.equals("AsynchronousSocketChannel")).orElse(false)) {
+            if (scope.map(s -> s.equals("SocketChannel") || s.equals("AsynchronousSocketChannel"))
+                    .orElse(false)) {
                 String clientType = scope.get();
-                String className = callExpr.findAncestor(ClassOrInterfaceDeclaration.class)
-                        .map(ClassOrInterfaceDeclaration::getNameAsString).orElse(null);
-                String callerMethod = callExpr.findAncestor(MethodDeclaration.class)
-                        .map(MethodDeclaration::getNameAsString).orElse(null);
-                return Optional.of(new OutboundEndpoint(
-                        "CONNECT", null, null, null, null, clientType,
-                        relativePath, callExpr.getBegin().map(p -> p.line).orElse(null),
-                        className, callerMethod, false, null
-                ));
+                String className =
+                        callExpr.findAncestor(ClassOrInterfaceDeclaration.class)
+                                .map(ClassOrInterfaceDeclaration::getNameAsString)
+                                .orElse(null);
+                String callerMethod =
+                        callExpr.findAncestor(MethodDeclaration.class)
+                                .map(MethodDeclaration::getNameAsString)
+                                .orElse(null);
+                return Optional.of(
+                        new OutboundEndpoint(
+                                "CONNECT",
+                                null,
+                                null,
+                                null,
+                                null,
+                                clientType,
+                                relativePath,
+                                callExpr.getBegin().map(p -> p.line).orElse(null),
+                                className,
+                                callerMethod,
+                                false,
+                                null));
             }
         }
 
@@ -428,15 +537,28 @@ public class HttpSurfaceAnalyzer {
             for (int i = callExpr.getArguments().size() - 1; i >= 0; i--) {
                 Optional<String> url = extractUrlArgument(callExpr, i, valueFieldIndex);
                 if (url.isPresent() && looksLikeWebSocketUrl(url.get())) {
-                    String className = callExpr.findAncestor(ClassOrInterfaceDeclaration.class)
-                            .map(ClassOrInterfaceDeclaration::getNameAsString).orElse(null);
-                    String callerMethod = callExpr.findAncestor(MethodDeclaration.class)
-                            .map(MethodDeclaration::getNameAsString).orElse(null);
-                    return Optional.of(new OutboundEndpoint(
-                            "WS", url.get(), tryHostFromUrl(url.get()), null, url.get(), "WebSocket",
-                            relativePath, callExpr.getBegin().map(p -> p.line).orElse(null),
-                            className, callerMethod, false, null
-                    ));
+                    String className =
+                            callExpr.findAncestor(ClassOrInterfaceDeclaration.class)
+                                    .map(ClassOrInterfaceDeclaration::getNameAsString)
+                                    .orElse(null);
+                    String callerMethod =
+                            callExpr.findAncestor(MethodDeclaration.class)
+                                    .map(MethodDeclaration::getNameAsString)
+                                    .orElse(null);
+                    return Optional.of(
+                            new OutboundEndpoint(
+                                    "WS",
+                                    url.get(),
+                                    tryHostFromUrl(url.get()),
+                                    null,
+                                    url.get(),
+                                    "WebSocket",
+                                    relativePath,
+                                    callExpr.getBegin().map(p -> p.line).orElse(null),
+                                    className,
+                                    callerMethod,
+                                    false,
+                                    null));
                 }
             }
         }
@@ -445,48 +567,85 @@ public class HttpSurfaceAnalyzer {
     }
 
     private Optional<OutboundEndpoint> collectSocketEndpoint(
-            ObjectCreationExpr newExpr,
-            String relativePath,
-            Map<String, String> valueFieldIndex
-    ) {
+            ObjectCreationExpr newExpr, String relativePath, Map<String, String> valueFieldIndex) {
         String typeName = newExpr.getType().getNameAsString();
         Integer line = newExpr.getBegin().map(p -> p.line).orElse(null);
-        String className = newExpr.findAncestor(ClassOrInterfaceDeclaration.class)
-                .map(ClassOrInterfaceDeclaration::getNameAsString).orElse(null);
-        String callerMethod = newExpr.findAncestor(MethodDeclaration.class)
-                .map(MethodDeclaration::getNameAsString).orElse(null);
+        String className =
+                newExpr.findAncestor(ClassOrInterfaceDeclaration.class)
+                        .map(ClassOrInterfaceDeclaration::getNameAsString)
+                        .orElse(null);
+        String callerMethod =
+                newExpr.findAncestor(MethodDeclaration.class)
+                        .map(MethodDeclaration::getNameAsString)
+                        .orElse(null);
 
         return switch (typeName) {
             case "Socket" -> {
                 if (newExpr.getArguments().isEmpty()) yield Optional.empty();
                 String host = resolveStringArgOrField(newExpr.getArgument(0), valueFieldIndex);
-                String port = newExpr.getArguments().size() > 1
-                        ? resolvePortArg(newExpr.getArgument(1), valueFieldIndex)
-                        : null;
-                String url = host != null
-                        ? (port != null ? host + ":" + port : host)
-                        : (port != null ? ":" + port : null);
+                String port =
+                        newExpr.getArguments().size() > 1
+                                ? resolvePortArg(newExpr.getArgument(1), valueFieldIndex)
+                                : null;
+                String url =
+                        host != null
+                                ? (port != null ? host + ":" + port : host)
+                                : (port != null ? ":" + port : null);
                 if (url == null) yield Optional.empty();
-                yield Optional.of(new OutboundEndpoint(
-                        "CONNECT", url, host, null, null, "Socket",
-                        relativePath, line, className, callerMethod, false, null
-                ));
+                yield Optional.of(
+                        new OutboundEndpoint(
+                                "CONNECT",
+                                url,
+                                host,
+                                null,
+                                null,
+                                "Socket",
+                                relativePath,
+                                line,
+                                className,
+                                callerMethod,
+                                false,
+                                null));
             }
             case "ServerSocket" -> {
                 if (newExpr.getArguments().isEmpty()) yield Optional.empty();
                 String port = resolvePortArg(newExpr.getArgument(0), valueFieldIndex);
                 if (port == null) yield Optional.empty();
-                yield Optional.of(new OutboundEndpoint(
-                        "LISTEN", ":" + port, null, null, null, "ServerSocket",
-                        relativePath, line, className, callerMethod, false, null
-                ));
+                yield Optional.of(
+                        new OutboundEndpoint(
+                                "LISTEN",
+                                ":" + port,
+                                null,
+                                null,
+                                null,
+                                "ServerSocket",
+                                relativePath,
+                                line,
+                                className,
+                                callerMethod,
+                                false,
+                                null));
             }
-            case "ReactorNettyWebSocketClient", "StandardWebSocketClient", "JettyWebSocketClient",
-                    "SockJsClient", "TomcatWebSocketClient", "UndertowWebSocketClient" ->
-                    Optional.of(new OutboundEndpoint(
-                            "WS", null, null, null, null, "WebSocket (" + typeName + ")",
-                            relativePath, line, className, callerMethod, false, null
-                    ));
+            case "ReactorNettyWebSocketClient",
+                    "StandardWebSocketClient",
+                    "JettyWebSocketClient",
+                    "SockJsClient",
+                    "TomcatWebSocketClient",
+                    "UndertowWebSocketClient" ->
+                    Optional.of(
+                            new OutboundEndpoint(
+                                    "WS",
+                                    null,
+                                    null,
+                                    null,
+                                    null,
+                                    "WebSocket (" + typeName + ")",
+                                    relativePath,
+                                    line,
+                                    className,
+                                    callerMethod,
+                                    false,
+                                    null));
             default -> Optional.empty();
         };
     }
@@ -529,8 +688,10 @@ public class HttpSurfaceAnalyzer {
             return false;
         }
         String lower = value.toLowerCase(Locale.ROOT);
-        return lower.startsWith("ws://") || lower.startsWith("wss://")
-                || lower.startsWith("http://") || lower.startsWith("https://")
+        return lower.startsWith("ws://")
+                || lower.startsWith("wss://")
+                || lower.startsWith("http://")
+                || lower.startsWith("https://")
                 || lower.startsWith("${");
     }
 
@@ -567,7 +728,8 @@ public class HttpSurfaceAnalyzer {
 
     private String annotationSingleOrDefaultStringValue(AnnotationExpr annotation) {
         if (annotation.isSingleMemberAnnotationExpr()) {
-            return stringValue(annotation.asSingleMemberAnnotationExpr().getMemberValue()).orElse(null);
+            return stringValue(annotation.asSingleMemberAnnotationExpr().getMemberValue())
+                    .orElse(null);
         }
         return annotationStringValue(annotation, "value");
     }
@@ -578,19 +740,28 @@ public class HttpSurfaceAnalyzer {
             String rawValue,
             String relativePath,
             MethodCallExpr callExpr,
-            BaseUrlCatalog baseUrlCatalog
-    ) {
+            BaseUrlCatalog baseUrlCatalog) {
         String propertyName = placeholderName(rawValue);
-        String className = callExpr.findAncestor(ClassOrInterfaceDeclaration.class)
-                .map(ClassOrInterfaceDeclaration::getNameAsString)
-                .orElse(null);
+        String className =
+                callExpr.findAncestor(ClassOrInterfaceDeclaration.class)
+                        .map(ClassOrInterfaceDeclaration::getNameAsString)
+                        .orElse(null);
         String baseUrlHint = baseUrlHint(callExpr);
-        BaseUrlMatch baseUrlMatch = resolveBaseUrl(rawValue, propertyName, className, relativePath, baseUrlHint, baseUrlCatalog);
+        BaseUrlMatch baseUrlMatch =
+                resolveBaseUrl(
+                        rawValue,
+                        propertyName,
+                        className,
+                        relativePath,
+                        baseUrlHint,
+                        baseUrlCatalog);
         String sanitizedValue = sanitizeUrlValue(rawValue);
         return new OutboundEndpoint(
                 method.toUpperCase(Locale.ROOT),
                 sanitizedValue,
-                baseUrlMatch != null ? baseUrlMatch.host() : hostForValue(propertyName, rawValue, UrlKind.HTTP_URL),
+                baseUrlMatch != null
+                        ? baseUrlMatch.host()
+                        : hostForValue(propertyName, rawValue, UrlKind.HTTP_URL),
                 baseUrlMatch != null ? baseUrlMatch.baseUrl() : null,
                 buildFullUrlPreview(rawValue, baseUrlMatch),
                 clientType,
@@ -601,8 +772,9 @@ public class HttpSurfaceAnalyzer {
                         .map(MethodDeclaration::getNameAsString)
                         .orElse(null),
                 propertyName != null || baseUrlMatch != null,
-                propertyName != null ? propertyName : (baseUrlMatch == null ? null : baseUrlMatch.propertyName())
-        );
+                propertyName != null
+                        ? propertyName
+                        : (baseUrlMatch == null ? null : baseUrlMatch.propertyName()));
     }
 
     private void addHttpFindings(
@@ -612,103 +784,148 @@ public class HttpSurfaceAnalyzer {
             List<ConfiguredUrl> configuredUrls,
             List<ActuatorEndpointExposure> actuatorExposures,
             List<OutboundEndpoint> outboundEndpoints,
-            List<Finding> findings
-    ) {
-        if (!inboundEndpoints.isEmpty() && (webStack == WebStack.NON_WEB || webStack == WebStack.UNKNOWN)) {
-            findings.add(new Finding(
-                    FindingSeverity.WARNING,
-                    "Inbound HTTP endpoints were detected in code, but the runtime stack does not look like a web application.",
-                    inboundEndpoints.get(0).sourceFile()
-            ));
+            List<Finding> findings) {
+        if (!inboundEndpoints.isEmpty()
+                && (webStack == WebStack.NON_WEB || webStack == WebStack.UNKNOWN)) {
+            findings.add(
+                    new Finding(
+                            FindingSeverity.WARNING,
+                            "Inbound HTTP endpoints were detected in code, but the runtime stack"
+                                    + " does not look like a web application.",
+                            inboundEndpoints.get(0).sourceFile()));
         }
 
-        if (inboundEndpoints.isEmpty() && (webStack == WebStack.SERVLET_MVC || webStack == WebStack.REACTIVE_WEBFLUX || webStack == WebStack.MIXED_MVC_AND_WEBFLUX)) {
-            findings.add(new Finding(
-                    FindingSeverity.INFO,
-                    "A web runtime stack was detected, but no inbound HTTP endpoints were found.",
-                    null
-            ));
+        if (inboundEndpoints.isEmpty()
+                && (webStack == WebStack.SERVLET_MVC
+                        || webStack == WebStack.REACTIVE_WEBFLUX
+                        || webStack == WebStack.MIXED_MVC_AND_WEBFLUX)) {
+            findings.add(
+                    new Finding(
+                            FindingSeverity.INFO,
+                            "A web runtime stack was detected, but no inbound HTTP endpoints were"
+                                    + " found.",
+                            null));
         }
 
         if (webStack == WebStack.MIXED_MVC_AND_WEBFLUX
-                && outboundEndpoints.stream().anyMatch(endpoint -> "WebClient".equals(endpoint.clientType()))) {
-            findings.add(new Finding(
-                    FindingSeverity.INFO,
-                    "WebFlux APIs were detected while the build includes both MVC and WebFlux starters. Spring MVC normally wins unless configuration overrides it.",
-                    null
-            ));
+                && outboundEndpoints.stream()
+                        .anyMatch(endpoint -> "WebClient".equals(endpoint.clientType()))) {
+            findings.add(
+                    new Finding(
+                            FindingSeverity.INFO,
+                            "WebFlux APIs were detected while the build includes both MVC and"
+                                + " WebFlux starters. Spring MVC normally wins unless configuration"
+                                + " overrides it.",
+                            null));
         }
 
-        long insecureUrlCount = Stream.concat(
-                        configuredUrls.stream()
-                                .filter(this::isReportablePlainHttpConfiguredUrl)
-                                .map(ConfiguredUrl::value),
-                        outboundEndpoints.stream()
-                                .filter(this::isReportablePlainHttpOutbound)
-                                .map(OutboundEndpoint::urlOrTemplate)
-                )
-                .filter(Objects::nonNull)
-                .filter(value -> value.startsWith("http://"))
-                .count();
+        long insecureUrlCount =
+                Stream.concat(
+                                configuredUrls.stream()
+                                        .filter(this::isReportablePlainHttpConfiguredUrl)
+                                        .map(ConfiguredUrl::value),
+                                outboundEndpoints.stream()
+                                        .filter(this::isReportablePlainHttpOutbound)
+                                        .map(OutboundEndpoint::urlOrTemplate))
+                        .filter(Objects::nonNull)
+                        .filter(value -> value.startsWith("http://"))
+                        .count();
         if (insecureUrlCount > 0) {
             List<FindingOccurrence> occurrences = new ArrayList<>();
             configuredUrls.stream()
                     .filter(this::isReportablePlainHttpConfiguredUrl)
-                    .forEach(url -> occurrences.add(configuredUrlOccurrence(
-                            url,
-                            "Configured plain HTTP URL: " + url.propertyName() + "=" + sanitizeUrlValue(url.value())
-                    )));
+                    .forEach(
+                            url ->
+                                    occurrences.add(
+                                            configuredUrlOccurrence(
+                                                    url,
+                                                    "Configured plain HTTP URL: "
+                                                            + url.propertyName()
+                                                            + "="
+                                                            + sanitizeUrlValue(url.value()))));
             outboundEndpoints.stream()
                     .filter(this::isReportablePlainHttpOutbound)
-                    .forEach(endpoint -> occurrences.add(outboundEndpointOccurrence(
-                            endpoint,
-                            "Outbound plain HTTP call: " + endpoint.method() + " " + sanitizeUrlValue(endpoint.urlOrTemplate())
-                    )));
+                    .forEach(
+                            endpoint ->
+                                    occurrences.add(
+                                            outboundEndpointOccurrence(
+                                                    endpoint,
+                                                    "Outbound plain HTTP call: "
+                                                            + endpoint.method()
+                                                            + " "
+                                                            + sanitizeUrlValue(
+                                                                    endpoint.urlOrTemplate()))));
 
-            FindingFactory.Builder builder = FindingFactory.builder(FindingRules.SPRING_HTTP_PLAIN_URL, FindingConfidence.HIGH)
-                    .shortMessage(insecureUrlCount + " external HTTP endpoints use plain http:// instead of https://.")
-                    .whyBadPractice("Plain HTTP can expose traffic to interception or modification outside trusted local environments.")
-                    .possibleImpact("Credentials, tokens, and business data can cross the network without transport security when these endpoints are used outside local or tightly controlled environments.")
-                    .recommendation("Use HTTPS for external service URLs unless the endpoint is intentionally local or behind a trusted internal network.")
-                    .evidence("Configured URLs and outbound endpoint templates included external plain HTTP addresses outside localhost and test-only configuration.")
-                    .limitations("Static analysis cannot prove the full network topology or whether an internal transport layer adds encryption outside the application configuration.")
-                    .target("external HTTP URLs")
-                    .location("HTTP surface")
-                    .occurrences(occurrences);
+            FindingFactory.Builder builder =
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_HTTP_PLAIN_URL, FindingConfidence.HIGH)
+                            .shortMessage(
+                                    insecureUrlCount
+                                            + " external HTTP endpoints use plain http:// instead"
+                                            + " of https://.")
+                            .whyBadPractice(
+                                    "Plain HTTP can expose traffic to interception or modification"
+                                            + " outside trusted local environments.")
+                            .possibleImpact(
+                                    "Credentials, tokens, and business data can cross the network"
+                                        + " without transport security when these endpoints are"
+                                        + " used outside local or tightly controlled environments.")
+                            .recommendation(
+                                    "Use HTTPS for external service URLs unless the endpoint is"
+                                            + " intentionally local or behind a trusted internal"
+                                            + " network.")
+                            .evidence(
+                                    "Configured URLs and outbound endpoint templates included"
+                                            + " external plain HTTP addresses outside localhost and"
+                                            + " test-only configuration.")
+                            .limitations(
+                                    "Static analysis cannot prove the full network topology or"
+                                            + " whether an internal transport layer adds encryption"
+                                            + " outside the application configuration.")
+                            .target("external HTTP URLs")
+                            .location("HTTP surface")
+                            .occurrences(occurrences);
             if (!occurrences.isEmpty()) {
                 builder.sourceLocation(occurrences.get(0).location());
             }
             findings.add(builder.build());
         }
 
-        long querySecretCount = Stream.concat(
-                        configuredUrls.stream().map(ConfiguredUrl::value),
-                        outboundEndpoints.stream().map(OutboundEndpoint::urlOrTemplate)
-                )
-                .filter(Objects::nonNull)
-                .filter(value -> URL_WITH_QUERY_PATTERN.matcher(value).find())
-                .count();
+        long querySecretCount =
+                Stream.concat(
+                                configuredUrls.stream().map(ConfiguredUrl::value),
+                                outboundEndpoints.stream().map(OutboundEndpoint::urlOrTemplate))
+                        .filter(Objects::nonNull)
+                        .filter(value -> URL_WITH_QUERY_PATTERN.matcher(value).find())
+                        .count();
         if (querySecretCount > 0) {
-            findings.add(new Finding(
-                    FindingSeverity.WARNING,
-                    querySecretCount + " outbound URLs contain credential-like query parameters.",
-                    null
-            ));
+            findings.add(
+                    new Finding(
+                            FindingSeverity.WARNING,
+                            querySecretCount
+                                    + " outbound URLs contain credential-like query parameters.",
+                            null));
         }
 
-        boolean actuatorWildcard = actuatorExposures.stream()
-                .anyMatch(exposure -> "management.endpoints.web.exposure.include".equals(exposure.propertyName())
-                        && exposure.exposedEndpoints().contains("*"));
+        boolean actuatorWildcard =
+                actuatorExposures.stream()
+                        .anyMatch(
+                                exposure ->
+                                        "management.endpoints.web.exposure.include"
+                                                        .equals(exposure.propertyName())
+                                                && exposure.exposedEndpoints().contains("*"));
         if (actuatorWildcard) {
-            findings.add(new Finding(
-                    FindingSeverity.WARNING,
-                    "Actuator web exposure includes '*', which publishes every endpoint over HTTP.",
-                    null
-            ));
+            findings.add(
+                    new Finding(
+                            FindingSeverity.WARNING,
+                            "Actuator web exposure includes '*', which publishes every endpoint"
+                                    + " over HTTP.",
+                            null));
         }
     }
 
-    private ConfiguredUrlMetadata classifyConfiguredUrl(String propertyName, String value, boolean valueRedacted) {
+    private ConfiguredUrlMetadata classifyConfiguredUrl(
+            String propertyName, String value, boolean valueRedacted) {
         String normalizedName = propertyName == null ? "" : propertyName.toLowerCase(Locale.ROOT);
         String normalizedValue = value.toLowerCase(Locale.ROOT);
         String referencedPropertyName = placeholderName(value);
@@ -725,7 +942,8 @@ public class HttpSurfaceAnalyzer {
                     || normalizedName.endsWith(".endpoint")
                     || normalizedName.endsWith(".base-url")
                     || normalizedName.equals("spring.flyway.url")) {
-                return new ConfiguredUrlMetadata(UrlKind.PROPERTY_REFERENCE, null, referencedPropertyName);
+                return new ConfiguredUrlMetadata(
+                        UrlKind.PROPERTY_REFERENCE, null, referencedPropertyName);
             }
             if (normalizedName.contains("provider")) {
                 return ConfiguredUrlMetadata.none();
@@ -738,25 +956,31 @@ public class HttpSurfaceAnalyzer {
                 || normalizedValue.startsWith("https://")
                 || normalizedValue.startsWith("ws://")
                 || normalizedValue.startsWith("wss://")) {
-            if (normalizedName.contains("issuer-uri") || normalizedName.contains("introspection-uri")) {
-                return new ConfiguredUrlMetadata(UrlKind.OAUTH_OIDC_URL, null, referencedPropertyName);
+            if (normalizedName.contains("issuer-uri")
+                    || normalizedName.contains("introspection-uri")) {
+                return new ConfiguredUrlMetadata(
+                        UrlKind.OAUTH_OIDC_URL, null, referencedPropertyName);
             }
             if (normalizedName.contains("zipkin") || normalizedName.contains("otlp")) {
-                return new ConfiguredUrlMetadata(UrlKind.OBSERVABILITY_ENDPOINT, null, referencedPropertyName);
+                return new ConfiguredUrlMetadata(
+                        UrlKind.OBSERVABILITY_ENDPOINT, null, referencedPropertyName);
             }
             return new ConfiguredUrlMetadata(UrlKind.HTTP_URL, null, referencedPropertyName);
         }
         if (normalizedName.equals("spring.mail.host")) {
-            return new ConfiguredUrlMetadata(UrlKind.MAIL_HOST, firstHostToken(value), referencedPropertyName);
+            return new ConfiguredUrlMetadata(
+                    UrlKind.MAIL_HOST, firstHostToken(value), referencedPropertyName);
         }
         if (normalizedName.contains("bootstrap-servers")
                 || normalizedName.contains("rabbitmq.host")
                 || normalizedName.contains("rabbitmq.addresses")
                 || normalizedName.contains("kafka.bootstrap-servers")) {
-            return new ConfiguredUrlMetadata(UrlKind.MESSAGE_BROKER_URL, firstHostToken(value), referencedPropertyName);
+            return new ConfiguredUrlMetadata(
+                    UrlKind.MESSAGE_BROKER_URL, firstHostToken(value), referencedPropertyName);
         }
         if (normalizedName.contains("redis.host")) {
-            return new ConfiguredUrlMetadata(UrlKind.REDIS_HOST, firstHostToken(value), referencedPropertyName);
+            return new ConfiguredUrlMetadata(
+                    UrlKind.REDIS_HOST, firstHostToken(value), referencedPropertyName);
         }
         if (normalizedName.endsWith(".url")
                 || normalizedName.endsWith(".base-url")
@@ -765,14 +989,15 @@ public class HttpSurfaceAnalyzer {
             return new ConfiguredUrlMetadata(UrlKind.OTHER, null, referencedPropertyName);
         }
         if ((normalizedName.endsWith(".host")
-                || normalizedName.endsWith(".hosts")
-                || normalizedName.endsWith(".server")
-                || normalizedName.endsWith(".servers"))
+                        || normalizedName.endsWith(".hosts")
+                        || normalizedName.endsWith(".server")
+                        || normalizedName.endsWith(".servers"))
                 && !normalizedName.endsWith(".provider")
                 && !normalizedName.contains("api-key")
                 && !normalizedName.contains("api-secret")
                 && !normalizedName.endsWith(".secret")) {
-            return new ConfiguredUrlMetadata(UrlKind.OTHER, firstHostToken(value), referencedPropertyName);
+            return new ConfiguredUrlMetadata(
+                    UrlKind.OTHER, firstHostToken(value), referencedPropertyName);
         }
         return ConfiguredUrlMetadata.none();
     }
@@ -790,14 +1015,18 @@ public class HttpSurfaceAnalyzer {
             return null;
         }
         String normalizedName = propertyName == null ? "" : propertyName.toLowerCase(Locale.ROOT);
-        if (kind == UrlKind.MAIL_HOST || kind == UrlKind.REDIS_HOST || kind == UrlKind.MESSAGE_BROKER_URL || normalizedName.endsWith(".host")) {
+        if (kind == UrlKind.MAIL_HOST
+                || kind == UrlKind.REDIS_HOST
+                || kind == UrlKind.MESSAGE_BROKER_URL
+                || normalizedName.endsWith(".host")) {
             return firstHostToken(value);
         }
         try {
             if (value.startsWith("jdbc:")) {
                 String jdbcValue = value.substring(5);
                 if (jdbcValue.startsWith("postgresql://") || jdbcValue.startsWith("mysql://")) {
-                    return URI.create("http://" + jdbcValue.substring(jdbcValue.indexOf("://") + 3)).getHost();
+                    return URI.create("http://" + jdbcValue.substring(jdbcValue.indexOf("://") + 3))
+                            .getHost();
                 }
                 return null;
             }
@@ -880,10 +1109,12 @@ public class HttpSurfaceAnalyzer {
         for (Expression argument : callExpr.getArguments()) {
             String rendered = argument.toString();
             if (rendered.startsWith("HttpMethod.")) {
-                return Optional.of(rendered.substring("HttpMethod.".length()).toUpperCase(Locale.ROOT));
+                return Optional.of(
+                        rendered.substring("HttpMethod.".length()).toUpperCase(Locale.ROOT));
             }
             if (rendered.startsWith("RequestMethod.")) {
-                return Optional.of(rendered.substring("RequestMethod.".length()).toUpperCase(Locale.ROOT));
+                return Optional.of(
+                        rendered.substring("RequestMethod.".length()).toUpperCase(Locale.ROOT));
             }
         }
         return Optional.empty();
@@ -903,7 +1134,8 @@ public class HttpSurfaceAnalyzer {
         return Optional.empty();
     }
 
-    private Optional<String> extractUrlArgument(MethodCallExpr callExpr, int index, Map<String, String> valueFieldIndex) {
+    private Optional<String> extractUrlArgument(
+            MethodCallExpr callExpr, int index, Map<String, String> valueFieldIndex) {
         Optional<String> result = extractUrlArgument(callExpr, index);
         if (result.isPresent()) {
             return result;
@@ -938,11 +1170,15 @@ public class HttpSurfaceAnalyzer {
         }
         if (argument.isMethodCallExpr()
                 && "create".equals(argument.asMethodCallExpr().getNameAsString())
-                && argument.asMethodCallExpr().getScope().map(scope -> scope.toString().equals("URI")).orElse(false)
+                && argument.asMethodCallExpr()
+                        .getScope()
+                        .map(scope -> scope.toString().equals("URI"))
+                        .orElse(false)
                 && !argument.asMethodCallExpr().getArguments().isEmpty()) {
             return urlLikeValue(argument.asMethodCallExpr().getArgument(0));
         }
-        if (argument.isObjectCreationExpr() && argument.asObjectCreationExpr().getType().getNameAsString().equals("URI")
+        if (argument.isObjectCreationExpr()
+                && argument.asObjectCreationExpr().getType().getNameAsString().equals("URI")
                 && !argument.asObjectCreationExpr().getArguments().isEmpty()) {
             return urlLikeValue(argument.asObjectCreationExpr().getArgument(0));
         }
@@ -981,7 +1217,9 @@ public class HttpSurfaceAnalyzer {
         if (expression.isBinaryExpr()) {
             return relativePathFromBinaryExpression(expression.asBinaryExpr());
         }
-        if (expression.isNameExpr() || expression.isMethodCallExpr() || expression.isFieldAccessExpr()) {
+        if (expression.isNameExpr()
+                || expression.isMethodCallExpr()
+                || expression.isFieldAccessExpr()) {
             return Optional.of("");
         }
         return Optional.empty();
@@ -1011,9 +1249,11 @@ public class HttpSurfaceAnalyzer {
             case "PutMapping" -> "PUT";
             case "PatchMapping" -> "PATCH";
             case "DeleteMapping" -> "DELETE";
-            case "RequestMapping" -> annotationStringValue(annotation, "method") == null
-                    ? "ANY"
-                    : annotationStringValue(annotation, "method").replace("RequestMethod.", "");
+            case "RequestMapping" ->
+                    annotationStringValue(annotation, "method") == null
+                            ? "ANY"
+                            : annotationStringValue(annotation, "method")
+                                    .replace("RequestMethod.", "");
             default -> "ANY";
         };
     }
@@ -1026,10 +1266,12 @@ public class HttpSurfaceAnalyzer {
                 continue;
             }
             if (annotation.isSingleMemberAnnotationExpr()) {
-                stringValue(annotation.asSingleMemberAnnotationExpr().getMemberValue()).ifPresent(paths::add);
+                stringValue(annotation.asSingleMemberAnnotationExpr().getMemberValue())
+                        .ifPresent(paths::add);
             } else if (annotation.isNormalAnnotationExpr()) {
                 for (MemberValuePair pair : annotation.asNormalAnnotationExpr().getPairs()) {
-                    if ("value".equals(pair.getNameAsString()) || "path".equals(pair.getNameAsString())) {
+                    if ("value".equals(pair.getNameAsString())
+                            || "path".equals(pair.getNameAsString())) {
                         extractStringValues(pair.getValue()).forEach(paths::add);
                     }
                 }
@@ -1044,9 +1286,11 @@ public class HttpSurfaceAnalyzer {
         }
         for (MemberValuePair pair : annotation.asNormalAnnotationExpr().getPairs()) {
             if (memberName.equals(pair.getNameAsString())) {
-                return stringValue(pair.getValue()).orElseGet(() ->
-                        extractStringValues(pair.getValue()).stream().collect(Collectors.joining(", "))
-                );
+                return stringValue(pair.getValue())
+                        .orElseGet(
+                                () ->
+                                        extractStringValues(pair.getValue()).stream()
+                                                .collect(Collectors.joining(", ")));
             }
         }
         return null;
@@ -1084,8 +1328,9 @@ public class HttpSurfaceAnalyzer {
         if (left.isBlank() && right.isBlank()) {
             return "/";
         }
-        String combined = (left.startsWith("/") ? left : "/" + left)
-                + (right.isBlank() ? "" : (right.startsWith("/") ? right : "/" + right));
+        String combined =
+                (left.startsWith("/") ? left : "/" + left)
+                        + (right.isBlank() ? "" : (right.startsWith("/") ? right : "/" + right));
         return combined.replaceAll("//+", "/");
     }
 
@@ -1109,14 +1354,22 @@ public class HttpSurfaceAnalyzer {
     }
 
     private boolean isReportablePlainHttpConfiguredUrl(ConfiguredUrl configuredUrl) {
-        if (configuredUrl == null || configuredUrl.value() == null || !configuredUrl.value().startsWith("http://")) {
+        if (configuredUrl == null
+                || configuredUrl.value() == null
+                || !configuredUrl.value().startsWith("http://")) {
             return false;
         }
         if (isLocalHost(configuredUrl.host())) {
             return false;
         }
-        String profile = configuredUrl.profile() == null ? "" : configuredUrl.profile().toLowerCase(Locale.ROOT);
-        String sourceFile = configuredUrl.sourceFile() == null ? "" : configuredUrl.sourceFile().toLowerCase(Locale.ROOT);
+        String profile =
+                configuredUrl.profile() == null
+                        ? ""
+                        : configuredUrl.profile().toLowerCase(Locale.ROOT);
+        String sourceFile =
+                configuredUrl.sourceFile() == null
+                        ? ""
+                        : configuredUrl.sourceFile().toLowerCase(Locale.ROOT);
         return !profile.equals("test")
                 && !sourceFile.contains("src/test/resources")
                 && !configuredUrl.value().toLowerCase(Locale.ROOT).contains("localhost/mock");
@@ -1157,8 +1410,7 @@ public class HttpSurfaceAnalyzer {
             String className,
             String sourceFile,
             String baseUrlHint,
-            BaseUrlCatalog baseUrlCatalog
-    ) {
+            BaseUrlCatalog baseUrlCatalog) {
         if (propertyName != null) {
             BaseUrlMatch direct = baseUrlCatalog.byProperty(propertyName);
             if (direct != null) {
@@ -1174,7 +1426,8 @@ public class HttpSurfaceAnalyzer {
     private String baseUrlHint(MethodCallExpr callExpr) {
         for (Expression candidate = callExpr; candidate != null; ) {
             if (candidate instanceof MethodCallExpr currentCall) {
-                if ("baseUrl".equals(currentCall.getNameAsString()) && !currentCall.getArguments().isEmpty()) {
+                if ("baseUrl".equals(currentCall.getNameAsString())
+                        && !currentCall.getArguments().isEmpty()) {
                     return currentCall.getArgument(0).toString();
                 }
                 if ("newBuilder".equals(currentCall.getNameAsString())
@@ -1199,7 +1452,8 @@ public class HttpSurfaceAnalyzer {
                 && !expression.asMethodCallExpr().getArguments().isEmpty()) {
             return extractBaseUrlHint(expression.asMethodCallExpr().getArgument(0));
         }
-        if (expression.isObjectCreationExpr() && !expression.asObjectCreationExpr().getArguments().isEmpty()) {
+        if (expression.isObjectCreationExpr()
+                && !expression.asObjectCreationExpr().getArguments().isEmpty()) {
             return extractBaseUrlHint(expression.asObjectCreationExpr().getArgument(0));
         }
         if (expression.isBinaryExpr()) {
@@ -1228,9 +1482,13 @@ public class HttpSurfaceAnalyzer {
             return sanitizeUrlValue(rawValue);
         }
         if (rawValue.startsWith("/")) {
-            String combined = baseUrlMatch.baseUrl().endsWith("/")
-                    ? baseUrlMatch.baseUrl().substring(0, baseUrlMatch.baseUrl().length() - 1) + rawValue
-                    : baseUrlMatch.baseUrl() + rawValue;
+            String combined =
+                    baseUrlMatch.baseUrl().endsWith("/")
+                            ? baseUrlMatch
+                                            .baseUrl()
+                                            .substring(0, baseUrlMatch.baseUrl().length() - 1)
+                                    + rawValue
+                            : baseUrlMatch.baseUrl() + rawValue;
             return sanitizeUrlValue(combined);
         }
         return sanitizeUrlValue(rawValue);
@@ -1243,71 +1501,59 @@ public class HttpSurfaceAnalyzer {
 
     private FindingOccurrence configuredUrlOccurrence(ConfiguredUrl configuredUrl, String message) {
         Integer line = configuredUrl.line();
-        SourceLocation location = new SourceLocation(
-                configuredUrl.sourceFile(),
-                line != null && line > 0 ? line : 0,
-                line != null && line > 0 ? line : 0,
-                null,
-                null,
-                configuredUrl.propertyName(),
-                SourceLocation.inferLanguage(configuredUrl.sourceFile()),
-                null
-        );
-        List<HighlightRange> ranges = line != null && line > 0
-                ? List.of(new HighlightRange(line, line, null, null, "issue"))
-                : List.of();
+        SourceLocation location =
+                new SourceLocation(
+                        configuredUrl.sourceFile(),
+                        line != null && line > 0 ? line : 0,
+                        line != null && line > 0 ? line : 0,
+                        null,
+                        null,
+                        configuredUrl.propertyName(),
+                        SourceLocation.inferLanguage(configuredUrl.sourceFile()),
+                        null);
+        List<HighlightRange> ranges =
+                line != null && line > 0
+                        ? List.of(new HighlightRange(line, line, null, null, "issue"))
+                        : List.of();
         return new FindingOccurrence(message, location, ranges);
     }
 
-    private FindingOccurrence outboundEndpointOccurrence(OutboundEndpoint endpoint, String message) {
+    private FindingOccurrence outboundEndpointOccurrence(
+            OutboundEndpoint endpoint, String message) {
         Integer line = endpoint.line();
-        String symbol = Stream.of(endpoint.className(), endpoint.methodName())
-                .filter(Objects::nonNull)
-                .collect(Collectors.joining("#"));
-        SourceLocation location = new SourceLocation(
-                endpoint.sourceFile(),
-                line != null && line > 0 ? line : 0,
-                line != null && line > 0 ? line : 0,
-                null,
-                null,
-                symbol.isBlank() ? null : symbol,
-                SourceLocation.inferLanguage(endpoint.sourceFile()),
-                null
-        );
-        List<HighlightRange> ranges = line != null && line > 0
-                ? List.of(new HighlightRange(line, line, null, null, "issue"))
-                : List.of();
+        String symbol =
+                Stream.of(endpoint.className(), endpoint.methodName())
+                        .filter(Objects::nonNull)
+                        .collect(Collectors.joining("#"));
+        SourceLocation location =
+                new SourceLocation(
+                        endpoint.sourceFile(),
+                        line != null && line > 0 ? line : 0,
+                        line != null && line > 0 ? line : 0,
+                        null,
+                        null,
+                        symbol.isBlank() ? null : symbol,
+                        SourceLocation.inferLanguage(endpoint.sourceFile()),
+                        null);
+        List<HighlightRange> ranges =
+                line != null && line > 0
+                        ? List.of(new HighlightRange(line, line, null, null, "issue"))
+                        : List.of();
         return new FindingOccurrence(message, location, ranges);
     }
 
-    public record Result(
-            HttpSurfaceAnalysis httpSurfaceAnalysis,
-            List<Finding> findings
-    ) {
-    }
+    public record Result(HttpSurfaceAnalysis httpSurfaceAnalysis, List<Finding> findings) {}
 
     private record SourceSurface(
-            List<InboundEndpoint> inboundEndpoints,
-            List<OutboundEndpoint> outboundEndpoints
-    ) {
-    }
+            List<InboundEndpoint> inboundEndpoints, List<OutboundEndpoint> outboundEndpoints) {}
 
-    private record ConfiguredUrlMetadata(
-            UrlKind kind,
-            String host,
-            String referencedPropertyName
-    ) {
+    private record ConfiguredUrlMetadata(UrlKind kind, String host, String referencedPropertyName) {
         static ConfiguredUrlMetadata none() {
             return new ConfiguredUrlMetadata(null, null, null);
         }
     }
 
-    private record BaseUrlMatch(
-            String propertyName,
-            String baseUrl,
-            String host
-    ) {
-    }
+    private record BaseUrlMatch(String propertyName, String baseUrl, String host) {}
 
     private static final class BaseUrlCatalog {
         private final Map<String, BaseUrlMatch> byProperty;
@@ -1317,15 +1563,18 @@ public class HttpSurfaceAnalyzer {
             List<Map.Entry<String, BaseUrlMatch>> entries = new ArrayList<>();
             if (configurationAnalysis != null && configurationAnalysis.properties() != null) {
                 for (ApplicationProperty property : configurationAnalysis.properties()) {
-                    if (property.name() == null || property.value() == null || property.value().isBlank()) {
+                    if (property.name() == null
+                            || property.value() == null
+                            || property.value().isBlank()) {
                         continue;
                     }
                     String normalizedName = property.name().toLowerCase(Locale.ROOT);
                     boolean isHostProp = normalizedName.endsWith(".host");
-                    boolean isUrlLike = normalizedName.endsWith(".base-url")
-                            || normalizedName.endsWith(".url")
-                            || normalizedName.endsWith(".uri")
-                            || normalizedName.endsWith(".endpoint");
+                    boolean isUrlLike =
+                            normalizedName.endsWith(".base-url")
+                                    || normalizedName.endsWith(".url")
+                                    || normalizedName.endsWith(".uri")
+                                    || normalizedName.endsWith(".endpoint");
                     if (!isUrlLike && !isHostProp) {
                         continue;
                     }
@@ -1345,10 +1594,19 @@ public class HttpSurfaceAnalyzer {
                     if (baseUrl == null && host == null) {
                         continue;
                     }
-                    entries.add(Map.entry(property.name(), new BaseUrlMatch(property.name(), baseUrl, host)));
+                    entries.add(
+                            Map.entry(
+                                    property.name(),
+                                    new BaseUrlMatch(property.name(), baseUrl, host)));
                 }
             }
-            this.byProperty = entries.stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (left, right) -> left));
+            this.byProperty =
+                    entries.stream()
+                            .collect(
+                                    Collectors.toMap(
+                                            Map.Entry::getKey,
+                                            Map.Entry::getValue,
+                                            (left, right) -> left));
             this.ranked = List.copyOf(entries);
         }
 
@@ -1360,12 +1618,13 @@ public class HttpSurfaceAnalyzer {
             if (ranked.isEmpty()) {
                 return null;
             }
-            String haystack = ((className == null ? "" : className)
-                    + " "
-                    + (sourceFile == null ? "" : sourceFile)
-                    + " "
-                    + (hint == null ? "" : hint))
-                    .toLowerCase(Locale.ROOT);
+            String haystack =
+                    ((className == null ? "" : className)
+                                    + " "
+                                    + (sourceFile == null ? "" : sourceFile)
+                                    + " "
+                                    + (hint == null ? "" : hint))
+                            .toLowerCase(Locale.ROOT);
             int bestScore = 0;
             int secondBestScore = 0;
             BaseUrlMatch bestMatch = null;

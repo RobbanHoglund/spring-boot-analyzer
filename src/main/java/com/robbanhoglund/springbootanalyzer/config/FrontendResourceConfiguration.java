@@ -12,8 +12,7 @@ public class FrontendResourceConfiguration implements WebMvcConfigurer {
 
     @Override
     public void addResourceHandlers(ResourceHandlerRegistry registry) {
-        registry.addResourceHandler("/**")
-                .addResourceLocations(FRONTEND_DIST_LOCATION);
+        registry.addResourceHandler("/**").addResourceLocations(FRONTEND_DIST_LOCATION);
     }
 
     @Override

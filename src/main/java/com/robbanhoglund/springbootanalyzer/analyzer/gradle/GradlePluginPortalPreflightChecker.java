@@ -20,31 +20,33 @@ import org.springframework.stereotype.Component;
 @Component
 public class GradlePluginPortalPreflightChecker {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(GradlePluginPortalPreflightChecker.class);
+    private static final Logger LOGGER =
+            LoggerFactory.getLogger(GradlePluginPortalPreflightChecker.class);
 
     public List<Finding> preflight(
             List<GradleSettingsPluginModel> settingsPlugins,
-            AnalyzerProperties.GradleProperties properties
-    ) {
+            AnalyzerProperties.GradleProperties properties) {
         if (properties == null || !properties.preflightPluginMarker()) {
             return List.of();
         }
         List<Finding> findings = new ArrayList<>();
-        for (GradleSettingsPluginModel plugin : findUnreachableMarkers(settingsPlugins, properties)) {
-                findings.add(new Finding(
-                        FindingSeverity.INFO,
-                        "Gradle Plugin Portal marker artifact could not be reached for %s:%s. Gradle model analysis may fail if the target build requires this settings plugin."
-                                .formatted(plugin.pluginId(), plugin.version()),
-                        plugin.sourceFile() == null || plugin.line() == null ? null : plugin.sourceFile() + ":" + plugin.line()
-                ));
+        for (GradleSettingsPluginModel plugin :
+                findUnreachableMarkers(settingsPlugins, properties)) {
+            findings.add(
+                    new Finding(
+                            FindingSeverity.INFO,
+                            "Gradle Plugin Portal marker artifact could not be reached for %s:%s. Gradle model analysis may fail if the target build requires this settings plugin."
+                                    .formatted(plugin.pluginId(), plugin.version()),
+                            plugin.sourceFile() == null || plugin.line() == null
+                                    ? null
+                                    : plugin.sourceFile() + ":" + plugin.line()));
         }
         return List.copyOf(findings);
     }
 
     public List<GradleSettingsPluginModel> findUnreachableMarkers(
             List<GradleSettingsPluginModel> settingsPlugins,
-            AnalyzerProperties.GradleProperties properties
-    ) {
+            AnalyzerProperties.GradleProperties properties) {
         if (properties == null || !properties.preflightPluginMarker()) {
             return List.of();
         }
@@ -53,9 +55,18 @@ public class GradlePluginPortalPreflightChecker {
             if (plugin.pluginId() == null || plugin.version() == null) {
                 continue;
             }
-            String markerUrl = GradleExecutionSupport.pluginMarkerUrl(properties.pluginRepositoryUrls().getFirst(), plugin.pluginId(), plugin.version());
+            String markerUrl =
+                    GradleExecutionSupport.pluginMarkerUrl(
+                            properties.pluginRepositoryUrls().getFirst(),
+                            plugin.pluginId(),
+                            plugin.version());
             boolean reachable = isReachable(markerUrl, properties);
-            LOGGER.info("Gradle plugin marker preflight: plugin={} version={} url={} reachable={}", plugin.pluginId(), plugin.version(), markerUrl, reachable);
+            LOGGER.info(
+                    "Gradle plugin marker preflight: plugin={} version={} url={} reachable={}",
+                    plugin.pluginId(),
+                    plugin.version(),
+                    markerUrl,
+                    reachable);
             if (!reachable) {
                 unreachable.add(plugin);
             }

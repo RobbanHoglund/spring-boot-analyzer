@@ -17,7 +17,6 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyStore;
@@ -28,7 +27,6 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -49,7 +47,8 @@ import org.w3c.dom.NodeList;
 @Component
 public class GradlePluginResolutionBridge {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(GradlePluginResolutionBridge.class);
+    private static final Logger LOGGER =
+            LoggerFactory.getLogger(GradlePluginResolutionBridge.class);
     private static final Pattern PROPERTY_PATTERN = Pattern.compile("\\$\\{([^}]+)}");
 
     private final GradleCorePluginDetector corePluginDetector;
@@ -61,9 +60,7 @@ public class GradlePluginResolutionBridge {
     }
 
     public GradlePluginResolutionBridge(
-            GradleCorePluginDetector corePluginDetector,
-            ArtifactTransport artifactTransport
-    ) {
+            GradleCorePluginDetector corePluginDetector, ArtifactTransport artifactTransport) {
         this.corePluginDetector = corePluginDetector;
         this.artifactTransport = artifactTransport;
     }
@@ -71,8 +68,7 @@ public class GradlePluginResolutionBridge {
     public GradlePluginResolutionBridgeResult prefetch(
             Path repositoryRoot,
             List<GradlePluginDeclaration> declarations,
-            AnalyzerProperties.GradleProperties properties
-    ) {
+            AnalyzerProperties.GradleProperties properties) {
         if (properties == null
                 || properties.pluginResolutionBridge() == null
                 || !properties.pluginResolutionBridge().enabled()
@@ -80,8 +76,10 @@ public class GradlePluginResolutionBridge {
             return GradlePluginResolutionBridgeResult.empty();
         }
 
-        AnalyzerProperties.PluginResolutionBridgeProperties bridgeProperties = properties.pluginResolutionBridge();
-        Path localRepository = repositoryRoot.getParent().resolve("gradle-plugin-cache").resolve("m2");
+        AnalyzerProperties.PluginResolutionBridgeProperties bridgeProperties =
+                properties.pluginResolutionBridge();
+        Path localRepository =
+                repositoryRoot.getParent().resolve("gradle-plugin-cache").resolve("m2");
         try {
             Files.createDirectories(localRepository);
         } catch (IOException exception) {
@@ -89,30 +87,36 @@ public class GradlePluginResolutionBridge {
                     false,
                     localRepository.toString(),
                     List.of(),
-                    List.of(new GradlePluginBridgeFailure(
-                            null,
-                            null,
-                            null,
-                            null,
-                            null,
-                            "LOCAL_REPOSITORY_ERROR",
-                            exception.getMessage(),
-                            false,
-                            false,
-                            null
-                    )),
-                    List.of(new Finding(FindingSeverity.WARNING, "Gradle plugin bridge could not create its local repository.", null))
-            );
+                    List.of(
+                            new GradlePluginBridgeFailure(
+                                    null,
+                                    null,
+                                    null,
+                                    null,
+                                    null,
+                                    "LOCAL_REPOSITORY_ERROR",
+                                    exception.getMessage(),
+                                    false,
+                                    false,
+                                    null)),
+                    List.of(
+                            new Finding(
+                                    FindingSeverity.WARNING,
+                                    "Gradle plugin bridge could not create its local repository.",
+                                    null)));
         }
 
         List<String> repositories = pluginRepositories(properties);
         BridgeNetworkSettings networkSettings = BridgeNetworkSettings.from(properties);
-        ResolutionContext context = new ResolutionContext(localRepository, repositories, bridgeProperties, networkSettings);
+        ResolutionContext context =
+                new ResolutionContext(
+                        localRepository, repositories, bridgeProperties, networkSettings);
         List<ResolvedGradlePlugin> resolvedPlugins = new ArrayList<>();
         List<GradlePluginBridgeFailure> failures = new ArrayList<>();
         List<Finding> findings = new ArrayList<>();
 
-        for (GradlePluginDeclaration declaration : declarations.stream().limit(bridgeProperties.maxPlugins()).toList()) {
+        for (GradlePluginDeclaration declaration :
+                declarations.stream().limit(bridgeProperties.maxPlugins()).toList()) {
             if (declaration.pluginId() == null
                     || declaration.pluginId().isBlank()
                     || declaration.version() == null
@@ -120,56 +124,68 @@ public class GradlePluginResolutionBridge {
                     || corePluginDetector.isCorePlugin(declaration.pluginId())) {
                 continue;
             }
-            String markerCoordinates = markerCoordinates(declaration.pluginId(), declaration.version());
+            String markerCoordinates =
+                    markerCoordinates(declaration.pluginId(), declaration.version());
             try {
                 EffectivePom markerPom = resolvePom(parseCoordinates(markerCoordinates), context);
-                Dependency implementationDependency = markerPom.dependencies().stream()
-                        .findFirst()
-                        .orElseThrow(() -> new IllegalStateException("Marker POM did not declare an implementation dependency."));
-                ArtifactCoordinates implementationCoordinates = implementationDependency.toCoordinates();
+                Dependency implementationDependency =
+                        markerPom.dependencies().stream()
+                                .findFirst()
+                                .orElseThrow(
+                                        () ->
+                                                new IllegalStateException(
+                                                        "Marker POM did not declare an"
+                                                                + " implementation dependency."));
+                ArtifactCoordinates implementationCoordinates =
+                        implementationDependency.toCoordinates();
                 int beforeArtifacts = context.resolvedArtifacts.size();
                 resolveArtifactTree(implementationCoordinates, context, new HashSet<>());
-                int transitiveCount = Math.max(0, context.resolvedArtifacts.size() - beforeArtifacts);
-                resolvedPlugins.add(new ResolvedGradlePlugin(
-                        declaration.pluginId(),
-                        declaration.version(),
-                        markerCoordinates,
-                        implementationCoordinates.toCoordinateString(),
-                        declaration.sourceFile(),
-                        declaration.line(),
-                        Files.exists(context.localPathFor(parseCoordinates(markerCoordinates), "pom")),
-                        artifactExistsLocally(implementationCoordinates, context),
-                        transitiveCount
-                ));
+                int transitiveCount =
+                        Math.max(0, context.resolvedArtifacts.size() - beforeArtifacts);
+                resolvedPlugins.add(
+                        new ResolvedGradlePlugin(
+                                declaration.pluginId(),
+                                declaration.version(),
+                                markerCoordinates,
+                                implementationCoordinates.toCoordinateString(),
+                                declaration.sourceFile(),
+                                declaration.line(),
+                                Files.exists(
+                                        context.localPathFor(
+                                                parseCoordinates(markerCoordinates), "pom")),
+                                artifactExistsLocally(implementationCoordinates, context),
+                                transitiveCount));
                 LOGGER.info(
-                        "Gradle plugin bridge resolved: {}:{} marker={} implementation={} localRepository={}",
+                        "Gradle plugin bridge resolved: {}:{} marker={} implementation={}"
+                                + " localRepository={}",
                         declaration.pluginId(),
                         declaration.version(),
                         markerCoordinates,
                         implementationCoordinates.toCoordinateString(),
-                        localRepository
-                );
+                        localRepository);
             } catch (Exception exception) {
                 String message = redact(exception.getMessage());
-                GradlePluginBridgeFailure failure = new GradlePluginBridgeFailure(
-                        declaration.pluginId(),
-                        declaration.version(),
-                        markerCoordinates,
-                        declaration.sourceFile(),
-                        declaration.line(),
-                        "PLUGIN_BRIDGE_RESOLUTION_FAILED",
-                        message,
-                        Files.exists(context.localPathFor(parseCoordinates(markerCoordinates), "pom")),
-                        false,
-                        null
-                );
+                GradlePluginBridgeFailure failure =
+                        new GradlePluginBridgeFailure(
+                                declaration.pluginId(),
+                                declaration.version(),
+                                markerCoordinates,
+                                declaration.sourceFile(),
+                                declaration.line(),
+                                "PLUGIN_BRIDGE_RESOLUTION_FAILED",
+                                message,
+                                Files.exists(
+                                        context.localPathFor(
+                                                parseCoordinates(markerCoordinates), "pom")),
+                                false,
+                                null);
                 failures.add(failure);
-                findings.add(new Finding(
-                        FindingSeverity.WARNING,
-                        "Gradle plugin resolution bridge could not resolve plugin %s:%s. Gradle model analysis is partial."
-                                .formatted(declaration.pluginId(), declaration.version()),
-                        sourceLocation(declaration.sourceFile(), declaration.line())
-                ));
+                findings.add(
+                        new Finding(
+                                FindingSeverity.WARNING,
+                                "Gradle plugin resolution bridge could not resolve plugin %s:%s. Gradle model analysis is partial."
+                                        .formatted(declaration.pluginId(), declaration.version()),
+                                sourceLocation(declaration.sourceFile(), declaration.line())));
             }
         }
 
@@ -178,15 +194,15 @@ public class GradlePluginResolutionBridge {
                 localRepository.toString(),
                 List.copyOf(resolvedPlugins),
                 List.copyOf(failures),
-                List.copyOf(findings)
-        );
+                List.copyOf(findings));
     }
 
     public String markerCoordinates(String pluginId, String version) {
         return pluginId + ":" + pluginId + ".gradle.plugin:" + version;
     }
 
-    private boolean artifactExistsLocally(ArtifactCoordinates coordinates, ResolutionContext context) {
+    private boolean artifactExistsLocally(
+            ArtifactCoordinates coordinates, ResolutionContext context) {
         if (Files.exists(context.localPathFor(coordinates, "jar"))) {
             return true;
         }
@@ -194,10 +210,8 @@ public class GradlePluginResolutionBridge {
     }
 
     private void resolveArtifactTree(
-            ArtifactCoordinates coordinates,
-            ResolutionContext context,
-            Set<String> visiting
-    ) throws Exception {
+            ArtifactCoordinates coordinates, ResolutionContext context, Set<String> visiting)
+            throws Exception {
         if (!visiting.add(coordinates.toCoordinateString())) {
             return;
         }
@@ -207,17 +221,21 @@ public class GradlePluginResolutionBridge {
             context.resolvedArtifacts.add(coordinates.toCoordinateString() + "@jar");
         }
         for (Dependency dependency : pom.dependencies()) {
-            if (dependency.optional() || dependency.version() == null || dependency.version().isBlank()) {
+            if (dependency.optional()
+                    || dependency.version() == null
+                    || dependency.version().isBlank()) {
                 continue;
             }
-            if (dependency.scope() != null && List.of("test", "provided", "system").contains(dependency.scope())) {
+            if (dependency.scope() != null
+                    && List.of("test", "provided", "system").contains(dependency.scope())) {
                 continue;
             }
             resolveArtifactTree(dependency.toCoordinates(), context, visiting);
         }
     }
 
-    private EffectivePom resolvePom(ArtifactCoordinates coordinates, ResolutionContext context) throws Exception {
+    private EffectivePom resolvePom(ArtifactCoordinates coordinates, ResolutionContext context)
+            throws Exception {
         EffectivePom cached = context.effectivePoms.get(coordinates.toCoordinateString());
         if (cached != null) {
             return cached;
@@ -251,11 +269,13 @@ public class GradlePluginResolutionBridge {
         properties.put("pom.groupId", groupId);
         properties.put("pom.artifactId", rawPom.artifactId());
         properties.put("pom.version", version);
-        rawPom.properties().forEach((key, value) -> properties.put(key, substitute(value, properties)));
+        rawPom.properties()
+                .forEach((key, value) -> properties.put(key, substitute(value, properties)));
 
         for (Dependency dependency : rawPom.dependencyManagement()) {
             Dependency resolved = resolveDependency(dependency, properties, dependencyManagement);
-            if ("import".equalsIgnoreCase(resolved.scope()) && "pom".equalsIgnoreCase(resolved.type())) {
+            if ("import".equalsIgnoreCase(resolved.scope())
+                    && "pom".equalsIgnoreCase(resolved.type())) {
                 EffectivePom importedBom = resolvePom(resolved.toCoordinates(), context);
                 dependencyManagement.putAll(importedBom.dependencyManagement());
             } else {
@@ -268,15 +288,15 @@ public class GradlePluginResolutionBridge {
             dependencies.add(resolveDependency(dependency, properties, dependencyManagement));
         }
 
-        EffectivePom effectivePom = new EffectivePom(
-                groupId,
-                rawPom.artifactId(),
-                version,
-                rawPom.packaging() == null ? "jar" : rawPom.packaging(),
-                Map.copyOf(properties),
-                Map.copyOf(dependencyManagement),
-                List.copyOf(dependencies)
-        );
+        EffectivePom effectivePom =
+                new EffectivePom(
+                        groupId,
+                        rawPom.artifactId(),
+                        version,
+                        rawPom.packaging() == null ? "jar" : rawPom.packaging(),
+                        Map.copyOf(properties),
+                        Map.copyOf(dependencyManagement),
+                        List.copyOf(dependencies));
         context.effectivePoms.put(coordinates.toCoordinateString(), effectivePom);
         return effectivePom;
     }
@@ -284,8 +304,7 @@ public class GradlePluginResolutionBridge {
     private Dependency resolveDependency(
             Dependency dependency,
             Map<String, String> properties,
-            Map<String, Dependency> dependencyManagement
-    ) {
+            Map<String, Dependency> dependencyManagement) {
         String groupId = substitute(dependency.groupId(), properties);
         String artifactId = substitute(dependency.artifactId(), properties);
         String version = substitute(dependency.version(), properties);
@@ -303,10 +322,18 @@ public class GradlePluginResolutionBridge {
                 }
             }
         }
-        return new Dependency(groupId, artifactId, version, scope, type == null || type.isBlank() ? "jar" : type, dependency.optional());
+        return new Dependency(
+                groupId,
+                artifactId,
+                version,
+                scope,
+                type == null || type.isBlank() ? "jar" : type,
+                dependency.optional());
     }
 
-    private void downloadArtifact(ArtifactCoordinates coordinates, String extension, ResolutionContext context) throws Exception {
+    private void downloadArtifact(
+            ArtifactCoordinates coordinates, String extension, ResolutionContext context)
+            throws Exception {
         Path target = context.localPathFor(coordinates, extension);
         if (!context.bridgeProperties.redownload() && Files.exists(target)) {
             return;
@@ -315,25 +342,29 @@ public class GradlePluginResolutionBridge {
             throw new IllegalStateException("Gradle plugin bridge reached its artifact limit.");
         }
         Files.createDirectories(target.getParent());
-        String relativePath = coordinates.groupId().replace('.', '/')
-                + "/"
-                + coordinates.artifactId()
-                + "/"
-                + coordinates.version()
-                + "/"
-                + coordinates.artifactId()
-                + "-"
-                + coordinates.version()
-                + "."
-                + extension;
+        String relativePath =
+                coordinates.groupId().replace('.', '/')
+                        + "/"
+                        + coordinates.artifactId()
+                        + "/"
+                        + coordinates.version()
+                        + "/"
+                        + coordinates.artifactId()
+                        + "-"
+                        + coordinates.version()
+                        + "."
+                        + extension;
         Exception lastFailure = null;
         for (String repository : context.repositories) {
             String url = repository.replaceAll("/+$", "") + "/" + relativePath;
             try {
-                ArtifactResponse response = artifactTransport.fetch(url, context.bridgeProperties.timeout(), context.networkSettings);
+                ArtifactResponse response =
+                        artifactTransport.fetch(
+                                url, context.bridgeProperties.timeout(), context.networkSettings);
                 if (response.statusCode() == 200) {
                     Files.write(target, response.body());
-                    context.resolvedArtifacts.add(coordinates.toCoordinateString() + "@" + extension);
+                    context.resolvedArtifacts.add(
+                            coordinates.toCoordinateString() + "@" + extension);
                     return;
                 }
             } catch (Exception exception) {
@@ -361,11 +392,11 @@ public class GradlePluginResolutionBridge {
         Parent parent = null;
         Element parentElement = child(project, "parent");
         if (parentElement != null) {
-            parent = new Parent(
-                    childText(parentElement, "groupId"),
-                    childText(parentElement, "artifactId"),
-                    childText(parentElement, "version")
-            );
+            parent =
+                    new Parent(
+                            childText(parentElement, "groupId"),
+                            childText(parentElement, "artifactId"),
+                            childText(parentElement, "version"));
         }
         Map<String, String> properties = new LinkedHashMap<>();
         Element propertiesElement = child(project, "properties");
@@ -378,9 +409,18 @@ public class GradlePluginResolutionBridge {
                 }
             }
         }
-        List<Dependency> dependencyManagement = parseDependencies(child(child(project, "dependencyManagement"), "dependencies"));
+        List<Dependency> dependencyManagement =
+                parseDependencies(child(child(project, "dependencyManagement"), "dependencies"));
         List<Dependency> dependencies = parseDependencies(child(project, "dependencies"));
-        return new RawPomModel(groupId, artifactId, version, packaging, parent, properties, dependencyManagement, dependencies);
+        return new RawPomModel(
+                groupId,
+                artifactId,
+                version,
+                packaging,
+                parent,
+                properties,
+                dependencyManagement,
+                dependencies);
     }
 
     private List<Dependency> parseDependencies(Element dependenciesElement) {
@@ -392,14 +432,14 @@ public class GradlePluginResolutionBridge {
         for (int index = 0; index < children.getLength(); index++) {
             Node node = children.item(index);
             if (node instanceof Element element && "dependency".equals(element.getTagName())) {
-                dependencies.add(new Dependency(
-                        childText(element, "groupId"),
-                        childText(element, "artifactId"),
-                        childText(element, "version"),
-                        childText(element, "scope"),
-                        childText(element, "type"),
-                        Boolean.parseBoolean(childText(element, "optional"))
-                ));
+                dependencies.add(
+                        new Dependency(
+                                childText(element, "groupId"),
+                                childText(element, "artifactId"),
+                                childText(element, "version"),
+                                childText(element, "scope"),
+                                childText(element, "type"),
+                                Boolean.parseBoolean(childText(element, "optional"))));
             }
         }
         return List.copyOf(dependencies);
@@ -467,7 +507,9 @@ public class GradlePluginResolutionBridge {
     }
 
     private String redact(String value) {
-        return value == null ? null : value.replaceAll("(?i)(password|token|secret)=([^\\s]+)", "$1=[redacted]");
+        return value == null
+                ? null
+                : value.replaceAll("(?i)(password|token|secret)=([^\\s]+)", "$1=[redacted]");
     }
 
     private String key(String groupId, String artifactId) {
@@ -475,38 +517,42 @@ public class GradlePluginResolutionBridge {
     }
 
     public interface ArtifactTransport {
-        ArtifactResponse fetch(String url, Duration timeout, BridgeNetworkSettings networkSettings) throws Exception;
+        ArtifactResponse fetch(String url, Duration timeout, BridgeNetworkSettings networkSettings)
+                throws Exception;
     }
 
     static final class HttpArtifactTransport implements ArtifactTransport {
         @Override
-        public ArtifactResponse fetch(String url, Duration timeout, BridgeNetworkSettings networkSettings) throws Exception {
-            HttpClient.Builder builder = HttpClient.newBuilder()
-                    .followRedirects(HttpClient.Redirect.NORMAL)
-                    .connectTimeout(timeout);
+        public ArtifactResponse fetch(
+                String url, Duration timeout, BridgeNetworkSettings networkSettings)
+                throws Exception {
+            HttpClient.Builder builder =
+                    HttpClient.newBuilder()
+                            .followRedirects(HttpClient.Redirect.NORMAL)
+                            .connectTimeout(timeout);
             if (networkSettings.proxyAddress() != null) {
                 builder.proxy(ProxySelector.of(networkSettings.proxyAddress()));
             }
-            if (networkSettings.proxyUsername() != null && networkSettings.proxyPassword() != null) {
-                builder.authenticator(new Authenticator() {
-                    @Override
-                    protected PasswordAuthentication getPasswordAuthentication() {
-                        return new PasswordAuthentication(
-                                networkSettings.proxyUsername(),
-                                networkSettings.proxyPassword().toCharArray()
-                        );
-                    }
-                });
+            if (networkSettings.proxyUsername() != null
+                    && networkSettings.proxyPassword() != null) {
+                builder.authenticator(
+                        new Authenticator() {
+                            @Override
+                            protected PasswordAuthentication getPasswordAuthentication() {
+                                return new PasswordAuthentication(
+                                        networkSettings.proxyUsername(),
+                                        networkSettings.proxyPassword().toCharArray());
+                            }
+                        });
             }
             if (networkSettings.sslContext() != null) {
                 builder.sslContext(networkSettings.sslContext());
             }
             HttpClient client = builder.build();
-            HttpRequest request = HttpRequest.newBuilder(URI.create(url))
-                    .timeout(timeout)
-                    .GET()
-                    .build();
-            HttpResponse<byte[]> response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            HttpRequest request =
+                    HttpRequest.newBuilder(URI.create(url)).timeout(timeout).GET().build();
+            HttpResponse<byte[]> response =
+                    client.send(request, HttpResponse.BodyHandlers.ofByteArray());
             return new ArtifactResponse(response.statusCode(), response.body());
         }
     }
@@ -521,8 +567,7 @@ public class GradlePluginResolutionBridge {
                 InetSocketAddress proxyAddress,
                 String proxyUsername,
                 String proxyPassword,
-                SSLContext sslContext
-        ) {
+                SSLContext sslContext) {
             this.proxyAddress = proxyAddress;
             this.proxyUsername = proxyUsername;
             this.proxyPassword = proxyPassword;
@@ -531,17 +576,40 @@ public class GradlePluginResolutionBridge {
 
         static BridgeNetworkSettings from(AnalyzerProperties.GradleProperties properties) {
             AnalyzerProperties.ProxyProperties explicitProxy = properties.proxy();
-            String host = explicitProxy != null && explicitProxy.enabled() ? explicitProxy.host() : null;
-            Integer port = explicitProxy != null && explicitProxy.enabled() ? explicitProxy.port() : null;
-            String username = explicitProxy != null && explicitProxy.enabled() ? explicitProxy.username() : null;
-            String password = explicitProxy != null && explicitProxy.enabled() ? explicitProxy.password() : null;
+            String host =
+                    explicitProxy != null && explicitProxy.enabled() ? explicitProxy.host() : null;
+            Integer port =
+                    explicitProxy != null && explicitProxy.enabled() ? explicitProxy.port() : null;
+            String username =
+                    explicitProxy != null && explicitProxy.enabled()
+                            ? explicitProxy.username()
+                            : null;
+            String password =
+                    explicitProxy != null && explicitProxy.enabled()
+                            ? explicitProxy.password()
+                            : null;
 
             if (host == null || host.isBlank()) {
-                Map<String, String> hostProperties = com.robbanhoglund.springbootanalyzer.analyzer.gradle.GradleExecutionSupport.hostGradleProxyProperties();
-                host = firstNonBlank(hostProperties.get("systemProp.https.proxyHost"), hostProperties.get("systemProp.http.proxyHost"));
-                port = parseInt(firstNonBlank(hostProperties.get("systemProp.https.proxyPort"), hostProperties.get("systemProp.http.proxyPort")));
-                username = firstNonBlank(hostProperties.get("systemProp.https.proxyUser"), hostProperties.get("systemProp.http.proxyUser"));
-                password = firstNonBlank(hostProperties.get("systemProp.https.proxyPassword"), hostProperties.get("systemProp.http.proxyPassword"));
+                Map<String, String> hostProperties =
+                        com.robbanhoglund.springbootanalyzer.analyzer.gradle.GradleExecutionSupport
+                                .hostGradleProxyProperties();
+                host =
+                        firstNonBlank(
+                                hostProperties.get("systemProp.https.proxyHost"),
+                                hostProperties.get("systemProp.http.proxyHost"));
+                port =
+                        parseInt(
+                                firstNonBlank(
+                                        hostProperties.get("systemProp.https.proxyPort"),
+                                        hostProperties.get("systemProp.http.proxyPort")));
+                username =
+                        firstNonBlank(
+                                hostProperties.get("systemProp.https.proxyUser"),
+                                hostProperties.get("systemProp.http.proxyUser"));
+                password =
+                        firstNonBlank(
+                                hostProperties.get("systemProp.https.proxyPassword"),
+                                hostProperties.get("systemProp.http.proxyPassword"));
             }
             if (host == null || host.isBlank()) {
                 ProxySpec envProxy = ProxySpec.fromEnvironment();
@@ -559,24 +627,31 @@ public class GradlePluginResolutionBridge {
                 sslContext = buildSslContext(ssl);
             }
             return new BridgeNetworkSettings(
-                    host == null || port == null ? null : InetSocketAddress.createUnresolved(host, port),
+                    host == null || port == null
+                            ? null
+                            : InetSocketAddress.createUnresolved(host, port),
                     username,
                     password,
-                    sslContext
-            );
+                    sslContext);
         }
 
         private static SSLContext buildSslContext(AnalyzerProperties.SslProperties ssl) {
             try (InputStream inputStream = Files.newInputStream(ssl.trustStore())) {
                 KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
-                char[] password = ssl.trustStorePassword() == null ? null : ssl.trustStorePassword().toCharArray();
+                char[] password =
+                        ssl.trustStorePassword() == null
+                                ? null
+                                : ssl.trustStorePassword().toCharArray();
                 keyStore.load(inputStream, password);
-                var trustManagerFactory = javax.net.ssl.TrustManagerFactory.getInstance(
-                        javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm()
-                );
+                var trustManagerFactory =
+                        javax.net.ssl.TrustManagerFactory.getInstance(
+                                javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm());
                 trustManagerFactory.init(keyStore);
                 SSLContext context = SSLContext.getInstance("TLS");
-                context.init(null, trustManagerFactory.getTrustManagers(), new java.security.SecureRandom());
+                context.init(
+                        null,
+                        trustManagerFactory.getTrustManagers(),
+                        new java.security.SecureRandom());
                 return context;
             } catch (Exception exception) {
                 return null;
@@ -620,11 +695,12 @@ public class GradlePluginResolutionBridge {
 
     record ProxySpec(String host, Integer port, String username, String password) {
         static ProxySpec fromEnvironment() {
-            String raw = Optional.ofNullable(System.getenv("HTTPS_PROXY"))
-                    .or(() -> Optional.ofNullable(System.getenv("https_proxy")))
-                    .or(() -> Optional.ofNullable(System.getenv("HTTP_PROXY")))
-                    .or(() -> Optional.ofNullable(System.getenv("http_proxy")))
-                    .orElse(null);
+            String raw =
+                    Optional.ofNullable(System.getenv("HTTPS_PROXY"))
+                            .or(() -> Optional.ofNullable(System.getenv("https_proxy")))
+                            .or(() -> Optional.ofNullable(System.getenv("HTTP_PROXY")))
+                            .or(() -> Optional.ofNullable(System.getenv("http_proxy")))
+                            .orElse(null);
             if (raw == null || raw.isBlank()) {
                 return null;
             }
@@ -645,8 +721,7 @@ public class GradlePluginResolutionBridge {
         }
     }
 
-    public record ArtifactResponse(int statusCode, byte[] body) {
-    }
+    public record ArtifactResponse(int statusCode, byte[] body) {}
 
     record ArtifactCoordinates(String groupId, String artifactId, String version) {
         String toCoordinateString() {
@@ -660,8 +735,7 @@ public class GradlePluginResolutionBridge {
             String version,
             String scope,
             String type,
-            boolean optional
-    ) {
+            boolean optional) {
         ArtifactCoordinates toCoordinates() {
             return new ArtifactCoordinates(groupId, artifactId, version);
         }
@@ -672,8 +746,7 @@ public class GradlePluginResolutionBridge {
             return new ArtifactCoordinates(
                     groupId == null ? fallbackGroupId : groupId,
                     artifactId,
-                    version == null ? fallbackVersion : version
-            );
+                    version == null ? fallbackVersion : version);
         }
     }
 
@@ -685,9 +758,7 @@ public class GradlePluginResolutionBridge {
             Parent parent,
             Map<String, String> properties,
             List<Dependency> dependencyManagement,
-            List<Dependency> dependencies
-    ) {
-    }
+            List<Dependency> dependencies) {}
 
     record EffectivePom(
             String groupId,
@@ -696,9 +767,7 @@ public class GradlePluginResolutionBridge {
             String packaging,
             Map<String, String> properties,
             Map<String, Dependency> dependencyManagement,
-            List<Dependency> dependencies
-    ) {
-    }
+            List<Dependency> dependencies) {}
 
     record ResolutionContext(
             Path localRepository,
@@ -706,15 +775,19 @@ public class GradlePluginResolutionBridge {
             AnalyzerProperties.PluginResolutionBridgeProperties bridgeProperties,
             BridgeNetworkSettings networkSettings,
             Map<String, EffectivePom> effectivePoms,
-            Set<String> resolvedArtifacts
-    ) {
+            Set<String> resolvedArtifacts) {
         ResolutionContext(
                 Path localRepository,
                 List<String> repositories,
                 AnalyzerProperties.PluginResolutionBridgeProperties bridgeProperties,
-                BridgeNetworkSettings networkSettings
-        ) {
-            this(localRepository, repositories, bridgeProperties, networkSettings, new HashMap<>(), new LinkedHashSet<>());
+                BridgeNetworkSettings networkSettings) {
+            this(
+                    localRepository,
+                    repositories,
+                    bridgeProperties,
+                    networkSettings,
+                    new HashMap<>(),
+                    new LinkedHashSet<>());
         }
 
         Path localPathFor(ArtifactCoordinates coordinates, String extension) {
@@ -722,7 +795,12 @@ public class GradlePluginResolutionBridge {
                     .resolve(coordinates.groupId().replace('.', '/'))
                     .resolve(coordinates.artifactId())
                     .resolve(coordinates.version())
-                    .resolve(coordinates.artifactId() + "-" + coordinates.version() + "." + extension);
+                    .resolve(
+                            coordinates.artifactId()
+                                    + "-"
+                                    + coordinates.version()
+                                    + "."
+                                    + extension);
         }
     }
 

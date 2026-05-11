@@ -12,6 +12,4 @@ public record InboundEndpoint(
         String produces,
         String consumes,
         List<String> parameters,
-        EndpointSource source
-) {
-}
+        EndpointSource source) {}

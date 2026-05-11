@@ -1,0 +1,343 @@
+package com.robbanhoglund.springbootanalyzer.analyzer;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+class TestingPracticeFindingAnalyzerTest {
+
+    @TempDir Path repoRoot;
+
+    private TestingPracticeFindingAnalyzer analyzer;
+
+    @BeforeEach
+    void setUp() {
+        analyzer = new TestingPracticeFindingAnalyzer();
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private void writeTestFile(String relativePath, String content) throws IOException {
+        Path file = repoRoot.resolve(relativePath);
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, content);
+    }
+
+    private List<Finding> findings() {
+        return analyzer.analyze(repoRoot);
+    }
+
+    private static Finding byRule(List<Finding> findings, String ruleId) {
+        return findings.stream().filter(f -> ruleId.equals(f.ruleId())).findFirst().orElse(null);
+    }
+
+    // ── No test sources ───────────────────────────────────────────────────────
+
+    @Test
+    void returnsEmptyListWhenNoTestDirectory() {
+        assertThat(findings()).isEmpty();
+    }
+
+    // ── SPRING_TEST_SPRINGBOOTTEST_OVERUSED — controller ─────────────────────
+
+    @Test
+    void flagsSpringBootTestWithControllerFieldAsWebMvcTestCandidate() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/UserControllerTest.java",
+                """
+                package com.example;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import org.springframework.beans.factory.annotation.Autowired;
+                @SpringBootTest
+                class UserControllerTest {
+                    @Autowired UserController userController;
+                }
+                """);
+
+        List<Finding> results = findings();
+        Finding f = byRule(results, "SPRING_TEST_SPRINGBOOTTEST_OVERUSED");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("@WebMvcTest");
+        assertThat(f.target()).isEqualTo("UserControllerTest");
+    }
+
+    // ── SPRING_TEST_SPRINGBOOTTEST_OVERUSED — repository ─────────────────────
+
+    @Test
+    void flagsSpringBootTestWithRepositoryFieldAsDataJpaTestCandidate() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/OrderRepositoryTest.java",
+                """
+                package com.example;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import org.springframework.beans.factory.annotation.Autowired;
+                @SpringBootTest
+                class OrderRepositoryTest {
+                    @Autowired OrderRepository orderRepository;
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_TEST_SPRINGBOOTTEST_OVERUSED");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("@DataJpaTest");
+    }
+
+    @Test
+    void doesNotFlagSpringBootTestWithNoControllerOrRepositoryField() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/AppIT.java",
+                """
+                package com.example;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import org.springframework.beans.factory.annotation.Autowired;
+                @SpringBootTest
+                class AppIT {
+                    @Autowired UserService userService;
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_TEST_SPRINGBOOTTEST_OVERUSED")).isNull();
+    }
+
+    // ── SPRING_TEST_NO_TRANSACTIONAL_ROLLBACK ─────────────────────────────────
+
+    @Test
+    void flagsIntegrationTestWithRepositoryButNoTransactional() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/UserIT.java",
+                """
+                package com.example;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import org.springframework.beans.factory.annotation.Autowired;
+                @SpringBootTest
+                class UserIT {
+                    @Autowired UserRepository userRepository;
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_TEST_NO_TRANSACTIONAL_ROLLBACK");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("UserIT");
+    }
+
+    @Test
+    void doesNotFlagIntegrationTestThatHasTransactional() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/UserIT.java",
+                """
+                package com.example;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import org.springframework.beans.factory.annotation.Autowired;
+                import org.springframework.transaction.annotation.Transactional;
+                @SpringBootTest
+                @Transactional
+                class UserIT {
+                    @Autowired UserRepository userRepository;
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_TEST_NO_TRANSACTIONAL_ROLLBACK")).isNull();
+    }
+
+    @Test
+    void doesNotFlagTestWithoutRepositoryField() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/ServiceIT.java",
+                """
+                package com.example;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import org.springframework.beans.factory.annotation.Autowired;
+                @SpringBootTest
+                class ServiceIT {
+                    @Autowired UserService userService;
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_TEST_NO_TRANSACTIONAL_ROLLBACK")).isNull();
+    }
+
+    // ── SPRING_TEST_MOCKBEAN_OVERUSE ──────────────────────────────────────────
+
+    @Test
+    void flagsTestClassWithMoreThanFiveMockBeans() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/HeavyTest.java",
+                """
+                package com.example;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import org.springframework.boot.test.mock.mockito.MockBean;
+                @SpringBootTest
+                class HeavyTest {
+                    @MockBean ServiceA a;
+                    @MockBean ServiceB b;
+                    @MockBean ServiceC c;
+                    @MockBean ServiceD d;
+                    @MockBean ServiceE e;
+                    @MockBean ServiceF f;
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_TEST_MOCKBEAN_OVERUSE");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("6");
+        assertThat(f.target()).isEqualTo("HeavyTest");
+    }
+
+    @Test
+    void doesNotFlagTestClassWithFiveOrFewerMockBeans() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/NormalTest.java",
+                """
+                package com.example;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import org.springframework.boot.test.mock.mockito.MockBean;
+                @SpringBootTest
+                class NormalTest {
+                    @MockBean ServiceA a;
+                    @MockBean ServiceB b;
+                    @MockBean ServiceC c;
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_TEST_MOCKBEAN_OVERUSE")).isNull();
+    }
+
+    // ── SPRING_TEST_FIXED_CLOCK_MISSING ──────────────────────────────────────
+
+    @Test
+    void flagsSpringTestThatCallsNowWithoutClock() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/ExpiryTest.java",
+                """
+                package com.example;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import java.time.LocalDateTime;
+                @SpringBootTest
+                class ExpiryTest {
+                    void test() {
+                        LocalDateTime now = LocalDateTime.now();
+                    }
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_TEST_FIXED_CLOCK_MISSING");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("ExpiryTest");
+    }
+
+    @Test
+    void doesNotFlagTestThatInjectsAClock() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/ExpiryTest.java",
+                """
+                package com.example;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import java.time.Clock;
+                import java.time.LocalDateTime;
+                @SpringBootTest
+                class ExpiryTest {
+                    Clock clock;
+                    void test() {
+                        LocalDateTime now = LocalDateTime.now(clock);
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_TEST_FIXED_CLOCK_MISSING")).isNull();
+    }
+
+    @Test
+    void doesNotFlagNonSpringTestThatCallsNow() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/PureUnitTest.java",
+                """
+                package com.example;
+                import java.time.LocalDateTime;
+                class PureUnitTest {
+                    void test() {
+                        LocalDateTime now = LocalDateTime.now();
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_TEST_FIXED_CLOCK_MISSING")).isNull();
+    }
+
+    // ── SPRING_TEST_SPRINGBOOTTEST_WEBENV_NONE_MISSING ────────────────────────
+
+    @Test
+    void flagsSpringBootTestWithDefaultWebEnvAndNoWebTestingFields() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/ServiceIT.java",
+                """
+                package com.example;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import org.springframework.beans.factory.annotation.Autowired;
+                @SpringBootTest
+                class ServiceIT {
+                    @Autowired UserService userService;
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_TEST_SPRINGBOOTTEST_WEBENV_NONE_MISSING");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("ServiceIT");
+        assertThat(f.recommendation()).contains("NONE");
+    }
+
+    @Test
+    void doesNotFlagSpringBootTestWhenWebEnvIsNone() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/ServiceIT.java",
+                """
+                package com.example;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import org.springframework.beans.factory.annotation.Autowired;
+                @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
+                class ServiceIT {
+                    @Autowired UserService userService;
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_TEST_SPRINGBOOTTEST_WEBENV_NONE_MISSING")).isNull();
+    }
+
+    @Test
+    void doesNotFlagSpringBootTestWhenMockMvcIsInjected() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/ControllerIT.java",
+                """
+                package com.example;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import org.springframework.test.web.servlet.MockMvc;
+                import org.springframework.beans.factory.annotation.Autowired;
+                @SpringBootTest
+                class ControllerIT {
+                    @Autowired MockMvc mockMvc;
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_TEST_SPRINGBOOTTEST_WEBENV_NONE_MISSING")).isNull();
+    }
+
+    @Test
+    void doesNotFlagSpringBootTestWhenWebEnvIsRandomPort() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/FullIT.java",
+                """
+                package com.example;
+                import org.springframework.boot.test.context.SpringBootTest;
+                @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+                class FullIT {}
+                """);
+
+        assertThat(byRule(findings(), "SPRING_TEST_SPRINGBOOTTEST_WEBENV_NONE_MISSING")).isNull();
+    }
+}

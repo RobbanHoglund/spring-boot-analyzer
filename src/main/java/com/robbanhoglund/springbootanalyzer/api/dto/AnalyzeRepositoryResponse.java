@@ -6,7 +6,9 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleModelAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.http.HttpSurfaceAnalysis;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.messaging.MessagingAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.RuntimeStackAnalysis;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.scheduling.SchedulingAnalysis;
 import java.util.List;
 
 public record AnalyzeRepositoryResponse(
@@ -25,6 +27,6 @@ public record AnalyzeRepositoryResponse(
         ConfigurationAnalysis configurationAnalysis,
         RuntimeStackAnalysis runtimeStackAnalysis,
         HttpSurfaceAnalysis httpSurfaceAnalysis,
-        GradleModelAnalysis gradleModelAnalysis
-) {
-}
+        GradleModelAnalysis gradleModelAnalysis,
+        SchedulingAnalysis schedulingAnalysis,
+        MessagingAnalysis messagingAnalysis) {}

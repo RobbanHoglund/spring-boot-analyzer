@@ -41,14 +41,16 @@ class GitCloneServiceTest {
 
     @Test
     void rejectsHttpRepositoryUrls() {
-        assertThatThrownBy(() -> gitCloneService.parseAndValidate("http://github.com/owner/repo.git"))
+        assertThatThrownBy(
+                        () -> gitCloneService.parseAndValidate("http://github.com/owner/repo.git"))
                 .isInstanceOf(UnsupportedRepositoryProtocolException.class)
                 .hasMessage("Only https and ssh repository URLs are supported.");
     }
 
     @Test
     void rejectsGitProtocolRepositoryUrls() {
-        assertThatThrownBy(() -> gitCloneService.parseAndValidate("git://github.com/owner/repo.git"))
+        assertThatThrownBy(
+                        () -> gitCloneService.parseAndValidate("git://github.com/owner/repo.git"))
                 .isInstanceOf(UnsupportedRepositoryProtocolException.class)
                 .hasMessage("Only https and ssh repository URLs are supported.");
     }
@@ -62,28 +64,36 @@ class GitCloneServiceTest {
 
     @Test
     void rejectsEmbeddedHttpsCredentials() {
-        assertThatThrownBy(() -> gitCloneService.parseAndValidate("https://user:secret@github.com/owner/repo.git"))
+        assertThatThrownBy(
+                        () ->
+                                gitCloneService.parseAndValidate(
+                                        "https://user:secret@github.com/owner/repo.git"))
                 .isInstanceOf(InvalidRepositoryReferenceException.class)
                 .hasMessage("HTTPS repository URLs with embedded credentials are not supported.");
     }
 
     @Test
     void rejectsEmbeddedSshPasswords() {
-        assertThatThrownBy(() -> gitCloneService.parseAndValidate("ssh://git:secret@github.com/owner/repo.git"))
+        assertThatThrownBy(
+                        () ->
+                                gitCloneService.parseAndValidate(
+                                        "ssh://git:secret@github.com/owner/repo.git"))
                 .isInstanceOf(InvalidRepositoryReferenceException.class)
                 .hasMessage("SSH repository URLs with embedded passwords are not supported.");
     }
 
     @Test
     void rejectsBrowserCredentialsForSshRepositories() {
-        GitRepositoryReference repositoryReference = new GitRepositoryReference(
-                "git@github.com:owner/repo.git",
-                "main",
-                new GitRepositoryCredentials("octocat", "ghp_example")
-        );
+        GitRepositoryReference repositoryReference =
+                new GitRepositoryReference(
+                        "git@github.com:owner/repo.git",
+                        "main",
+                        new GitRepositoryCredentials("octocat", "ghp_example"));
 
         assertThatThrownBy(() -> gitCloneService.resolveRepositoryEndpoint(repositoryReference))
                 .isInstanceOf(InvalidRepositoryReferenceException.class)
-                .hasMessage("Browser-stored HTTPS tokens cannot be used for SSH repository URLs. Configure SSH keys on the server instead.");
+                .hasMessage(
+                        "Browser-stored HTTPS tokens cannot be used for SSH repository URLs."
+                                + " Configure SSH keys on the server instead.");
     }
 }

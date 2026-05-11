@@ -1,6 +1,5 @@
 package com.robbanhoglund.springbootanalyzer.analyzer.configuration;
 
-import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertyReference;
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
@@ -11,6 +10,7 @@ import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.MemberValuePair;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.NameExpr;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertyReference;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -33,9 +33,11 @@ public class PropertyReferenceAnalyzer {
 
     public PropertyReferenceAnalyzer(PropertyNameNormalizer propertyNameNormalizer) {
         this.propertyNameNormalizer = propertyNameNormalizer;
-        this.javaParser = new JavaParser(new ParserConfiguration()
-                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                .setCharacterEncoding(StandardCharsets.UTF_8));
+        this.javaParser =
+                new JavaParser(
+                        new ParserConfiguration()
+                                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
+                                .setCharacterEncoding(StandardCharsets.UTF_8));
     }
 
     public List<PropertyReference> analyze(Path repositoryRoot) {
@@ -51,12 +53,14 @@ public class PropertyReferenceAnalyzer {
                     .sorted(Comparator.naturalOrder())
                     .forEach(path -> analyzeSourceFile(repositoryRoot, path, references));
         } catch (IOException exception) {
-            throw new IllegalStateException("Failed to scan property references under " + sourceRoot, exception);
+            throw new IllegalStateException(
+                    "Failed to scan property references under " + sourceRoot, exception);
         }
         return List.copyOf(references);
     }
 
-    private void analyzeSourceFile(Path repositoryRoot, Path sourceFile, List<PropertyReference> references) {
+    private void analyzeSourceFile(
+            Path repositoryRoot, Path sourceFile, List<PropertyReference> references) {
         try {
             var parseResult = javaParser.parse(sourceFile);
             if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
@@ -64,21 +68,28 @@ public class PropertyReferenceAnalyzer {
             }
 
             CompilationUnit compilationUnit = parseResult.getResult().orElseThrow();
-            String packageName = compilationUnit.getPackageDeclaration()
-                    .map(declaration -> declaration.getNameAsString())
-                    .orElse("");
+            String packageName =
+                    compilationUnit
+                            .getPackageDeclaration()
+                            .map(declaration -> declaration.getNameAsString())
+                            .orElse("");
 
-            for (TypeDeclaration<?> typeDeclaration : compilationUnit.findAll(TypeDeclaration.class)) {
-                String className = packageName.isBlank()
-                        ? typeDeclaration.getNameAsString()
-                        : packageName + "." + typeDeclaration.getNameAsString();
+            for (TypeDeclaration<?> typeDeclaration :
+                    compilationUnit.findAll(TypeDeclaration.class)) {
+                String className =
+                        packageName.isBlank()
+                                ? typeDeclaration.getNameAsString()
+                                : packageName + "." + typeDeclaration.getNameAsString();
 
                 for (AnnotationExpr annotation : typeDeclaration.findAll(AnnotationExpr.class)) {
-                    collectAnnotationReference(repositoryRoot, sourceFile, className, annotation).ifPresent(references::addAll);
+                    collectAnnotationReference(repositoryRoot, sourceFile, className, annotation)
+                            .ifPresent(references::addAll);
                 }
 
-                for (MethodCallExpr methodCallExpr : typeDeclaration.findAll(MethodCallExpr.class)) {
-                    collectMethodReference(repositoryRoot, sourceFile, className, methodCallExpr).ifPresent(references::add);
+                for (MethodCallExpr methodCallExpr :
+                        typeDeclaration.findAll(MethodCallExpr.class)) {
+                    collectMethodReference(repositoryRoot, sourceFile, className, methodCallExpr)
+                            .ifPresent(references::add);
                 }
             }
         } catch (IOException exception) {
@@ -87,16 +98,17 @@ public class PropertyReferenceAnalyzer {
     }
 
     private Optional<List<PropertyReference>> collectAnnotationReference(
-            Path repositoryRoot,
-            Path sourceFile,
-            String className,
-            AnnotationExpr annotation
-    ) {
+            Path repositoryRoot, Path sourceFile, String className, AnnotationExpr annotation) {
         String annotationName = simpleName(annotation.getNameAsString());
         if ("Value".equals(annotationName)) {
-            String rawValue = annotation.isSingleMemberAnnotationExpr()
-                    ? stringValue(annotation.asSingleMemberAnnotationExpr().getMemberValue()).orElse(null)
-                    : null;
+            String rawValue =
+                    annotation.isSingleMemberAnnotationExpr()
+                            ? stringValue(
+                                            annotation
+                                                    .asSingleMemberAnnotationExpr()
+                                                    .getMemberValue())
+                                    .orElse(null)
+                            : null;
             if (rawValue == null) {
                 return Optional.empty();
             }
@@ -105,24 +117,29 @@ public class PropertyReferenceAnalyzer {
             if (!matcher.find()) {
                 return Optional.empty();
             }
-            return Optional.of(List.of(new PropertyReference(
-                    propertyNameNormalizer.normalize(matcher.group(1)),
-                    "@Value",
-                    normalizePath(repositoryRoot, sourceFile),
-                    annotation.getBegin().map(position -> position.line).orElse(null),
-                    className,
-                    matcher.group(2),
-                    false,
-                    null,
-                    null
-            )));
+            return Optional.of(
+                    List.of(
+                            new PropertyReference(
+                                    propertyNameNormalizer.normalize(matcher.group(1)),
+                                    "@Value",
+                                    normalizePath(repositoryRoot, sourceFile),
+                                    annotation
+                                            .getBegin()
+                                            .map(position -> position.line)
+                                            .orElse(null),
+                                    className,
+                                    matcher.group(2),
+                                    false,
+                                    null,
+                                    null)));
         }
 
         if ("Scheduled".equals(annotationName) && annotation.isNormalAnnotationExpr()) {
             return collectScheduledReferences(repositoryRoot, sourceFile, className, annotation);
         }
 
-        if (!"ConditionalOnProperty".equals(annotationName) || !annotation.isNormalAnnotationExpr()) {
+        if (!"ConditionalOnProperty".equals(annotationName)
+                || !annotation.isNormalAnnotationExpr()) {
             return Optional.empty();
         }
 
@@ -133,11 +150,13 @@ public class PropertyReferenceAnalyzer {
         for (MemberValuePair pair : annotation.asNormalAnnotationExpr().getPairs()) {
             if ("prefix".equals(pair.getNameAsString())) {
                 prefix = stringValue(pair.getValue()).orElse("");
-            } else if ("name".equals(pair.getNameAsString()) || "value".equals(pair.getNameAsString())) {
+            } else if ("name".equals(pair.getNameAsString())
+                    || "value".equals(pair.getNameAsString())) {
                 extractStringValues(pair.getValue()).forEach(names::add);
             } else if ("havingValue".equals(pair.getNameAsString())) {
                 havingValue = stringValue(pair.getValue()).orElse(null);
-            } else if ("matchIfMissing".equals(pair.getNameAsString()) && pair.getValue().isBooleanLiteralExpr()) {
+            } else if ("matchIfMissing".equals(pair.getNameAsString())
+                    && pair.getValue().isBooleanLiteralExpr()) {
                 matchIfMissing = pair.getValue().asBooleanLiteralExpr().getValue();
             }
         }
@@ -149,27 +168,23 @@ public class PropertyReferenceAnalyzer {
         List<PropertyReference> references = new ArrayList<>();
         for (String name : names) {
             String propertyName = prefix.isBlank() ? name : prefix + "." + name;
-            references.add(new PropertyReference(
-                    propertyNameNormalizer.normalize(propertyName),
-                    "@ConditionalOnProperty",
-                    normalizePath(repositoryRoot, sourceFile),
-                    annotation.getBegin().map(position -> position.line).orElse(null),
-                    className,
-                    null,
-                    false,
-                    havingValue,
-                    matchIfMissing
-            ));
+            references.add(
+                    new PropertyReference(
+                            propertyNameNormalizer.normalize(propertyName),
+                            "@ConditionalOnProperty",
+                            normalizePath(repositoryRoot, sourceFile),
+                            annotation.getBegin().map(position -> position.line).orElse(null),
+                            className,
+                            null,
+                            false,
+                            havingValue,
+                            matchIfMissing));
         }
         return Optional.of(List.copyOf(references));
     }
 
     private Optional<PropertyReference> collectMethodReference(
-            Path repositoryRoot,
-            Path sourceFile,
-            String className,
-            MethodCallExpr methodCallExpr
-    ) {
+            Path repositoryRoot, Path sourceFile, String className, MethodCallExpr methodCallExpr) {
         String methodName = methodCallExpr.getNameAsString();
         if (!methodName.equals("getProperty")
                 && !methodName.equals("getRequiredProperty")
@@ -193,17 +208,17 @@ public class PropertyReferenceAnalyzer {
             defaultValue = stringValue(methodCallExpr.getArgument(1)).orElse(null);
         }
 
-        return Optional.of(new PropertyReference(
-                propertyNameNormalizer.normalize(propertyName.get()),
-                "Environment#" + methodName,
-                normalizePath(repositoryRoot, sourceFile),
-                methodCallExpr.getBegin().map(position -> position.line).orElse(null),
-                className,
-                defaultValue,
-                methodName.equals("getRequiredProperty"),
-                null,
-                null
-        ));
+        return Optional.of(
+                new PropertyReference(
+                        propertyNameNormalizer.normalize(propertyName.get()),
+                        "Environment#" + methodName,
+                        normalizePath(repositoryRoot, sourceFile),
+                        methodCallExpr.getBegin().map(position -> position.line).orElse(null),
+                        className,
+                        defaultValue,
+                        methodName.equals("getRequiredProperty"),
+                        null,
+                        null));
     }
 
     private boolean looksLikeSpringEnvironmentLookup(MethodCallExpr methodCallExpr) {
@@ -230,15 +245,13 @@ public class PropertyReferenceAnalyzer {
     }
 
     private Optional<List<PropertyReference>> collectScheduledReferences(
-            Path repositoryRoot,
-            Path sourceFile,
-            String className,
-            AnnotationExpr annotation
-    ) {
+            Path repositoryRoot, Path sourceFile, String className, AnnotationExpr annotation) {
         List<PropertyReference> references = new ArrayList<>();
         for (MemberValuePair pair : annotation.asNormalAnnotationExpr().getPairs()) {
             String pairName = pair.getNameAsString();
-            if (!pairName.equals("fixedDelayString") && !pairName.equals("fixedRateString") && !pairName.equals("cron")) {
+            if (!pairName.equals("fixedDelayString")
+                    && !pairName.equals("fixedRateString")
+                    && !pairName.equals("cron")) {
                 continue;
             }
             Optional<String> rawValue = stringValue(pair.getValue());
@@ -249,17 +262,17 @@ public class PropertyReferenceAnalyzer {
             if (!matcher.find()) {
                 continue;
             }
-            references.add(new PropertyReference(
-                    propertyNameNormalizer.normalize(matcher.group(1)),
-                    "@Scheduled",
-                    normalizePath(repositoryRoot, sourceFile),
-                    annotation.getBegin().map(position -> position.line).orElse(null),
-                    className,
-                    matcher.group(2),
-                    false,
-                    pairName,
-                    null
-            ));
+            references.add(
+                    new PropertyReference(
+                            propertyNameNormalizer.normalize(matcher.group(1)),
+                            "@Scheduled",
+                            normalizePath(repositoryRoot, sourceFile),
+                            annotation.getBegin().map(position -> position.line).orElse(null),
+                            className,
+                            matcher.group(2),
+                            false,
+                            pairName,
+                            null));
         }
         return references.isEmpty() ? Optional.empty() : Optional.of(List.copyOf(references));
     }

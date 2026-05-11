@@ -17,26 +17,27 @@ import org.springframework.stereotype.Component;
 public class GradlePluginDeclarationScanner {
 
     private static final Pattern GROOVY_ID_PATTERN =
-            Pattern.compile("id\\s+['\"]([^'\"]+)['\"](?:\\s+version\\s+['\"]([^'\"]+)['\"])?(?:\\s+apply\\s+false)?");
+            Pattern.compile(
+                    "id\\s+['\"]([^'\"]+)['\"](?:\\s+version\\s+['\"]([^'\"]+)['\"])?(?:\\s+apply\\s+false)?");
     private static final Pattern METHOD_ID_PATTERN =
-            Pattern.compile("id\\(\\s*['\"]([^'\"]+)['\"]\\s*\\)(?:\\s*version\\s*['\"]([^'\"]+)['\"])?(?:\\s*apply\\s+false)?");
+            Pattern.compile(
+                    "id\\(\\s*['\"]([^'\"]+)['\"]\\s*\\)(?:\\s*version\\s*['\"]([^'\"]+)['\"])?(?:\\s*apply\\s+false)?");
     private static final Pattern ALIAS_PATTERN =
-            Pattern.compile("alias\\(\\s*libs\\.plugins\\.([A-Za-z0-9_.-]+)\\s*\\)(?:\\s*apply\\s+false)?");
-    private static final List<String> FILE_PATTERNS = List.of(
-            "settings.gradle",
-            "settings.gradle.kts",
-            "build.gradle",
-            "build.gradle.kts"
-    );
+            Pattern.compile(
+                    "alias\\(\\s*libs\\.plugins\\.([A-Za-z0-9_.-]+)\\s*\\)(?:\\s*apply\\s+false)?");
+    private static final List<String> FILE_PATTERNS =
+            List.of("settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts");
 
     private final GradleVersionCatalogPluginScanner versionCatalogPluginScanner;
 
-    public GradlePluginDeclarationScanner(GradleVersionCatalogPluginScanner versionCatalogPluginScanner) {
+    public GradlePluginDeclarationScanner(
+            GradleVersionCatalogPluginScanner versionCatalogPluginScanner) {
         this.versionCatalogPluginScanner = versionCatalogPluginScanner;
     }
 
     public List<GradlePluginDeclaration> scan(Path repositoryRoot) {
-        Map<String, GradleVersionCatalogPluginScanner.CatalogPlugin> aliases = versionCatalogPluginScanner.scan(repositoryRoot);
+        Map<String, GradleVersionCatalogPluginScanner.CatalogPlugin> aliases =
+                versionCatalogPluginScanner.scan(repositoryRoot);
         List<GradlePluginDeclaration> declarations = new ArrayList<>();
         try (var paths = Files.walk(repositoryRoot)) {
             paths.filter(Files::isRegularFile)
@@ -52,8 +53,7 @@ public class GradlePluginDeclarationScanner {
     private List<GradlePluginDeclaration> scanFile(
             Path repositoryRoot,
             Path file,
-            Map<String, GradleVersionCatalogPluginScanner.CatalogPlugin> aliases
-    ) {
+            Map<String, GradleVersionCatalogPluginScanner.CatalogPlugin> aliases) {
         List<GradlePluginDeclaration> declarations = new ArrayList<>();
         List<String> lines;
         try {
@@ -76,18 +76,22 @@ public class GradlePluginDeclarationScanner {
             int opens = count(line, '{');
             int closes = count(line, '}');
 
-            if (pluginManagementDepth == null && trimmed.matches(".*\\bpluginManagement\\b.*\\{.*")) {
+            if (pluginManagementDepth == null
+                    && trimmed.matches(".*\\bpluginManagement\\b.*\\{.*")) {
                 pluginManagementDepth = lineDepthBefore + opens - closes;
             }
             if (pluginsDepth == null && trimmed.matches(".*\\bplugins\\b\\s*\\{.*")) {
                 pluginsDepth = lineDepthBefore + opens - closes;
-                currentSource = pluginManagementDepth != null && lineDepthBefore >= pluginManagementDepth
-                        ? GradlePluginDeclarationSource.PLUGIN_MANAGEMENT_PLUGINS_BLOCK
-                        : settingsFile
-                                ? GradlePluginDeclarationSource.SETTINGS_PLUGINS_BLOCK
-                                : GradlePluginDeclarationSource.PROJECT_PLUGINS_BLOCK;
+                currentSource =
+                        pluginManagementDepth != null && lineDepthBefore >= pluginManagementDepth
+                                ? GradlePluginDeclarationSource.PLUGIN_MANAGEMENT_PLUGINS_BLOCK
+                                : settingsFile
+                                        ? GradlePluginDeclarationSource.SETTINGS_PLUGINS_BLOCK
+                                        : GradlePluginDeclarationSource.PROJECT_PLUGINS_BLOCK;
             } else if (pluginsDepth != null && lineDepthBefore >= pluginsDepth) {
-                declarations.addAll(extractDeclarations(repositoryRoot, file, trimmed, index + 1, currentSource, aliases));
+                declarations.addAll(
+                        extractDeclarations(
+                                repositoryRoot, file, trimmed, index + 1, currentSource, aliases));
             }
 
             depth = Math.max(0, depth + opens - closes);
@@ -109,8 +113,7 @@ public class GradlePluginDeclarationScanner {
             String line,
             int lineNumber,
             GradlePluginDeclarationSource source,
-            Map<String, GradleVersionCatalogPluginScanner.CatalogPlugin> aliases
-    ) {
+            Map<String, GradleVersionCatalogPluginScanner.CatalogPlugin> aliases) {
         if (line.isBlank() || line.startsWith("//")) {
             return List.of();
         }
@@ -123,19 +126,35 @@ public class GradlePluginDeclarationScanner {
             String normalizedAlias = aliasToken.replace('.', '-');
             GradleVersionCatalogPluginScanner.CatalogPlugin alias = aliases.get(normalizedAlias);
             if (alias != null) {
-                declarations.add(new GradlePluginDeclaration(
-                        alias.pluginId(),
-                        alias.version(),
-                        repositoryRoot.relativize(file).toString().replace('\\', '/'),
-                        lineNumber,
-                        GradlePluginDeclarationSource.VERSION_CATALOG_ALIAS,
-                        applyFalse
-                ));
+                declarations.add(
+                        new GradlePluginDeclaration(
+                                alias.pluginId(),
+                                alias.version(),
+                                repositoryRoot.relativize(file).toString().replace('\\', '/'),
+                                lineNumber,
+                                GradlePluginDeclarationSource.VERSION_CATALOG_ALIAS,
+                                applyFalse));
             }
         }
 
-        declarations.addAll(matchIdDeclarations(repositoryRoot, file, line, lineNumber, source, applyFalse, GROOVY_ID_PATTERN));
-        declarations.addAll(matchIdDeclarations(repositoryRoot, file, line, lineNumber, source, applyFalse, METHOD_ID_PATTERN));
+        declarations.addAll(
+                matchIdDeclarations(
+                        repositoryRoot,
+                        file,
+                        line,
+                        lineNumber,
+                        source,
+                        applyFalse,
+                        GROOVY_ID_PATTERN));
+        declarations.addAll(
+                matchIdDeclarations(
+                        repositoryRoot,
+                        file,
+                        line,
+                        lineNumber,
+                        source,
+                        applyFalse,
+                        METHOD_ID_PATTERN));
         return declarations;
     }
 
@@ -146,19 +165,18 @@ public class GradlePluginDeclarationScanner {
             int lineNumber,
             GradlePluginDeclarationSource source,
             boolean applyFalse,
-            Pattern pattern
-    ) {
+            Pattern pattern) {
         List<GradlePluginDeclaration> declarations = new ArrayList<>();
         Matcher matcher = pattern.matcher(line);
         while (matcher.find()) {
-            declarations.add(new GradlePluginDeclaration(
-                    matcher.group(1),
-                    matcher.group(2),
-                    repositoryRoot.relativize(file).toString().replace('\\', '/'),
-                    lineNumber,
-                    source,
-                    applyFalse
-            ));
+            declarations.add(
+                    new GradlePluginDeclaration(
+                            matcher.group(1),
+                            matcher.group(2),
+                            repositoryRoot.relativize(file).toString().replace('\\', '/'),
+                            lineNumber,
+                            source,
+                            applyFalse));
         }
         return declarations;
     }
@@ -166,12 +184,14 @@ public class GradlePluginDeclarationScanner {
     private List<GradlePluginDeclaration> deduplicate(List<GradlePluginDeclaration> declarations) {
         Map<String, GradlePluginDeclaration> deduplicated = new LinkedHashMap<>();
         for (GradlePluginDeclaration declaration : declarations) {
-            String key = String.join("|",
-                    declaration.pluginId() == null ? "" : declaration.pluginId(),
-                    declaration.version() == null ? "" : declaration.version(),
-                    declaration.sourceFile() == null ? "" : declaration.sourceFile(),
-                    declaration.line() == null ? "" : declaration.line().toString(),
-                    declaration.source() == null ? "" : declaration.source().name());
+            String key =
+                    String.join(
+                            "|",
+                            declaration.pluginId() == null ? "" : declaration.pluginId(),
+                            declaration.version() == null ? "" : declaration.version(),
+                            declaration.sourceFile() == null ? "" : declaration.sourceFile(),
+                            declaration.line() == null ? "" : declaration.line().toString(),
+                            declaration.source() == null ? "" : declaration.source().name());
             deduplicated.putIfAbsent(key, declaration);
         }
         return List.copyOf(deduplicated.values());

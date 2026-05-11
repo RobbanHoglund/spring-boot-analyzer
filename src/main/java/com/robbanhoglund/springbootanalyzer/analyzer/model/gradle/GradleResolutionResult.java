@@ -8,6 +8,4 @@ public record GradleResolutionResult(
         boolean fallbackUsed,
         String errorType,
         String errorMessage,
-        int resolvedDependencyCount
-) {
-}
+        int resolvedDependencyCount) {}

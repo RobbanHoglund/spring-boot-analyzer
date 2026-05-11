@@ -12,55 +12,59 @@ import org.junit.jupiter.api.io.TempDir;
 
 class GradleInitScriptGenerationTest {
 
-    @TempDir
-    Path tempDir;
+    @TempDir Path tempDir;
 
     @Test
     void generatedInitScriptInjectsPluginRepositories() throws Exception {
-        AnalyzerProperties.GradleProperties properties = new AnalyzerProperties.GradleProperties(
-                true,
-                Duration.ofSeconds(5),
-                GradleExecutionMode.TOOLING_API,
-                "9.5.0",
-                tempDir.resolve("gradle-cache"),
-                List.of(),
-                null,
-                null,
-                true,
-                List.of("https://plugins.gradle.org/m2/", "https://repo.example.com/plugins"),
-                true,
-                false,
-                true,
-                false,
-                true,
-                false,
-                false,
-                new AnalyzerProperties.SettingsPluginWorkaroundProperties(false, false, List.of(), 1),
-                new AnalyzerProperties.PluginResolutionBridgeProperties(
+        AnalyzerProperties.GradleProperties properties =
+                new AnalyzerProperties.GradleProperties(
                         true,
+                        Duration.ofSeconds(5),
+                        GradleExecutionMode.TOOLING_API,
+                        "9.5.0",
+                        tempDir.resolve("gradle-cache"),
+                        List.of(),
+                        null,
+                        null,
                         true,
+                        List.of(
+                                "https://plugins.gradle.org/m2/",
+                                "https://repo.example.com/plugins"),
                         true,
-                        "Spring Boot Analyzer plugin cache",
-                        List.of("https://plugins.gradle.org/m2/", "https://repo.maven.apache.org/maven2/"),
-                        Duration.ofSeconds(30),
-                        50,
-                        500,
                         false,
-                        2
-                ),
-                false,
-                false,
-                true,
-                null,
-                null,
-                1024,
-                100
-        );
+                        true,
+                        false,
+                        true,
+                        false,
+                        false,
+                        new AnalyzerProperties.SettingsPluginWorkaroundProperties(
+                                false, false, List.of(), 1),
+                        new AnalyzerProperties.PluginResolutionBridgeProperties(
+                                true,
+                                true,
+                                true,
+                                "Spring Boot Analyzer plugin cache",
+                                List.of(
+                                        "https://plugins.gradle.org/m2/",
+                                        "https://repo.maven.apache.org/maven2/"),
+                                Duration.ofSeconds(30),
+                                50,
+                                500,
+                                false,
+                                2),
+                        false,
+                        false,
+                        true,
+                        null,
+                        null,
+                        1024,
+                        100);
 
         Path localPluginRepository = tempDir.resolve("plugin-cache/m2");
         java.nio.file.Files.createDirectories(localPluginRepository);
         GradleExecutionSupport.ExecutionFiles files =
-                GradleExecutionSupport.prepareExecutionFiles(tempDir, properties, localPluginRepository);
+                GradleExecutionSupport.prepareExecutionFiles(
+                        tempDir, properties, localPluginRepository);
         String script = java.nio.file.Files.readString(files.initScript());
 
         assertThat(script).contains("beforeSettings");
@@ -87,7 +91,9 @@ class GradleInitScriptGenerationTest {
         assertThat(script).contains("UnresolvedDependencyResult");
         assertThat(script).contains("dep instanceof ResolvedDependencyResult");
         assertThat(script).contains("id instanceof ModuleComponentIdentifier");
-        assertThat(script).contains("configuration.resolvedConfiguration.lenientConfiguration.allModuleDependencies");
+        assertThat(script)
+                .contains(
+                        "configuration.resolvedConfiguration.lenientConfiguration.allModuleDependencies");
         assertThat(script).contains("declaredDependencyCount");
         assertThat(script).contains("allDependencyCount");
         assertThat(script).contains("errorType: 'DEPENDENCY_RESOLUTION_FAILED'");
@@ -101,7 +107,8 @@ class GradleInitScriptGenerationTest {
     void initScriptValidationRejectsUnsafeWindowsPaths() {
         String script = "maven { url = uri('C:\\\\Users\\\\robba\\\\plugin-cache\\\\m2') }";
 
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> GradleExecutionSupport.validateInitScript(script))
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> GradleExecutionSupport.validateInitScript(script))
                 .isInstanceOf(InvalidGradleInitScriptException.class)
                 .hasMessageContaining("unsafe Windows path");
     }

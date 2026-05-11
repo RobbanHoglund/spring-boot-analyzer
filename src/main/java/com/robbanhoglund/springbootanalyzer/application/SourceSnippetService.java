@@ -21,32 +21,35 @@ public class SourceSnippetService {
     private static final int MAX_CONTEXT_LINES = 30;
     private static final int MAX_RETURNED_LINES = 200;
     private static final long MAX_FILE_SIZE_BYTES = 1_048_576L;
-    private static final Set<String> SENSITIVE_KEY_MARKERS = Set.of(
-            "password",
-            "passwd",
-            "pwd",
-            "secret",
-            "token",
-            "api-key",
-            "apikey",
-            "private-key",
-            "credential",
-            "client-secret",
-            "access-key"
-    );
+    private static final Set<String> SENSITIVE_KEY_MARKERS =
+            Set.of(
+                    "password",
+                    "passwd",
+                    "pwd",
+                    "secret",
+                    "token",
+                    "api-key",
+                    "apikey",
+                    "private-key",
+                    "credential",
+                    "client-secret",
+                    "access-key");
 
     private final AnalysisSessionRegistry analysisSessionRegistry;
     private final GitHubLinkBuilder gitHubLinkBuilder;
 
     public SourceSnippetService(
-            AnalysisSessionRegistry analysisSessionRegistry,
-            GitHubLinkBuilder gitHubLinkBuilder
-    ) {
+            AnalysisSessionRegistry analysisSessionRegistry, GitHubLinkBuilder gitHubLinkBuilder) {
         this.analysisSessionRegistry = analysisSessionRegistry;
         this.gitHubLinkBuilder = gitHubLinkBuilder;
     }
 
-    public SourceSnippetResponse loadSnippet(String analysisId, String relativePath, Integer startLine, Integer endLine, int context) {
+    public SourceSnippetResponse loadSnippet(
+            String analysisId,
+            String relativePath,
+            Integer startLine,
+            Integer endLine,
+            int context) {
         if (analysisId == null || analysisId.isBlank()) {
             throw new InvalidSourceSnippetRequestException("Analysis ID is required.");
         }
@@ -55,17 +58,24 @@ public class SourceSnippetService {
         }
         boolean hasExactRange = startLine != null && endLine != null;
         if ((startLine == null) != (endLine == null)) {
-            throw new InvalidSourceSnippetRequestException("Source line range must include both start and end line values.");
+            throw new InvalidSourceSnippetRequestException(
+                    "Source line range must include both start and end line values.");
         }
         if (hasExactRange && (startLine <= 0 || endLine <= 0 || endLine < startLine)) {
             throw new InvalidSourceSnippetRequestException("Line range is invalid.");
         }
         if (context < 0 || context > MAX_CONTEXT_LINES) {
-            throw new InvalidSourceSnippetRequestException("Context must be between 0 and " + MAX_CONTEXT_LINES + " lines.");
+            throw new InvalidSourceSnippetRequestException(
+                    "Context must be between 0 and " + MAX_CONTEXT_LINES + " lines.");
         }
 
-        AnalysisSessionRegistry.AnalysisSession session = analysisSessionRegistry.find(analysisId)
-                .orElseThrow(() -> new SourceSnippetNotFoundException("Analysis session was not found."));
+        AnalysisSessionRegistry.AnalysisSession session =
+                analysisSessionRegistry
+                        .find(analysisId)
+                        .orElseThrow(
+                                () ->
+                                        new SourceSnippetNotFoundException(
+                                                "Analysis session was not found."));
 
         Path repositoryRoot = session.repositoryRoot().normalize();
         Path resolvedPath = resolvePath(repositoryRoot, relativePath);
@@ -84,13 +94,18 @@ public class SourceSnippetService {
             throw new SourceSnippetNotFoundException("Source file is empty.");
         }
         if (hasExactRange && startLine > totalLines) {
-            throw new InvalidSourceSnippetRequestException("Requested start line is outside the file.");
+            throw new InvalidSourceSnippetRequestException(
+                    "Requested start line is outside the file.");
         }
 
         int requestedStartLine = hasExactRange ? startLine : 1;
-        int requestedEndLine = hasExactRange ? Math.min(endLine, totalLines) : Math.min(totalLines, Math.max(40, context * 2 + 12));
+        int requestedEndLine =
+                hasExactRange
+                        ? Math.min(endLine, totalLines)
+                        : Math.min(totalLines, Math.max(40, context * 2 + 12));
         int snippetStartLine = hasExactRange ? Math.max(1, requestedStartLine - context) : 1;
-        int snippetEndLine = hasExactRange ? Math.min(totalLines, requestedEndLine + context) : requestedEndLine;
+        int snippetEndLine =
+                hasExactRange ? Math.min(totalLines, requestedEndLine + context) : requestedEndLine;
         if ((snippetEndLine - snippetStartLine + 1) > MAX_RETURNED_LINES) {
             snippetEndLine = Math.min(totalLines, snippetStartLine + MAX_RETURNED_LINES - 1);
         }
@@ -98,20 +113,22 @@ public class SourceSnippetService {
         List<SourceSnippetLine> snippetLines = new ArrayList<>();
         for (int index = snippetStartLine; index <= snippetEndLine; index++) {
             String rawLine = originalLines.get(index - 1);
-            snippetLines.add(new SourceSnippetLine(
-                    index,
-                    redactLineIfNeeded(relativePath, rawLine),
-                    hasExactRange && index >= requestedStartLine && index <= requestedEndLine
-            ));
+            snippetLines.add(
+                    new SourceSnippetLine(
+                            index,
+                            redactLineIfNeeded(relativePath, rawLine),
+                            hasExactRange
+                                    && index >= requestedStartLine
+                                    && index <= requestedEndLine));
         }
 
-        String githubUrl = gitHubLinkBuilder.buildBlobUrl(
-                session.repositoryUrl(),
-                session.commitSha(),
-                relativePath.replace('\\', '/'),
-                hasExactRange ? requestedStartLine : null,
-                hasExactRange ? requestedEndLine : null
-        );
+        String githubUrl =
+                gitHubLinkBuilder.buildBlobUrl(
+                        session.repositoryUrl(),
+                        session.commitSha(),
+                        relativePath.replace('\\', '/'),
+                        hasExactRange ? requestedStartLine : null,
+                        hasExactRange ? requestedEndLine : null);
 
         return new SourceSnippetResponse(
                 relativePath.replace('\\', '/'),
@@ -121,9 +138,10 @@ public class SourceSnippetService {
                 githubUrl,
                 List.copyOf(snippetLines),
                 hasExactRange
-                        ? List.of(new HighlightRange(requestedStartLine, requestedEndLine, null, null, "issue"))
-                        : List.of()
-        );
+                        ? List.of(
+                                new HighlightRange(
+                                        requestedStartLine, requestedEndLine, null, null, "issue"))
+                        : List.of());
     }
 
     private Path resolvePath(Path repositoryRoot, String relativePath) {
@@ -134,7 +152,8 @@ public class SourceSnippetService {
             throw new InvalidSourceSnippetRequestException("Source path is invalid.");
         }
         if (candidate.isAbsolute() || candidate.startsWith("..")) {
-            throw new InvalidSourceSnippetRequestException("Source path must stay inside the analyzed repository.");
+            throw new InvalidSourceSnippetRequestException(
+                    "Source path must stay inside the analyzed repository.");
         }
         for (Path segment : candidate) {
             if (".git".equals(segment.toString())) {
@@ -143,7 +162,8 @@ public class SourceSnippetService {
         }
         Path resolved = repositoryRoot.resolve(candidate).normalize();
         if (!resolved.startsWith(repositoryRoot)) {
-            throw new InvalidSourceSnippetRequestException("Source path must stay inside the analyzed repository.");
+            throw new InvalidSourceSnippetRequestException(
+                    "Source path must stay inside the analyzed repository.");
         }
         return resolved;
     }
@@ -154,12 +174,14 @@ public class SourceSnippetService {
                 throw new SourceSnippetNotFoundException("Source file was not found.");
             }
             if (Files.size(resolvedPath) > MAX_FILE_SIZE_BYTES) {
-                throw new InvalidSourceSnippetRequestException("Source file is too large to display safely.");
+                throw new InvalidSourceSnippetRequestException(
+                        "Source file is too large to display safely.");
             }
             byte[] bytes = Files.readAllBytes(resolvedPath);
             for (byte value : bytes) {
                 if (value == 0) {
-                    throw new InvalidSourceSnippetRequestException("Binary files cannot be displayed as source snippets.");
+                    throw new InvalidSourceSnippetRequestException(
+                            "Binary files cannot be displayed as source snippets.");
                 }
             }
         } catch (IOException exception) {
@@ -198,7 +220,9 @@ public class SourceSnippetService {
             return rawLine;
         }
         char separator = rawLine.charAt(separatorIndex);
-        return rawLine.substring(0, separatorIndex + 1) + preserveLeadingWhitespace(rawLine.substring(separatorIndex + 1)) + "[redacted]";
+        return rawLine.substring(0, separatorIndex + 1)
+                + preserveLeadingWhitespace(rawLine.substring(separatorIndex + 1))
+                + "[redacted]";
     }
 
     private String redactYamlLine(String rawLine) {
@@ -210,7 +234,9 @@ public class SourceSnippetService {
         if (!looksSensitiveKey(keyPart)) {
             return rawLine;
         }
-        return rawLine.substring(0, colonIndex + 1) + preserveLeadingWhitespace(rawLine.substring(colonIndex + 1)) + "[redacted]";
+        return rawLine.substring(0, colonIndex + 1)
+                + preserveLeadingWhitespace(rawLine.substring(colonIndex + 1))
+                + "[redacted]";
     }
 
     private int findSeparatorIndex(String rawLine) {

@@ -29,7 +29,9 @@ public class PropertiesFileParser {
                 String name = line.substring(0, separatorIndex).trim();
                 String value = line.substring(separatorIndex + 1).trim();
                 if (!name.isBlank()) {
-                    properties.add(new ParsedConfigurationProperty(name, value, relativePath, index + 1, profile));
+                    properties.add(
+                            new ParsedConfigurationProperty(
+                                    name, value, relativePath, index + 1, profile));
                 }
             }
             return properties;

@@ -18,31 +18,74 @@ public class GradleSafetyPolicy {
         this.gradleJavaCompatibilityService = gradleJavaCompatibilityService;
     }
 
-    public Decision decide(GitRepositoryReference repositoryReference, Path repositoryRoot, BuildInfo buildInfo, AnalyzerProperties analyzerProperties) {
-        GradleExecutionMode configuredMode = analyzerProperties.gradle() == null
-                ? GradleExecutionMode.TOOLING_API
-                : analyzerProperties.gradle().executionMode();
-        if (repositoryReference.analysisMode() == null || repositoryReference.analysisMode().name().equals("STATIC_ONLY")) {
-            return new Decision(false, configuredMode, "STATIC_ONLY", null, null, runtimeJavaFeature(analyzerProperties), false);
+    public Decision decide(
+            GitRepositoryReference repositoryReference,
+            Path repositoryRoot,
+            BuildInfo buildInfo,
+            AnalyzerProperties analyzerProperties) {
+        GradleExecutionMode configuredMode =
+                analyzerProperties.gradle() == null
+                        ? GradleExecutionMode.TOOLING_API
+                        : analyzerProperties.gradle().executionMode();
+        if (repositoryReference.analysisMode() == null
+                || repositoryReference.analysisMode().name().equals("STATIC_ONLY")) {
+            return new Decision(
+                    false,
+                    configuredMode,
+                    "STATIC_ONLY",
+                    null,
+                    null,
+                    runtimeJavaFeature(analyzerProperties),
+                    false);
         }
         if (buildInfo.buildTool() != BuildTool.GRADLE) {
-            return new Decision(false, configuredMode, "NOT_A_GRADLE_BUILD", null, null, runtimeJavaFeature(analyzerProperties), false);
+            return new Decision(
+                    false,
+                    configuredMode,
+                    "NOT_A_GRADLE_BUILD",
+                    null,
+                    null,
+                    runtimeJavaFeature(analyzerProperties),
+                    false);
         }
         if (analyzerProperties.gradle() == null || !analyzerProperties.gradle().enabled()) {
-            return new Decision(false, configuredMode, "DISABLED", null, null, runtimeJavaFeature(analyzerProperties), false);
+            return new Decision(
+                    false,
+                    configuredMode,
+                    "DISABLED",
+                    null,
+                    null,
+                    runtimeJavaFeature(analyzerProperties),
+                    false);
         }
 
-        GradleExecutionMode executionMode = analyzerProperties.gradle().useWrapper()
-                ? GradleExecutionMode.WRAPPER
-                : analyzerProperties.gradle().executionMode();
+        GradleExecutionMode executionMode =
+                analyzerProperties.gradle().useWrapper()
+                        ? GradleExecutionMode.WRAPPER
+                        : analyzerProperties.gradle().executionMode();
         if (executionMode == GradleExecutionMode.WRAPPER) {
             Path wrapper = resolveWrapperScript(repositoryRoot);
-            String wrapperVersion = GradleExecutionSupport.extractWrapperGradleVersion(repositoryRoot);
+            String wrapperVersion =
+                    GradleExecutionSupport.extractWrapperGradleVersion(repositoryRoot);
             int javaFeatureVersion = runtimeJavaFeature(analyzerProperties);
             if (wrapper != null) {
-                return new Decision(true, GradleExecutionMode.WRAPPER, "ENABLED", wrapper, wrapperVersion, javaFeatureVersion, false);
+                return new Decision(
+                        true,
+                        GradleExecutionMode.WRAPPER,
+                        "ENABLED",
+                        wrapper,
+                        wrapperVersion,
+                        javaFeatureVersion,
+                        false);
             }
-            return new Decision(false, GradleExecutionMode.WRAPPER, "WRAPPER_NOT_FOUND", null, wrapperVersion, javaFeatureVersion, false);
+            return new Decision(
+                    false,
+                    GradleExecutionMode.WRAPPER,
+                    "WRAPPER_NOT_FOUND",
+                    null,
+                    wrapperVersion,
+                    javaFeatureVersion,
+                    false);
         }
 
         String gradleVersion = analyzerProperties.gradle().diagnosticGradleVersion();
@@ -53,14 +96,14 @@ public class GradleSafetyPolicy {
                 null,
                 gradleVersion,
                 runtimeJavaFeature(analyzerProperties),
-                analyzerProperties.gradle().allowSystemGradleFallback()
-        );
+                analyzerProperties.gradle().allowSystemGradleFallback());
     }
 
     private int runtimeJavaFeature(AnalyzerProperties analyzerProperties) {
         return gradleJavaCompatibilityService.resolveJavaFeatureVersion(
-                analyzerProperties.gradle() == null ? null : analyzerProperties.gradle().javaHome()
-        );
+                analyzerProperties.gradle() == null
+                        ? null
+                        : analyzerProperties.gradle().javaHome());
     }
 
     private Path resolveWrapperScript(Path repositoryRoot) {
@@ -82,7 +125,5 @@ public class GradleSafetyPolicy {
             Path wrapperScript,
             String gradleVersion,
             int javaFeatureVersion,
-            boolean allowSystemGradleFallback
-    ) {
-    }
+            boolean allowSystemGradleFallback) {}
 }

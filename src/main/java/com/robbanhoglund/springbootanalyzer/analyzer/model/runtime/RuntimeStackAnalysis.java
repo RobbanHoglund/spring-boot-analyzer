@@ -7,6 +7,4 @@ public record RuntimeStackAnalysis(
         WebStack webStack,
         String webStackReason,
         VirtualThreadAnalysis virtualThreads,
-        String mainClass
-) {
-}
+        String mainClass) {}

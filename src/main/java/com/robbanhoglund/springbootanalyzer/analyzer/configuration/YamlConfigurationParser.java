@@ -20,13 +20,14 @@ public class YamlConfigurationParser {
 
     public List<ParsedConfigurationProperty> parse(Path path, String relativePath, String profile) {
         try (InputStream inputStream = Files.newInputStream(path)) {
-            Object root = objectMapper.readValue(inputStream, new TypeReference<>() {
-            });
+            Object root = objectMapper.readValue(inputStream, new TypeReference<>() {});
             Map<String, String> flattened = new LinkedHashMap<>();
             flatten("", root, flattened);
             List<ParsedConfigurationProperty> properties = new ArrayList<>();
             for (Map.Entry<String, String> entry : flattened.entrySet()) {
-                properties.add(new ParsedConfigurationProperty(entry.getKey(), entry.getValue(), relativePath, null, profile));
+                properties.add(
+                        new ParsedConfigurationProperty(
+                                entry.getKey(), entry.getValue(), relativePath, null, profile));
             }
             return properties;
         } catch (IOException exception) {
@@ -38,9 +39,10 @@ public class YamlConfigurationParser {
     private void flatten(String prefix, Object value, Map<String, String> result) {
         if (value instanceof Map<?, ?> mapValue) {
             for (Map.Entry<?, ?> entry : mapValue.entrySet()) {
-                String childKey = prefix.isBlank()
-                        ? String.valueOf(entry.getKey())
-                        : prefix + "." + entry.getKey();
+                String childKey =
+                        prefix.isBlank()
+                                ? String.valueOf(entry.getKey())
+                                : prefix + "." + entry.getKey();
                 flatten(childKey, entry.getValue(), result);
             }
             return;

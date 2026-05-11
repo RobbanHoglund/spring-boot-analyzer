@@ -6,8 +6,7 @@ public record RelatedFindingSignal(
         FindingSeverity severity,
         FindingConfidence confidence,
         String evidence,
-        SourceLocation sourceLocation
-) {
+        SourceLocation sourceLocation) {
 
     public RelatedFindingSignal withGithubUrl(String githubUrl) {
         return new RelatedFindingSignal(
@@ -16,7 +15,6 @@ public record RelatedFindingSignal(
                 severity,
                 confidence,
                 evidence,
-                sourceLocation == null ? null : sourceLocation.withGithubUrl(githubUrl)
-        );
+                sourceLocation == null ? null : sourceLocation.withGithubUrl(githubUrl));
     }
 }

@@ -17,8 +17,8 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildTool;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingCategory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
-import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRuntimeDetection;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRuntimeDetection;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleAnalysisStatus;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleModelAnalysis;
@@ -34,110 +34,190 @@ import org.junit.jupiter.api.io.TempDir;
 class StaticPracticeFindingAnalyzerTest {
 
     private final PropertyNameNormalizer propertyNameNormalizer = new PropertyNameNormalizer();
-    private final ConfigurationAnalyzer configurationAnalyzer = new ConfigurationAnalyzer(
-            new ConfigurationFileScanner(),
-            new PropertiesFileParser(),
-            new YamlConfigurationParser(),
-            new SpringConfigurationMetadataCatalog(),
-            new ConfigurationPropertiesClassAnalyzer(propertyNameNormalizer),
-            new PropertyReferenceAnalyzer(propertyNameNormalizer),
-            new SensitivePropertyValueRedactor(),
-            propertyNameNormalizer
-    );
+    private final ConfigurationAnalyzer configurationAnalyzer =
+            new ConfigurationAnalyzer(
+                    new ConfigurationFileScanner(),
+                    new PropertiesFileParser(),
+                    new YamlConfigurationParser(),
+                    new SpringConfigurationMetadataCatalog(),
+                    new ConfigurationPropertiesClassAnalyzer(propertyNameNormalizer),
+                    new PropertyReferenceAnalyzer(propertyNameNormalizer),
+                    new SensitivePropertyValueRedactor(),
+                    propertyNameNormalizer);
     private final JavaSourceAnalyzer javaSourceAnalyzer = new JavaSourceAnalyzer();
     private final HttpSurfaceAnalyzer httpSurfaceAnalyzer = new HttpSurfaceAnalyzer();
     private final StaticPracticeFindingAnalyzer analyzer = new StaticPracticeFindingAnalyzer();
+    private final ConfigurationFindingAnalyzer configurationFindingAnalyzer =
+            new ConfigurationFindingAnalyzer();
+    private final ObservabilityFindingAnalyzer observabilityFindingAnalyzer =
+            new ObservabilityFindingAnalyzer();
 
-    @TempDir
-    Path tempDir;
+    @TempDir Path tempDir;
 
     @Test
     void emitsRichStaticFindingsForPrioritizedPracticeRisks() throws IOException {
         writeFixtureProject(tempDir);
 
-        BuildInfo buildInfo = new BuildInfo(
-                BuildTool.GRADLE,
-                true,
-                "25",
-                List.of(
-                        "org.springframework.boot:spring-boot-starter-web",
-                        "org.springframework.boot:spring-boot-starter-data-jpa",
-                        "org.flywaydb:flyway-core:11.20.3"
-                ),
-                "3.5.13",
-                "build.gradle plugin",
-                "HIGH"
-        );
+        BuildInfo buildInfo =
+                new BuildInfo(
+                        BuildTool.GRADLE,
+                        true,
+                        "25",
+                        List.of(
+                                "org.springframework.boot:spring-boot-starter-web",
+                                "org.springframework.boot:spring-boot-starter-data-jpa",
+                                "org.flywaydb:flyway-core:11.20.3"),
+                        "3.5.13",
+                        "build.gradle plugin",
+                        "HIGH");
 
         var configurationResult = configurationAnalyzer.analyze(tempDir, buildInfo);
         var sourceAnalysis = javaSourceAnalyzer.analyze(tempDir);
-        HttpSurfaceAnalyzer.Result httpResult = httpSurfaceAnalyzer.analyze(
-                tempDir,
-                configurationResult.configurationAnalysis(),
-                buildInfo,
-                WebStack.SERVLET_MVC
-        );
+        HttpSurfaceAnalyzer.Result httpResult =
+                httpSurfaceAnalyzer.analyze(
+                        tempDir,
+                        configurationResult.configurationAnalysis(),
+                        buildInfo,
+                        WebStack.SERVLET_MVC);
 
-        List<Finding> findings = analyzer.analyze(
-                tempDir,
-                buildInfo,
-                configurationResult.configurationAnalysis(),
-                GradleModelAnalysis.empty(GradleAnalysisStatus.NOT_REQUESTED, "TOOLING_API", List.of()),
-                new RuntimeStackAnalysis("3.5.13", "build.gradle", "25", WebStack.SERVLET_MVC, "Static servlet signals", null, "com.example.demo.DemoApplication"),
-                httpResult.httpSurfaceAnalysis(),
-                sourceAnalysis.detectedClasses()
-        );
+        var gradleAnalysis =
+                GradleModelAnalysis.empty(
+                        GradleAnalysisStatus.NOT_REQUESTED, "TOOLING_API", List.of());
+        var runtimeAnalysis =
+                new RuntimeStackAnalysis(
+                        "3.5.13",
+                        "build.gradle",
+                        "25",
+                        WebStack.SERVLET_MVC,
+                        "Static servlet signals",
+                        null,
+                        "com.example.demo.DemoApplication");
+        List<Finding> findings =
+                java.util.stream.Stream.of(
+                                analyzer.analyze(
+                                        tempDir,
+                                        buildInfo,
+                                        configurationResult.configurationAnalysis(),
+                                        gradleAnalysis,
+                                        runtimeAnalysis,
+                                        httpResult.httpSurfaceAnalysis(),
+                                        sourceAnalysis.detectedClasses()),
+                                configurationFindingAnalyzer.analyze(
+                                        tempDir,
+                                        buildInfo,
+                                        configurationResult.configurationAnalysis(),
+                                        gradleAnalysis),
+                                observabilityFindingAnalyzer.analyze(tempDir, runtimeAnalysis))
+                        .flatMap(java.util.Collection::stream)
+                        .toList();
 
-        assertRichFinding(findings, FindingRules.SPRING_SECRET_MULTI_PROFILE.ruleId(), FindingCategory.SECURITY, FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT);
-        assertRichFinding(findings, FindingRules.SPRING_PROFILE_DRIFT.ruleId(), FindingCategory.PROFILE_DRIFT, FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT);
-        assertRichFinding(findings, FindingRules.SPRING_CONDITIONAL_VALUE_MISMATCH.ruleId(), FindingCategory.CONDITIONAL_BEAN, FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT);
-        assertRichFinding(findings, FindingRules.SPRING_FLYWAY_DDL_AUTO_MIX.ruleId(), FindingCategory.PERSISTENCE, FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
-        assertRichFinding(findings, FindingRules.SPRING_STARTUP_SIDE_EFFECT.ruleId(), FindingCategory.STARTUP, FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
-        assertRichFinding(findings, FindingRules.SPRING_SCHEDULED_SIDE_EFFECT.ruleId(), FindingCategory.SCHEDULING, FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
-        assertRichFinding(findings, FindingRules.SPRING_HTTP_CLIENT_NO_TIMEOUT.ruleId(), FindingCategory.HTTP, FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
-        assertRichFinding(findings, FindingRules.SPRING_TRANSACTION_SELF_INVOCATION.ruleId(), FindingCategory.TRANSACTION, FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
-        assertRichFinding(findings, FindingRules.SPRING_TRANSACTION_PRIVATE_METHOD.ruleId(), FindingCategory.TRANSACTION, FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
-        assertRichFinding(findings, FindingRules.SPRING_REQUEST_BODY_NO_VALID.ruleId(), FindingCategory.VALIDATION, FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+        assertRichFinding(
+                findings,
+                FindingRules.SPRING_SECRET_MULTI_PROFILE.ruleId(),
+                FindingCategory.SECURITY,
+                FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT);
+        assertRichFinding(
+                findings,
+                FindingRules.SPRING_PROFILE_DRIFT.ruleId(),
+                FindingCategory.PROFILE_DRIFT,
+                FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT);
+        assertRichFinding(
+                findings,
+                FindingRules.SPRING_CONDITIONAL_VALUE_MISMATCH.ruleId(),
+                FindingCategory.CONDITIONAL_BEAN,
+                FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT);
+        assertRichFinding(
+                findings,
+                FindingRules.SPRING_FLYWAY_DDL_AUTO_MIX.ruleId(),
+                FindingCategory.PERSISTENCE,
+                FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+        assertRichFinding(
+                findings,
+                FindingRules.SPRING_STARTUP_SIDE_EFFECT.ruleId(),
+                FindingCategory.STARTUP,
+                FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+        assertRichFinding(
+                findings,
+                FindingRules.SPRING_SCHEDULED_SIDE_EFFECT.ruleId(),
+                FindingCategory.SCHEDULING,
+                FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+        assertRichFinding(
+                findings,
+                FindingRules.SPRING_HTTP_CLIENT_NO_TIMEOUT.ruleId(),
+                FindingCategory.HTTP,
+                FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+        assertRichFinding(
+                findings,
+                FindingRules.SPRING_TRANSACTION_SELF_INVOCATION.ruleId(),
+                FindingCategory.TRANSACTION,
+                FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+        assertRichFinding(
+                findings,
+                FindingRules.SPRING_TRANSACTION_PRIVATE_METHOD.ruleId(),
+                FindingCategory.TRANSACTION,
+                FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+        assertRichFinding(
+                findings,
+                FindingRules.SPRING_REQUEST_BODY_NO_VALID.ruleId(),
+                FindingCategory.VALIDATION,
+                FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
         assertThat(findings)
                 .extracting(Finding::target)
                 .contains("trading.provider", "schema management");
         assertThat(findings)
-                .allMatch(finding -> finding.message() == null || !finding.message().contains("super-secret"));
+                .allMatch(
+                        finding ->
+                                finding.message() == null
+                                        || !finding.message().contains("super-secret"));
     }
 
     @Test
-    void configurationAnalyzerProducesRedactedEducationalFindingsForSensitiveAndRiskyConfig() throws IOException {
+    void configurationAnalyzerProducesRedactedEducationalFindingsForSensitiveAndRiskyConfig()
+            throws IOException {
         writeFixtureProject(tempDir);
 
-        BuildInfo buildInfo = new BuildInfo(
-                BuildTool.GRADLE,
-                true,
-                "25",
-                List.of("org.springframework.boot:spring-boot-starter-data-jpa"),
-                "3.5.13",
-                "build.gradle plugin",
-                "HIGH"
-        );
+        BuildInfo buildInfo =
+                new BuildInfo(
+                        BuildTool.GRADLE,
+                        true,
+                        "25",
+                        List.of("org.springframework.boot:spring-boot-starter-data-jpa"),
+                        "3.5.13",
+                        "build.gradle plugin",
+                        "HIGH");
 
         var result = configurationAnalyzer.analyze(tempDir, buildInfo);
 
-        Finding secretFinding = result.findings().stream()
-                .filter(finding -> FindingRules.SPRING_SECRET_LITERAL.ruleId().equals(finding.ruleId()))
-                .findFirst()
-                .orElseThrow();
+        Finding secretFinding =
+                result.findings().stream()
+                        .filter(
+                                finding ->
+                                        FindingRules.SPRING_SECRET_LITERAL
+                                                .ruleId()
+                                                .equals(finding.ruleId()))
+                        .findFirst()
+                        .orElseThrow();
         assertThat(secretFinding.category()).isEqualTo(FindingCategory.SECURITY);
-        assertThat(secretFinding.runtimeDetection()).isEqualTo(FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+        assertThat(secretFinding.runtimeDetection())
+                .isEqualTo(FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
         assertThat(secretFinding.confidence()).isEqualTo(FindingConfidence.HIGH);
         assertThat(secretFinding.whyBadPractice()).isNotBlank();
         assertThat(secretFinding.possibleImpact()).isNotBlank();
         assertThat(secretFinding.recommendation()).isNotBlank();
-        assertThat(secretFinding.evidence()).contains("trading.api-secret").doesNotContain("super-secret");
+        assertThat(secretFinding.evidence())
+                .contains("trading.api-secret")
+                .doesNotContain("super-secret");
 
-        Finding riskyFinding = result.findings().stream()
-                .filter(finding -> FindingRules.SPRING_RISKY_PROD_CONFIG.ruleId().equals(finding.ruleId()))
-                .findFirst()
-                .orElseThrow();
+        Finding riskyFinding =
+                result.findings().stream()
+                        .filter(
+                                finding ->
+                                        FindingRules.SPRING_RISKY_PROD_CONFIG
+                                                .ruleId()
+                                                .equals(finding.ruleId()))
+                        .findFirst()
+                        .orElseThrow();
         assertThat(riskyFinding.category()).isEqualTo(FindingCategory.CONFIGURATION);
         assertThat(riskyFinding.whyBadPractice()).isNotBlank();
         assertThat(riskyFinding.recommendation()).isNotBlank();
@@ -146,100 +226,130 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void doesNotTreatHttpClientBuildersAsConstructorSideEffects() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("ClientHolder.java"), """
-                package com.example.demo;
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ClientHolder.java"),
+                """
+package com.example.demo;
 
-                import org.springframework.stereotype.Component;
-                import org.springframework.web.client.RestClient;
-                import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.reactive.function.client.WebClient;
 
-                @Component
-                class ClientHolder {
+@Component
+class ClientHolder {
 
-                    private final RestClient restClient;
-                    private final WebClient webClient;
+    private final RestClient restClient;
+    private final WebClient webClient;
 
-                    ClientHolder() {
-                        this.restClient = RestClient.builder().baseUrl("https://api.example.com").build();
-                        this.webClient = WebClient.builder().baseUrl("https://api.example.com").build();
-                    }
-                }
-                """);
+    ClientHolder() {
+        this.restClient = RestClient.builder().baseUrl("https://api.example.com").build();
+        this.webClient = WebClient.builder().baseUrl("https://api.example.com").build();
+    }
+}
+""");
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_STARTUP_SIDE_EFFECT.ruleId().equals(finding.ruleId())
-                        && (finding.target() != null && finding.target().contains("ClientHolder"))
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_STARTUP_SIDE_EFFECT
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && (finding.target() != null
+                                                && finding.target().contains("ClientHolder")));
     }
 
     @Test
     void flagsRealConstructorSideEffectsAndFiltersValidationNoise() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("StartupBean.java"), """
-                package com.example.demo;
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("StartupBean.java"),
+                """
+package com.example.demo;
 
-                import java.nio.file.Files;
-                import java.nio.file.Path;
-                import org.springframework.stereotype.Component;
-                import org.springframework.web.client.RestClient;
-                import org.springframework.web.bind.annotation.PostMapping;
-                import org.springframework.web.bind.annotation.RequestBody;
-                import org.springframework.web.bind.annotation.RestController;
-                import jakarta.validation.constraints.NotBlank;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RestController;
+import jakarta.validation.constraints.NotBlank;
 
-                @Component
-                class StartupBean {
-                    StartupBean() throws Exception {
-                        RestClient.create().get().uri("https://api.example.com").retrieve().body(String.class);
-                        Files.writeString(Path.of("marker.txt"), "hello");
-                    }
-                }
+@Component
+class StartupBean {
+    StartupBean() throws Exception {
+        RestClient.create().get().uri("https://api.example.com").retrieve().body(String.class);
+        Files.writeString(Path.of("marker.txt"), "hello");
+    }
+}
 
-                @RestController
-                class ApiController {
-                    @PostMapping("/typed")
-                    void typed(@RequestBody CreateRequest request) {
-                    }
+@RestController
+class ApiController {
+    @PostMapping("/typed")
+    void typed(@RequestBody CreateRequest request) {
+    }
 
-                    @PostMapping("/raw")
-                    void raw(@RequestBody java.util.Map<String, Object> payload) {
-                    }
-                }
+    @PostMapping("/raw")
+    void raw(@RequestBody java.util.Map<String, Object> payload) {
+    }
+}
 
-                record CreateRequest(@NotBlank String symbol, int quantity) {
-                }
-                """);
+record CreateRequest(@NotBlank String symbol, int quantity) {
+}
+""");
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_STARTUP_SIDE_EFFECT.ruleId().equals(finding.ruleId())
-                        && finding.evidence() != null
-                        && finding.evidence().contains("outbound HTTP execution")
-        );
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_REQUEST_BODY_NO_VALID.ruleId().equals(finding.ruleId())
-                        && finding.severity() != null
-                        && finding.severity().name().equals("INFO")
-                        && finding.evidence() != null
-                        && finding.evidence().contains("CreateRequest")
-        );
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_REQUEST_BODY_NO_VALID.ruleId().equals(finding.ruleId())
-                        && finding.evidence() != null
-                        && finding.evidence().contains("payload")
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_STARTUP_SIDE_EFFECT
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.evidence() != null
+                                        && finding.evidence().contains("outbound HTTP execution"));
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_REQUEST_BODY_NO_VALID
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() != null
+                                        && finding.severity().name().equals("INFO")
+                                        && finding.evidence() != null
+                                        && finding.evidence().contains("CreateRequest"));
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_REQUEST_BODY_NO_VALID
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.evidence() != null
+                                        && finding.evidence().contains("payload"));
     }
 
     @Test
     void avoidsMissingTransactionBoundaryForSingleRepositoryWrite() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("RepositoryAndService.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("RepositoryAndService.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.stereotype.Repository;
@@ -265,18 +375,28 @@ class StaticPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-data-jpa")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-data-jpa")));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_TRANSACTION_MISSING_BOUNDARY.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_TRANSACTION_MISSING_BOUNDARY
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     @Test
     void ignoresTransactionTemplateAndFlagsMultiWriteWithoutBoundary() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("TransactionalExamples.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("TransactionalExamples.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.jdbc.core.JdbcTemplate;
@@ -303,27 +423,40 @@ class StaticPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-jdbc")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-jdbc")));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_TRANSACTION_MISSING_BOUNDARY.ruleId().equals(finding.ruleId())
-                        && finding.target() != null
-                        && finding.target().contains("withTemplate")
-        );
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_TRANSACTION_MISSING_BOUNDARY.ruleId().equals(finding.ruleId())
-                        && finding.severity() != null
-                        && finding.severity().name().equals("INFO")
-                        && finding.target() != null
-                        && finding.target().contains("withoutBoundary")
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_TRANSACTION_MISSING_BOUNDARY
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.target() != null
+                                        && finding.target().contains("withTemplate"));
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_TRANSACTION_MISSING_BOUNDARY
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() != null
+                                        && finding.severity().name().equals("INFO")
+                                        && finding.target() != null
+                                        && finding.target().contains("withoutBoundary"));
     }
 
     @Test
     void downgradesNonPersistenceSideEffectOrchestrationToMaintainability() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("AnalyzerWorkflowService.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("AnalyzerWorkflowService.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.stereotype.Service;
@@ -339,24 +472,34 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_SIDE_EFFECT_ORCHESTRATION_NO_BOUNDARY.ruleId().equals(finding.ruleId())
-                        && finding.category() == FindingCategory.MAINTAINABILITY
-                        && finding.message() != null
-                        && finding.message().contains("Potential side-effect orchestration")
-        );
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_TRANSACTION_MISSING_BOUNDARY.ruleId().equals(finding.ruleId())
-                        && finding.target() != null
-                        && finding.target().contains("runWorkflow")
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_SIDE_EFFECT_ORCHESTRATION_NO_BOUNDARY
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.category() == FindingCategory.MAINTAINABILITY
+                                        && finding.message() != null
+                                        && finding.message()
+                                                .contains("Potential side-effect orchestration"));
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_TRANSACTION_MISSING_BOUNDARY
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.target() != null
+                                        && finding.target().contains("runWorkflow"));
     }
 
     @Test
     void doesNotFlagTransactionalMultiWriteMethod() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("TransactionalService.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("TransactionalService.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.jdbc.core.JdbcTemplate;
@@ -375,18 +518,28 @@ class StaticPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-jdbc")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-jdbc")));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_TRANSACTION_MISSING_BOUNDARY.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_TRANSACTION_MISSING_BOUNDARY
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     @Test
     void respectsValidRequestBodyAnnotations() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("ValidatedController.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ValidatedController.java"),
+                """
                 package com.example.demo;
 
                 import jakarta.validation.Valid;
@@ -410,18 +563,28 @@ class StaticPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_REQUEST_BODY_NO_VALID.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_REQUEST_BODY_NO_VALID
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     @Test
     void doesNotTreatRegexCompilationAsConstructorSideEffect() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("RegexHolder.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("RegexHolder.java"),
+                """
                 package com.example.demo;
 
                 import java.util.regex.Pattern;
@@ -437,20 +600,30 @@ class StaticPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_STARTUP_SIDE_EFFECT.ruleId().equals(finding.ruleId())
-                        && finding.target() != null
-                        && finding.target().contains("RegexHolder")
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_STARTUP_SIDE_EFFECT
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.target() != null
+                                        && finding.target().contains("RegexHolder"));
     }
 
     @Test
     void flagsEmptyCatchBlocksAndCommentOnlyCatchBlocks() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("EmptyCatchExample.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("EmptyCatchExample.java"),
+                """
                 package com.example.demo;
 
                 import java.io.IOException;
@@ -478,31 +651,42 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        List<Finding> emptyCatchFindings = findings.stream()
-                .filter(finding -> FindingRules.JAVA_EMPTY_CATCH_BLOCK.ruleId().equals(finding.ruleId()))
-                .toList();
+        List<Finding> emptyCatchFindings =
+                findings.stream()
+                        .filter(
+                                finding ->
+                                        FindingRules.JAVA_EMPTY_CATCH_BLOCK
+                                                .ruleId()
+                                                .equals(finding.ruleId()))
+                        .toList();
 
         assertThat(emptyCatchFindings).hasSize(2);
         assertThat(emptyCatchFindings)
-                .anySatisfy(finding -> {
-                    assertThat(finding.severity()).isEqualTo(FindingSeverity.WARNING);
-                    assertThat(finding.confidence()).isEqualTo(FindingConfidence.HIGH);
-                    assertThat(finding.primaryLocation()).isNotNull();
-                    assertThat(finding.highlightRanges()).isNotEmpty();
-                    assertThat(finding.primaryLocation().startLine()).isLessThanOrEqualTo(finding.primaryLocation().endLine());
-                })
-                .anySatisfy(finding -> {
-                    assertThat(finding.severity()).isEqualTo(FindingSeverity.WARNING);
-                    assertThat(finding.confidence()).isEqualTo(FindingConfidence.MEDIUM);
-                    assertThat(finding.evidence()).contains("Catch block for IOException");
-                });
+                .anySatisfy(
+                        finding -> {
+                            assertThat(finding.severity()).isEqualTo(FindingSeverity.WARNING);
+                            assertThat(finding.confidence()).isEqualTo(FindingConfidence.HIGH);
+                            assertThat(finding.primaryLocation()).isNotNull();
+                            assertThat(finding.highlightRanges()).isNotEmpty();
+                            assertThat(finding.primaryLocation().startLine())
+                                    .isLessThanOrEqualTo(finding.primaryLocation().endLine());
+                        })
+                .anySatisfy(
+                        finding -> {
+                            assertThat(finding.severity()).isEqualTo(FindingSeverity.WARNING);
+                            assertThat(finding.confidence()).isEqualTo(FindingConfidence.MEDIUM);
+                            assertThat(finding.evidence()).contains("Catch block for IOException");
+                        });
     }
 
     @Test
     void skipsIntentionalIgnoredCleanupCatch() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("CleanupExample.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("CleanupExample.java"),
+                """
                 package com.example.demo;
 
                 import java.io.IOException;
@@ -523,16 +707,22 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.JAVA_EMPTY_CATCH_BLOCK.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.JAVA_EMPTY_CATCH_BLOCK
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     @Test
     void flagsSwallowedFallbackInterruptedAndPrintStackTracePatterns() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("OrderService.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
                 package com.example.demo;
 
                 import java.util.Optional;
@@ -574,32 +764,48 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_SWALLOWED_EXCEPTION_FALLBACK.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && "com.example.demo.OrderService#load".equals(finding.target())
-                        && finding.primaryLocation() != null
-                        && finding.primaryLocation().endLine() >= finding.primaryLocation().startLine()
-                        && !finding.highlightRanges().isEmpty()
-        );
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_INTERRUPTED_EXCEPTION_SWALLOWED.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && finding.recommendation() != null
-                        && finding.recommendation().contains("Thread.currentThread().interrupt()")
-        );
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_PRINT_STACK_TRACE.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && "com.example.demo.OrderService#printFailure".equals(finding.target())
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_SWALLOWED_EXCEPTION_FALLBACK
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && "com.example.demo.OrderService#load"
+                                                .equals(finding.target())
+                                        && finding.primaryLocation() != null
+                                        && finding.primaryLocation().endLine()
+                                                >= finding.primaryLocation().startLine()
+                                        && !finding.highlightRanges().isEmpty());
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_INTERRUPTED_EXCEPTION_SWALLOWED
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && finding.recommendation() != null
+                                        && finding.recommendation()
+                                                .contains("Thread.currentThread().interrupt()"));
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_PRINT_STACK_TRACE
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && "com.example.demo.OrderService#printFailure"
+                                                .equals(finding.target()));
     }
 
     @Test
     void doesNotFlagProperInterruptedExceptionHandling() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("InterruptAwareJob.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("InterruptAwareJob.java"),
+                """
                 package com.example.demo;
 
                 class InterruptAwareJob {
@@ -616,16 +822,22 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_INTERRUPTED_EXCEPTION_SWALLOWED.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_INTERRUPTED_EXCEPTION_SWALLOWED
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     @Test
     void flagsRawExceptionMessageReturnedFromController() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("ApiController.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ApiController.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.http.ResponseEntity;
@@ -645,23 +857,34 @@ class StaticPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_RAW_EXCEPTION_MESSAGE_HTTP.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && finding.category() == FindingCategory.SECURITY
-                        && finding.evidence() != null
-                        && finding.evidence().contains("body(e.getMessage())")
-                        && "com.example.demo.ApiController#get".equals(finding.target())
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_RAW_EXCEPTION_MESSAGE_HTTP
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && finding.category() == FindingCategory.SECURITY
+                                        && finding.evidence() != null
+                                        && finding.evidence().contains("body(e.getMessage())")
+                                        && "com.example.demo.ApiController#get"
+                                                .equals(finding.target()));
     }
 
     @Test
     void flagsBroadSpringExceptionHandler() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("GlobalErrors.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("GlobalErrors.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.http.ResponseEntity;
@@ -677,21 +900,32 @@ class StaticPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_BROAD_EXCEPTION_HANDLER.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.INFO
-                        && finding.category() == FindingCategory.EXCEPTION_HANDLING
-                        && finding.runtimeDetection() == FindingRuntimeDetection.NOT_NORMALLY_DETECTED
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_BROAD_EXCEPTION_HANDLER
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.INFO
+                                        && finding.category() == FindingCategory.EXCEPTION_HANDLING
+                                        && finding.runtimeDetection()
+                                                == FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
     }
 
     @Test
     void warnsWhenBroadSpringExceptionHandlerMapsToBadRequest() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("GlobalErrors.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("GlobalErrors.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.http.ResponseEntity;
@@ -707,21 +941,31 @@ class StaticPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_BROAD_EXCEPTION_HANDLER.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && finding.evidence() != null
-                        && finding.evidence().contains("HTTP 400-style response")
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_BROAD_EXCEPTION_HANDLER
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && finding.evidence() != null
+                                        && finding.evidence().contains("HTTP 400-style response"));
     }
 
     @Test
     void downgradesParserFallbackToInfo() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("ParserHelper.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ParserHelper.java"),
+                """
                 package com.example.demo;
 
                 class ParserHelper {
@@ -737,20 +981,27 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_SWALLOWED_EXCEPTION_FALLBACK.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.INFO
-                        && finding.whyBadPractice() != null
-                        && finding.whyBadPractice().contains("best-effort parsing")
-                        && "com.example.demo.ParserHelper#parseAmount".equals(finding.target())
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_SWALLOWED_EXCEPTION_FALLBACK
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.INFO
+                                        && finding.whyBadPractice() != null
+                                        && finding.whyBadPractice().contains("best-effort parsing")
+                                        && "com.example.demo.ParserHelper#parseAmount"
+                                                .equals(finding.target()));
     }
 
     @Test
     void warnsOnBroadCatchFallbackOutsideParserHelpers() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("Worker.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Worker.java"),
+                """
                 package com.example.demo;
 
                 class Worker {
@@ -770,20 +1021,27 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_SWALLOWED_EXCEPTION_FALLBACK.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && finding.evidence() != null
-                        && finding.evidence().contains("return \"\"")
-                        && "com.example.demo.Worker#loadValue".equals(finding.target())
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_SWALLOWED_EXCEPTION_FALLBACK
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && finding.evidence() != null
+                                        && finding.evidence().contains("return \"\"")
+                                        && "com.example.demo.Worker#loadValue"
+                                                .equals(finding.target()));
     }
 
     @Test
     void emitsRepeatedFallbackParsingPatternWhenParserFallbacksRepeat() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("ParserA.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ParserA.java"),
+                """
                 package com.example.demo;
 
                 class ParserA {
@@ -796,7 +1054,9 @@ class StaticPracticeFindingAnalyzerTest {
                     }
                 }
                 """);
-        Files.writeString(sourceRoot.resolve("ParserB.java"), """
+        Files.writeString(
+                sourceRoot.resolve("ParserB.java"),
+                """
                 package com.example.demo;
 
                 class ParserB {
@@ -809,7 +1069,9 @@ class StaticPracticeFindingAnalyzerTest {
                     }
                 }
                 """);
-        Files.writeString(sourceRoot.resolve("ParserC.java"), """
+        Files.writeString(
+                sourceRoot.resolve("ParserC.java"),
+                """
                 package com.example.demo;
 
                 class ParserC {
@@ -825,32 +1087,44 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_REPEATED_FALLBACK_PARSING_PATTERN.ruleId().equals(finding.ruleId())
-                        && finding.category() == FindingCategory.MAINTAINABILITY
-                        && finding.severity() == FindingSeverity.INFO
-                        && finding.message() != null
-                        && finding.message().contains("Similar parse/fallback exception handling appears in multiple classes")
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_REPEATED_FALLBACK_PARSING_PATTERN
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.category() == FindingCategory.MAINTAINABILITY
+                                        && finding.severity() == FindingSeverity.INFO
+                                        && finding.message() != null
+                                        && finding.message()
+                                                .contains(
+                                                        "Similar parse/fallback exception handling"
+                                                                + " appears in multiple classes"));
     }
 
     private void writeFixtureProject(Path root) throws IOException {
         Files.createDirectories(root.resolve("src/main/resources"));
-        Files.writeString(root.resolve("src/main/resources/application.properties"), """
+        Files.writeString(
+                root.resolve("src/main/resources/application.properties"),
+                """
                 trading.provider=stub
                 trading.api-secret=super-secret
                 spring.flyway.enabled=true
                 client.base-url=https://api.example.com
                 spring.datasource.url=jdbc:postgresql://localhost:5432/demo
                 """);
-        Files.writeString(root.resolve("src/main/resources/application-prod.properties"), """
+        Files.writeString(
+                root.resolve("src/main/resources/application-prod.properties"),
+                """
                 trading.provider=real
                 trading.api-secret=prod-secret
                 spring.jpa.hibernate.ddl-auto=update
                 """);
 
         Path sourceRoot = Files.createDirectories(root.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("DemoApplication.java"), """
+        Files.writeString(
+                sourceRoot.resolve("DemoApplication.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -861,68 +1135,76 @@ class StaticPracticeFindingAnalyzerTest {
                 class DemoApplication {
                 }
                 """);
-        Files.writeString(sourceRoot.resolve("ProviderConfig.java"), """
-                package com.example.demo;
+        Files.writeString(
+                sourceRoot.resolve("ProviderConfig.java"),
+                """
+package com.example.demo;
 
-                import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-                import org.springframework.context.annotation.Bean;
-                import org.springframework.context.annotation.Configuration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 
-                @Configuration
-                class ProviderConfig {
+@Configuration
+class ProviderConfig {
 
-                    @Bean
-                    @ConditionalOnProperty(prefix = "trading", name = "provider", havingValue = "stub", matchIfMissing = true)
-                    Object stubProvider() {
-                        return new Object();
-                    }
+    @Bean
+    @ConditionalOnProperty(prefix = "trading", name = "provider", havingValue = "stub", matchIfMissing = true)
+    Object stubProvider() {
+        return new Object();
+    }
 
-                    @Bean
-                    @ConditionalOnProperty(prefix = "trading", name = "provider", havingValue = "alpaca")
-                    Object alpacaProvider() {
-                        return new Object();
-                    }
-                }
-                """);
-        Files.writeString(sourceRoot.resolve("StartupSyncRunner.java"), """
-                package com.example.demo;
+    @Bean
+    @ConditionalOnProperty(prefix = "trading", name = "provider", havingValue = "alpaca")
+    Object alpacaProvider() {
+        return new Object();
+    }
+}
+""");
+        Files.writeString(
+                sourceRoot.resolve("StartupSyncRunner.java"),
+                """
+package com.example.demo;
 
-                import org.springframework.boot.CommandLineRunner;
-                import org.springframework.stereotype.Component;
-                import org.springframework.web.client.RestTemplate;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestTemplate;
 
-                @Component
-                class StartupSyncRunner implements CommandLineRunner {
+@Component
+class StartupSyncRunner implements CommandLineRunner {
 
-                    private final RestTemplate restTemplate = new RestTemplate();
-                    private final OrderRepository orderRepository = new OrderRepository();
+    private final RestTemplate restTemplate = new RestTemplate();
+    private final OrderRepository orderRepository = new OrderRepository();
 
-                    @Override
-                    public void run(String... args) {
-                        restTemplate.getForObject("https://api.example.com/bootstrap", String.class);
-                        orderRepository.save(new Object());
-                    }
-                }
-                """);
-        Files.writeString(sourceRoot.resolve("PriceRefreshJob.java"), """
-                package com.example.demo;
+    @Override
+    public void run(String... args) {
+        restTemplate.getForObject("https://api.example.com/bootstrap", String.class);
+        orderRepository.save(new Object());
+    }
+}
+""");
+        Files.writeString(
+                sourceRoot.resolve("PriceRefreshJob.java"),
+                """
+package com.example.demo;
 
-                import org.springframework.scheduling.annotation.Scheduled;
-                import org.springframework.stereotype.Component;
-                import org.springframework.web.client.RestTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestTemplate;
 
-                @Component
-                class PriceRefreshJob {
+@Component
+class PriceRefreshJob {
 
-                    private final RestTemplate restTemplate = new RestTemplate();
+    private final RestTemplate restTemplate = new RestTemplate();
 
-                    @Scheduled(fixedRate = 5000)
-                    void refreshPrices() {
-                        restTemplate.postForObject("https://api.example.com/prices/refresh", null, String.class);
-                    }
-                }
-                """);
-        Files.writeString(sourceRoot.resolve("TradingService.java"), """
+    @Scheduled(fixedRate = 5000)
+    void refreshPrices() {
+        restTemplate.postForObject("https://api.example.com/prices/refresh", null, String.class);
+    }
+}
+""");
+        Files.writeString(
+                sourceRoot.resolve("TradingService.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.stereotype.Service;
@@ -949,7 +1231,9 @@ class StaticPracticeFindingAnalyzerTest {
                     }
                 }
                 """);
-        Files.writeString(sourceRoot.resolve("TradingController.java"), """
+        Files.writeString(
+                sourceRoot.resolve("TradingController.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.web.bind.annotation.PostMapping;
@@ -964,7 +1248,9 @@ class StaticPracticeFindingAnalyzerTest {
                     }
                 }
                 """);
-        Files.writeString(sourceRoot.resolve("ExternalApiClient.java"), """
+        Files.writeString(
+                sourceRoot.resolve("ExternalApiClient.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.stereotype.Component;
@@ -982,7 +1268,9 @@ class StaticPracticeFindingAnalyzerTest {
                     }
                 }
                 """);
-        Files.writeString(sourceRoot.resolve("SupportTypes.java"), """
+        Files.writeString(
+                sourceRoot.resolve("SupportTypes.java"),
+                """
                 package com.example.demo;
 
                 class OrderRepository {
@@ -1007,42 +1295,91 @@ class StaticPracticeFindingAnalyzerTest {
     private List<Finding> analyzeAllFindings(Path repositoryRoot, BuildInfo buildInfo) {
         var configurationResult = configurationAnalyzer.analyze(repositoryRoot, buildInfo);
         var sourceAnalysis = javaSourceAnalyzer.analyze(repositoryRoot);
-        HttpSurfaceAnalyzer.Result httpResult = httpSurfaceAnalyzer.analyze(
-                repositoryRoot,
-                configurationResult.configurationAnalysis(),
-                buildInfo,
-                WebStack.SERVLET_MVC
-        );
-        List<Finding> staticFindings = analyzer.analyze(
-                repositoryRoot,
-                buildInfo,
-                configurationResult.configurationAnalysis(),
-                GradleModelAnalysis.empty(GradleAnalysisStatus.NOT_REQUESTED, "TOOLING_API", List.of()),
-                new RuntimeStackAnalysis("3.5.13", "build.gradle", "25", WebStack.SERVLET_MVC, "Static servlet signals", null, "com.example.demo.DemoApplication"),
-                httpResult.httpSurfaceAnalysis(),
-                sourceAnalysis.detectedClasses()
-        );
-        return java.util.stream.Stream.concat(staticFindings.stream(), httpResult.findings().stream()).toList();
+        HttpSurfaceAnalyzer.Result httpResult =
+                httpSurfaceAnalyzer.analyze(
+                        repositoryRoot,
+                        configurationResult.configurationAnalysis(),
+                        buildInfo,
+                        WebStack.SERVLET_MVC);
+        var gradleAnalysis =
+                GradleModelAnalysis.empty(
+                        GradleAnalysisStatus.NOT_REQUESTED, "TOOLING_API", List.of());
+        var runtimeAnalysis =
+                new RuntimeStackAnalysis(
+                        "3.5.13",
+                        "build.gradle",
+                        "25",
+                        WebStack.SERVLET_MVC,
+                        "Static servlet signals",
+                        null,
+                        "com.example.demo.DemoApplication");
+        List<Finding> staticFindings =
+                analyzer.analyze(
+                        repositoryRoot,
+                        buildInfo,
+                        configurationResult.configurationAnalysis(),
+                        gradleAnalysis,
+                        runtimeAnalysis,
+                        httpResult.httpSurfaceAnalysis(),
+                        sourceAnalysis.detectedClasses());
+        List<Finding> configFindings =
+                configurationFindingAnalyzer.analyze(
+                        repositoryRoot,
+                        buildInfo,
+                        configurationResult.configurationAnalysis(),
+                        gradleAnalysis);
+        List<Finding> observabilityFindings =
+                observabilityFindingAnalyzer.analyze(repositoryRoot, runtimeAnalysis);
+        return java.util.stream.Stream.of(
+                        staticFindings,
+                        httpResult.findings(),
+                        configFindings,
+                        observabilityFindings)
+                .flatMap(java.util.Collection::stream)
+                .toList();
     }
 
     private List<Finding> analyzeStaticPractice(Path repositoryRoot, BuildInfo buildInfo) {
         var configurationResult = configurationAnalyzer.analyze(repositoryRoot, buildInfo);
         var sourceAnalysis = javaSourceAnalyzer.analyze(repositoryRoot);
-        HttpSurfaceAnalyzer.Result httpResult = httpSurfaceAnalyzer.analyze(
-                repositoryRoot,
-                configurationResult.configurationAnalysis(),
-                buildInfo,
-                WebStack.SERVLET_MVC
-        );
-        return analyzer.analyze(
-                repositoryRoot,
-                buildInfo,
-                configurationResult.configurationAnalysis(),
-                GradleModelAnalysis.empty(GradleAnalysisStatus.NOT_REQUESTED, "TOOLING_API", List.of()),
-                new RuntimeStackAnalysis("3.5.13", "build.gradle", "25", WebStack.SERVLET_MVC, "Static servlet signals", null, "com.example.demo.DemoApplication"),
-                httpResult.httpSurfaceAnalysis(),
-                sourceAnalysis.detectedClasses()
-        );
+        HttpSurfaceAnalyzer.Result httpResult =
+                httpSurfaceAnalyzer.analyze(
+                        repositoryRoot,
+                        configurationResult.configurationAnalysis(),
+                        buildInfo,
+                        WebStack.SERVLET_MVC);
+        var gradleAnalysis =
+                GradleModelAnalysis.empty(
+                        GradleAnalysisStatus.NOT_REQUESTED, "TOOLING_API", List.of());
+        var runtimeAnalysis =
+                new RuntimeStackAnalysis(
+                        "3.5.13",
+                        "build.gradle",
+                        "25",
+                        WebStack.SERVLET_MVC,
+                        "Static servlet signals",
+                        null,
+                        "com.example.demo.DemoApplication");
+        List<Finding> staticFindings =
+                analyzer.analyze(
+                        repositoryRoot,
+                        buildInfo,
+                        configurationResult.configurationAnalysis(),
+                        gradleAnalysis,
+                        runtimeAnalysis,
+                        httpResult.httpSurfaceAnalysis(),
+                        sourceAnalysis.detectedClasses());
+        List<Finding> configFindings =
+                configurationFindingAnalyzer.analyze(
+                        repositoryRoot,
+                        buildInfo,
+                        configurationResult.configurationAnalysis(),
+                        gradleAnalysis);
+        List<Finding> observabilityFindings =
+                observabilityFindingAnalyzer.analyze(repositoryRoot, runtimeAnalysis);
+        return java.util.stream.Stream.of(staticFindings, configFindings, observabilityFindings)
+                .flatMap(java.util.Collection::stream)
+                .toList();
     }
 
     private BuildInfo emptyBuildInfo(List<String> dependencies) {
@@ -1053,23 +1390,23 @@ class StaticPracticeFindingAnalyzerTest {
                 dependencies,
                 "3.5.13",
                 "build.gradle plugin",
-                "HIGH"
-        );
+                "HIGH");
     }
 
     private void assertRichFinding(
             List<Finding> findings,
             String ruleId,
             FindingCategory category,
-            FindingRuntimeDetection runtimeDetection
-    ) {
-        Finding finding = findings.stream()
-                .filter(candidate -> ruleId.equals(candidate.ruleId()))
-                .findFirst()
-                .orElseThrow();
+            FindingRuntimeDetection runtimeDetection) {
+        Finding finding =
+                findings.stream()
+                        .filter(candidate -> ruleId.equals(candidate.ruleId()))
+                        .findFirst()
+                        .orElseThrow();
         assertThat(finding.category()).isEqualTo(category);
         assertThat(finding.runtimeDetection()).isEqualTo(runtimeDetection);
-        assertThat(finding.confidence()).isIn(FindingConfidence.HIGH, FindingConfidence.MEDIUM, FindingConfidence.LOW);
+        assertThat(finding.confidence())
+                .isIn(FindingConfidence.HIGH, FindingConfidence.MEDIUM, FindingConfidence.LOW);
         assertThat(finding.whyBadPractice()).isNotBlank();
         assertThat(finding.possibleImpact()).isNotBlank();
         assertThat(finding.recommendation()).isNotBlank();
@@ -1084,8 +1421,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsAsyncOnPrivateMethod() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("NotificationService.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("NotificationService.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.scheduling.annotation.Async;
@@ -1101,20 +1441,26 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_ASYNC_PROXY_BYPASS.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && finding.confidence() == FindingConfidence.HIGH
-                        && "NotificationService#sendEmail".equals(finding.target())
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_ASYNC_PROXY_BYPASS
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && finding.confidence() == FindingConfidence.HIGH
+                                        && "NotificationService#sendEmail".equals(finding.target())
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void doesNotFlagAsyncOnPublicMethod() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("NotificationService.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("NotificationService.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.scheduling.annotation.Async;
@@ -1130,16 +1476,22 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_ASYNC_PROXY_BYPASS.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_ASYNC_PROXY_BYPASS
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     @Test
     void flagsAsyncVoidMethodWithNoExceptionHandling() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("EmailSender.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("EmailSender.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.scheduling.annotation.Async;
@@ -1159,19 +1511,25 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_ASYNC_VOID_SWALLOWED_EXCEPTION.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.INFO
-                        && "EmailSender#send".equals(finding.target())
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_ASYNC_VOID_SWALLOWED_EXCEPTION
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.INFO
+                                        && "EmailSender#send".equals(finding.target())
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void doesNotFlagAsyncVoidWithTryCatch() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("EmailSender.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("EmailSender.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.scheduling.annotation.Async;
@@ -1198,9 +1556,12 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_ASYNC_VOID_SWALLOWED_EXCEPTION.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_ASYNC_VOID_SWALLOWED_EXCEPTION
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -1210,8 +1571,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsKafkaListenerWithNoExceptionHandling() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("OrderConsumer.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderConsumer.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.kafka.annotation.KafkaListener;
@@ -1231,18 +1595,24 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_MESSAGING_LISTENER_NO_ERROR_HANDLER.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.INFO
-                        && "OrderConsumer#consume".equals(finding.target())
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_MESSAGING_LISTENER_NO_ERROR_HANDLER
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.INFO
+                                        && "OrderConsumer#consume".equals(finding.target()));
     }
 
     @Test
     void flagsRabbitListenerWithNoExceptionHandling() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("OrderConsumer.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderConsumer.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.amqp.rabbit.annotation.RabbitListener;
@@ -1262,17 +1632,23 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_MESSAGING_LISTENER_NO_ERROR_HANDLER.ruleId().equals(finding.ruleId())
-                        && "OrderConsumer#consume".equals(finding.target())
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_MESSAGING_LISTENER_NO_ERROR_HANDLER
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && "OrderConsumer#consume".equals(finding.target()));
     }
 
     @Test
     void doesNotFlagKafkaListenerWithTryCatch() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("OrderConsumer.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderConsumer.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.kafka.annotation.KafkaListener;
@@ -1299,9 +1675,12 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_MESSAGING_LISTENER_NO_ERROR_HANDLER.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_MESSAGING_LISTENER_NO_ERROR_HANDLER
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -1313,16 +1692,20 @@ class StaticPracticeFindingAnalyzerTest {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
         Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
 
-        List<Finding> findings = analyzeStaticPractice(
-                tempDir,
-                emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web"))
-        );
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_SECURITY_STARTER_MISSING.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.INFO
-                        && finding.category() == FindingCategory.SECURITY
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_SECURITY_STARTER_MISSING
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.INFO
+                                        && finding.category() == FindingCategory.SECURITY);
     }
 
     @Test
@@ -1330,17 +1713,20 @@ class StaticPracticeFindingAnalyzerTest {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
         Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
 
-        List<Finding> findings = analyzeStaticPractice(
-                tempDir,
-                emptyBuildInfo(List.of(
-                        "org.springframework.boot:spring-boot-starter-web",
-                        "org.springframework.boot:spring-boot-starter-security"
-                ))
-        );
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of(
+                                        "org.springframework.boot:spring-boot-starter-web",
+                                        "org.springframework.boot:spring-boot-starter-security")));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_SECURITY_STARTER_MISSING.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_SECURITY_STARTER_MISSING
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     @Test
@@ -1348,14 +1734,18 @@ class StaticPracticeFindingAnalyzerTest {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
         Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
 
-        List<Finding> findings = analyzeStaticPractice(
-                tempDir,
-                emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-data-jpa"))
-        );
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-data-jpa")));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_SECURITY_STARTER_MISSING.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_SECURITY_STARTER_MISSING
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -1365,8 +1755,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsOneToManyMissingMappedBy() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("Order.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Order.java"),
+                """
                 package com.example.demo;
 
                 import jakarta.persistence.Entity;
@@ -1382,19 +1775,25 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_JPA_ONETOMANY_MISSING_MAPPED_BY.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && "Order.items".equals(finding.target())
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_JPA_ONETOMANY_MISSING_MAPPED_BY
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && "Order.items".equals(finding.target())
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void doesNotFlagOneToManyWithMappedBy() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("Order.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Order.java"),
+                """
                 package com.example.demo;
 
                 import jakarta.persistence.Entity;
@@ -1410,16 +1809,22 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_JPA_ONETOMANY_MISSING_MAPPED_BY.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_JPA_ONETOMANY_MISSING_MAPPED_BY
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     @Test
     void flagsManyToOneWithoutFetchType() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("Item.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Item.java"),
+                """
                 package com.example.demo;
 
                 import jakarta.persistence.Entity;
@@ -1434,19 +1839,25 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_JPA_MANYTOONE_EAGER_DEFAULT.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.INFO
-                        && "Item.order".equals(finding.target())
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_JPA_MANYTOONE_EAGER_DEFAULT
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.INFO
+                                        && "Item.order".equals(finding.target())
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void doesNotFlagManyToOneWithLazyFetch() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("Item.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Item.java"),
+                """
                 package com.example.demo;
 
                 import jakarta.persistence.Entity;
@@ -1462,9 +1873,12 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_JPA_MANYTOONE_EAGER_DEFAULT.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_JPA_MANYTOONE_EAGER_DEFAULT
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -1474,8 +1888,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsBeanMethodInNonConfigurationClass() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("AppSetup.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("AppSetup.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.context.annotation.Bean;
@@ -1492,19 +1909,25 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_BEAN_ON_NON_CONFIGURATION.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && "AppSetup#myService".equals(finding.target())
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_BEAN_ON_NON_CONFIGURATION
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && "AppSetup#myService".equals(finding.target())
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void doesNotFlagBeanMethodInConfigurationClass() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("AppConfig.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("AppConfig.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.context.annotation.Bean;
@@ -1521,9 +1944,12 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_BEAN_ON_NON_CONFIGURATION.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_BEAN_ON_NON_CONFIGURATION
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -1533,8 +1959,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsModifyingQueryWithoutTransactional() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("OrderRepository.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderRepository.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.data.jpa.repository.Modifying;
@@ -1556,19 +1985,26 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_MODIFYING_NO_TRANSACTION.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.ERROR
-                        && "OrderRepositoryImpl#updateStatus".equals(finding.target())
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_MODIFYING_NO_TRANSACTION
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.ERROR
+                                        && "OrderRepositoryImpl#updateStatus"
+                                                .equals(finding.target())
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void doesNotFlagModifyingQueryWithMethodLevelTransactional() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("OrderRepositoryImpl.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderRepositoryImpl.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.data.jpa.repository.Modifying;
@@ -1588,16 +2024,22 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_MODIFYING_NO_TRANSACTION.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_MODIFYING_NO_TRANSACTION
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     @Test
     void doesNotFlagModifyingQueryWithClassLevelTransactional() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("OrderRepositoryImpl.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderRepositoryImpl.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.data.jpa.repository.Modifying;
@@ -1617,9 +2059,12 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_MODIFYING_NO_TRANSACTION.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_MODIFYING_NO_TRANSACTION
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -1630,57 +2075,78 @@ class StaticPracticeFindingAnalyzerTest {
     void flagsDestructiveDdlAutoInProdProfile() throws IOException {
         Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
         Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(resources.resolve("application.properties"), "spring.datasource.url=jdbc:h2:mem:test");
-        Files.writeString(resources.resolve("application-prod.properties"),
+        Files.writeString(
+                resources.resolve("application.properties"),
+                "spring.datasource.url=jdbc:h2:mem:test");
+        Files.writeString(
+                resources.resolve("application-prod.properties"),
                 "spring.jpa.hibernate.ddl-auto=create\n");
 
-        List<Finding> findings = analyzeStaticPractice(
-                tempDir,
-                emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-data-jpa"))
-        );
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-data-jpa")));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_DDL_AUTO_DESTRUCTIVE_PROD.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.ERROR
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_DDL_AUTO_DESTRUCTIVE_PROD
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.ERROR
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void flagsCreateDropDdlAutoInProdProfile() throws IOException {
         Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
         Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(resources.resolve("application.properties"), "spring.datasource.url=jdbc:h2:mem:test");
-        Files.writeString(resources.resolve("application-prod.properties"),
+        Files.writeString(
+                resources.resolve("application.properties"),
+                "spring.datasource.url=jdbc:h2:mem:test");
+        Files.writeString(
+                resources.resolve("application-prod.properties"),
                 "spring.jpa.hibernate.ddl-auto=create-drop\n");
 
-        List<Finding> findings = analyzeStaticPractice(
-                tempDir,
-                emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-data-jpa"))
-        );
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-data-jpa")));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_DDL_AUTO_DESTRUCTIVE_PROD.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.ERROR
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_DDL_AUTO_DESTRUCTIVE_PROD
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.ERROR);
     }
 
     @Test
     void doesNotFlagUpdateDdlAutoInProdProfile() throws IOException {
         Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
         Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(resources.resolve("application.properties"), "spring.datasource.url=jdbc:h2:mem:test");
-        Files.writeString(resources.resolve("application-prod.properties"),
+        Files.writeString(
+                resources.resolve("application.properties"),
+                "spring.datasource.url=jdbc:h2:mem:test");
+        Files.writeString(
+                resources.resolve("application-prod.properties"),
                 "spring.jpa.hibernate.ddl-auto=validate\n");
 
-        List<Finding> findings = analyzeStaticPractice(
-                tempDir,
-                emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-data-jpa"))
-        );
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-data-jpa")));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_DDL_AUTO_DESTRUCTIVE_PROD.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_DDL_AUTO_DESTRUCTIVE_PROD
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -1691,21 +2157,28 @@ class StaticPracticeFindingAnalyzerTest {
     void flagsShowSqlTrueInProdProfile() throws IOException {
         Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
         Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(resources.resolve("application.properties"), "spring.datasource.url=jdbc:h2:mem:test");
-        Files.writeString(resources.resolve("application-prod.properties"), "spring.jpa.show-sql=true\n");
+        Files.writeString(
+                resources.resolve("application.properties"),
+                "spring.datasource.url=jdbc:h2:mem:test");
+        Files.writeString(
+                resources.resolve("application-prod.properties"), "spring.jpa.show-sql=true\n");
 
-        List<Finding> findings = analyzeStaticPractice(
-                tempDir,
-                emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-data-jpa"))
-        );
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-data-jpa")));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_JPA_SHOW_SQL_PROD.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && finding.evidence() != null
-                        && finding.evidence().contains("spring.jpa.show-sql")
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_JPA_SHOW_SQL_PROD
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && finding.evidence() != null
+                                        && finding.evidence().contains("spring.jpa.show-sql")
+                                        && finding.primaryLocation() != null);
     }
 
     // -------------------------------------------------------------------------
@@ -1716,52 +2189,69 @@ class StaticPracticeFindingAnalyzerTest {
     void flagsOpenInViewExplicitlyEnabled() throws IOException {
         Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
         Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(resources.resolve("application.properties"),
+        Files.writeString(
+                resources.resolve("application.properties"),
                 "spring.datasource.url=jdbc:h2:mem:test\nspring.jpa.open-in-view=true\n");
 
-        List<Finding> findings = analyzeStaticPractice(
-                tempDir,
-                emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-data-jpa"))
-        );
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-data-jpa")));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_JPA_OPEN_IN_VIEW.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_JPA_OPEN_IN_VIEW
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING);
     }
 
     @Test
-    void flagsOpenInViewImplicitlyWhenDatasourceConfiguredWithoutExplicitSetting() throws IOException {
+    void flagsOpenInViewImplicitlyWhenDatasourceConfiguredWithoutExplicitSetting()
+            throws IOException {
         Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
         Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(resources.resolve("application.properties"),
+        Files.writeString(
+                resources.resolve("application.properties"),
                 "spring.datasource.url=jdbc:postgresql://localhost:5432/demo\n");
 
-        List<Finding> findings = analyzeStaticPractice(
-                tempDir,
-                emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-data-jpa"))
-        );
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-data-jpa")));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_JPA_OPEN_IN_VIEW.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_JPA_OPEN_IN_VIEW
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     @Test
     void doesNotFlagOpenInViewWhenExplicitlyDisabled() throws IOException {
         Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
         Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(resources.resolve("application.properties"),
-                "spring.datasource.url=jdbc:postgresql://localhost:5432/demo\nspring.jpa.open-in-view=false\n");
+        Files.writeString(
+                resources.resolve("application.properties"),
+                "spring.datasource.url=jdbc:postgresql://localhost:5432/demo\n"
+                        + "spring.jpa.open-in-view=false\n");
 
-        List<Finding> findings = analyzeStaticPractice(
-                tempDir,
-                emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-data-jpa"))
-        );
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-data-jpa")));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_JPA_OPEN_IN_VIEW.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_JPA_OPEN_IN_VIEW
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -1771,8 +2261,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsTransactionalOnScheduledMethod() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("DailyReportJob.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("DailyReportJob.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.scheduling.annotation.Scheduled;
@@ -1794,19 +2287,25 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_TRANSACTIONAL_ON_SCHEDULED.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && "DailyReportJob#generate".equals(finding.target())
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_TRANSACTIONAL_ON_SCHEDULED
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && "DailyReportJob#generate".equals(finding.target())
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void doesNotFlagScheduledAloneOrTransactionalAlone() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("Jobs.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Jobs.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.scheduling.annotation.Scheduled;
@@ -1827,9 +2326,12 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_TRANSACTIONAL_ON_SCHEDULED.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_TRANSACTIONAL_ON_SCHEDULED
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -1839,8 +2341,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsCsrfDisabledViaChainCall() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("SecurityConfig.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("SecurityConfig.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.context.annotation.Bean;
@@ -1859,46 +2364,59 @@ class StaticPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-security")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-security")));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_CSRF_DISABLED.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && finding.category() == FindingCategory.SECURITY
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_CSRF_DISABLED.ruleId().equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && finding.category() == FindingCategory.SECURITY
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void flagsCsrfDisabledViaAbstractHttpConfigurer() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("SecurityConfig.java"), """
-                package com.example.demo;
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("SecurityConfig.java"),
+                """
+package com.example.demo;
 
-                import org.springframework.context.annotation.Bean;
-                import org.springframework.context.annotation.Configuration;
-                import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-                import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
-                import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.web.SecurityFilterChain;
 
-                @Configuration
-                class SecurityConfig {
-                    @Bean
-                    SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
-                        return http
-                                .csrf(AbstractHttpConfigurer::disable)
-                                .build();
-                    }
-                }
-                """);
+@Configuration
+class SecurityConfig {
+    @Bean
+    SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        return http
+                .csrf(AbstractHttpConfigurer::disable)
+                .build();
+    }
+}
+""");
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-security")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-security")));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_CSRF_DISABLED.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_CSRF_DISABLED.ruleId().equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING);
     }
 
     // -------------------------------------------------------------------------
@@ -1908,8 +2426,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsCorsAllowAllOrigins() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("CorsConfig.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("CorsConfig.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.context.annotation.Bean;
@@ -1932,21 +2453,29 @@ class StaticPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_CORS_ALLOW_ALL.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && finding.category() == FindingCategory.SECURITY
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_CORS_ALLOW_ALL.ruleId().equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && finding.category() == FindingCategory.SECURITY
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void doesNotFlagCorsWithSpecificOrigin() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("CorsConfig.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("CorsConfig.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.context.annotation.Bean;
@@ -1969,11 +2498,18 @@ class StaticPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_CORS_ALLOW_ALL.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_CORS_ALLOW_ALL
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -1983,8 +2519,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsPasswordAsRequestParam() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("AuthController.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("AuthController.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.web.bind.annotation.GetMapping;
@@ -2000,20 +2539,30 @@ class StaticPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_REQUEST_PARAM_SENSITIVE_NAME.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && "AuthController#login".equals(finding.target())
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_REQUEST_PARAM_SENSITIVE_NAME
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && "AuthController#login".equals(finding.target()));
     }
 
     @Test
     void flagsTokenAsPathVariable() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("TokenController.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("TokenController.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.web.bind.annotation.GetMapping;
@@ -2029,19 +2578,29 @@ class StaticPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_REQUEST_PARAM_SENSITIVE_NAME.ruleId().equals(finding.ruleId())
-                        && "TokenController#verify".equals(finding.target())
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_REQUEST_PARAM_SENSITIVE_NAME
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && "TokenController#verify".equals(finding.target()));
     }
 
     @Test
     void doesNotFlagNonSensitiveRequestParam() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("SearchController.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("SearchController.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.web.bind.annotation.GetMapping;
@@ -2057,11 +2616,18 @@ class StaticPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_REQUEST_PARAM_SENSITIVE_NAME.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_REQUEST_PARAM_SENSITIVE_NAME
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -2071,8 +2637,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsValueAnnotationWithoutDefault() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("ApiClient.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ApiClient.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.beans.factory.annotation.Value;
@@ -2087,19 +2656,25 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_VALUE_NO_DEFAULT.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && "ApiClient.baseUrl".equals(finding.target())
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_VALUE_NO_DEFAULT
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && "ApiClient.baseUrl".equals(finding.target())
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void doesNotFlagValueAnnotationWithDefault() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("ApiClient.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ApiClient.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.beans.factory.annotation.Value;
@@ -2114,9 +2689,12 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_VALUE_NO_DEFAULT.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_VALUE_NO_DEFAULT
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -2126,8 +2704,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsAutowiredFieldInjection() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("OrderService.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.beans.factory.annotation.Autowired;
@@ -2142,19 +2723,25 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_FIELD_INJECTION.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.INFO
-                        && "OrderService.orderRepository".equals(finding.target())
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_FIELD_INJECTION
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.INFO
+                                        && "OrderService.orderRepository".equals(finding.target())
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void doesNotFlagConstructorInjection() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("OrderService.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.stereotype.Service;
@@ -2171,9 +2758,12 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_FIELD_INJECTION.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_FIELD_INJECTION
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -2183,8 +2773,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsRequestMappingWithoutHttpMethod() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("LegacyController.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("LegacyController.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.web.bind.annotation.RequestMapping;
@@ -2199,21 +2792,31 @@ class StaticPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_REQUEST_MAPPING_NO_METHOD.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.INFO
-                        && "LegacyController#listOrders".equals(finding.target())
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_REQUEST_MAPPING_NO_METHOD
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.INFO
+                                        && "LegacyController#listOrders".equals(finding.target())
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void doesNotFlagRequestMappingWithMethodAttribute() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("LegacyController.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("LegacyController.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.web.bind.annotation.RequestMapping;
@@ -2229,18 +2832,28 @@ class StaticPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_REQUEST_MAPPING_NO_METHOD.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_REQUEST_MAPPING_NO_METHOD
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     @Test
     void doesNotFlagGetMappingAnnotation() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("OrderController.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderController.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.web.bind.annotation.GetMapping;
@@ -2255,11 +2868,18 @@ class StaticPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_REQUEST_MAPPING_NO_METHOD.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_REQUEST_MAPPING_NO_METHOD
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -2269,8 +2889,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsConfigurationPropertiesWithoutValidated() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("AppProperties.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("AppProperties.java"),
+                """
                 package com.example.demo;
 
                 import jakarta.validation.constraints.NotBlank;
@@ -2285,19 +2908,25 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_CONFIGURATION_PROPERTIES_NOT_VALIDATED.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.INFO
-                        && "AppProperties".equals(finding.target())
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_CONFIGURATION_PROPERTIES_NOT_VALIDATED
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.INFO
+                                        && "AppProperties".equals(finding.target())
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void doesNotFlagConfigurationPropertiesWithValidated() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("AppProperties.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("AppProperties.java"),
+                """
                 package com.example.demo;
 
                 import jakarta.validation.constraints.NotBlank;
@@ -2314,9 +2943,12 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_CONFIGURATION_PROPERTIES_NOT_VALIDATED.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_CONFIGURATION_PROPERTIES_NOT_VALIDATED
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -2326,8 +2958,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsCronExpressionWithoutTimeZone() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("ReportJob.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ReportJob.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.scheduling.annotation.Scheduled;
@@ -2343,18 +2978,24 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_SCHEDULED_CRON_NO_ZONE.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.INFO
-                        && "ReportJob#generate".equals(finding.target())
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_SCHEDULED_CRON_NO_ZONE
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.INFO
+                                        && "ReportJob#generate".equals(finding.target()));
     }
 
     @Test
     void doesNotFlagCronExpressionWithExplicitTimeZone() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("ReportJob.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ReportJob.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.scheduling.annotation.Scheduled;
@@ -2370,16 +3011,22 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_SCHEDULED_CRON_NO_ZONE.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_SCHEDULED_CRON_NO_ZONE
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     @Test
     void flagsScheduledShortFixedRateInterval() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("HeartbeatJob.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("HeartbeatJob.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.scheduling.annotation.Scheduled;
@@ -2395,18 +3042,24 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_SCHEDULED_SHORT_INTERVAL.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.INFO
-                        && "HeartbeatJob#ping".equals(finding.target())
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_SCHEDULED_SHORT_INTERVAL
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.INFO
+                                        && "HeartbeatJob#ping".equals(finding.target()));
     }
 
     @Test
     void doesNotFlagScheduledLongInterval() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("HeartbeatJob.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("HeartbeatJob.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.scheduling.annotation.Scheduled;
@@ -2422,9 +3075,12 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_SCHEDULED_SHORT_INTERVAL.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_SCHEDULED_SHORT_INTERVAL
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -2434,8 +3090,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsBroadFatalErrorCatch() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("Processor.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Processor.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.stereotype.Component;
@@ -2460,18 +3119,25 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_BROAD_FATAL_ERROR_CATCH.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && finding.category() == FindingCategory.EXCEPTION_HANDLING
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_BROAD_FATAL_ERROR_CATCH
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && finding.category()
+                                                == FindingCategory.EXCEPTION_HANDLING);
     }
 
     @Test
     void flagsBroadThrowableCatch() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("Processor.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Processor.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.stereotype.Component;
@@ -2496,10 +3162,14 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_BROAD_FATAL_ERROR_CATCH.ruleId().equals(finding.ruleId())
-                        && finding.category() == FindingCategory.EXCEPTION_HANDLING
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_BROAD_FATAL_ERROR_CATCH
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.category()
+                                                == FindingCategory.EXCEPTION_HANDLING);
     }
 
     // -------------------------------------------------------------------------
@@ -2509,8 +3179,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsPlainHttpUrlInOutboundClient() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("PaymentClient.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("PaymentClient.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.stereotype.Component;
@@ -2526,18 +3199,21 @@ class StaticPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        // SPRING_HTTP_PLAIN_URL is emitted by HttpSurfaceAnalyzer (not StaticPracticeFindingAnalyzer),
+        // SPRING_HTTP_PLAIN_URL is emitted by HttpSurfaceAnalyzer (not
+        // StaticPracticeFindingAnalyzer),
         // so we need to include its findings in the result set.
-        List<Finding> findings = analyzeAllFindings(
-                tempDir,
-                emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web"))
-        );
+        List<Finding> findings =
+                analyzeAllFindings(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_HTTP_PLAIN_URL.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && finding.category() == FindingCategory.HTTP
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_HTTP_PLAIN_URL.ruleId().equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && finding.category() == FindingCategory.HTTP);
     }
 
     // -------------------------------------------------------------------------
@@ -2548,18 +3224,20 @@ class StaticPracticeFindingAnalyzerTest {
     void flagsFlywaydEnabledButNoMigrationFiles() throws IOException {
         Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
         Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(resources.resolve("application.properties"),
+        Files.writeString(
+                resources.resolve("application.properties"),
                 "spring.flyway.enabled=true\nspring.datasource.url=jdbc:h2:mem:test\n");
 
-        List<Finding> findings = analyzeStaticPractice(
-                tempDir,
-                emptyBuildInfo(List.of("org.flywaydb:flyway-core"))
-        );
+        List<Finding> findings =
+                analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.flywaydb:flyway-core")));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_FLYWAY_MISSING_MIGRATIONS.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_FLYWAY_MISSING_MIGRATIONS
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING);
     }
 
     @Test
@@ -2567,19 +3245,24 @@ class StaticPracticeFindingAnalyzerTest {
         Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
         Path migrations = Files.createDirectories(resources.resolve("db/migration"));
         Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(resources.resolve("application.properties"),
+        Files.writeString(
+                resources.resolve("application.properties"),
                 "spring.flyway.enabled=true\nspring.datasource.url=jdbc:h2:mem:test\n");
-        // V1.0 satisfies the pattern V[0-9][^_]+__ (needs at least one non-underscore char after the first digit)
-        Files.writeString(migrations.resolve("V1.0__init.sql"), "CREATE TABLE orders (id BIGINT PRIMARY KEY);\n");
+        // V1.0 satisfies the pattern V[0-9][^_]+__ (needs at least one non-underscore char after
+        // the first digit)
+        Files.writeString(
+                migrations.resolve("V1.0__init.sql"),
+                "CREATE TABLE orders (id BIGINT PRIMARY KEY);\n");
 
-        List<Finding> findings = analyzeStaticPractice(
-                tempDir,
-                emptyBuildInfo(List.of("org.flywaydb:flyway-core"))
-        );
+        List<Finding> findings =
+                analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.flywaydb:flyway-core")));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_FLYWAY_MISSING_MIGRATIONS.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_FLYWAY_MISSING_MIGRATIONS
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -2589,33 +3272,40 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsHttpClientWriteCallWithNoResilienceHandling() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("NotificationClient.java"), """
-                package com.example.demo;
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("NotificationClient.java"),
+                """
+package com.example.demo;
 
-                import org.springframework.stereotype.Component;
-                import org.springframework.web.client.RestTemplate;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestTemplate;
 
-                @Component
-                class NotificationClient {
-                    private final RestTemplate rest = new RestTemplate();
+@Component
+class NotificationClient {
+    private final RestTemplate rest = new RestTemplate();
 
-                    void notify(String payload) {
-                        rest.postForObject("https://notify.example.com/events", payload, String.class);
-                    }
-                }
-                """);
+    void notify(String payload) {
+        rest.postForObject("https://notify.example.com/events", payload, String.class);
+    }
+}
+""");
 
-        List<Finding> findings = analyzeStaticPractice(
-                tempDir,
-                emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web"))
-        );
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_HTTP_CLIENT_NO_RESILIENCE.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.INFO
-                        && finding.category() == FindingCategory.HTTP
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_HTTP_CLIENT_NO_RESILIENCE
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.INFO
+                                        && finding.category() == FindingCategory.HTTP);
     }
 
     // -------------------------------------------------------------------------
@@ -2626,18 +3316,30 @@ class StaticPracticeFindingAnalyzerTest {
     void sensitiveProfileDuplicationFindingHasPrimaryLocationAndOccurrences() throws IOException {
         Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
         Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(resources.resolve("application.properties"), "app.api-key=default-secret\n");
-        Files.writeString(resources.resolve("application-prod.properties"), "app.api-key=prod-secret\n");
+        Files.writeString(
+                resources.resolve("application.properties"), "app.api-key=default-secret\n");
+        Files.writeString(
+                resources.resolve("application-prod.properties"), "app.api-key=prod-secret\n");
 
-        List<Finding> findings = analyzeStaticPractice(
-                tempDir,
-                emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web"))
-        );
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        Finding dupe = findings.stream()
-                .filter(f -> FindingRules.SPRING_SECRET_MULTI_PROFILE.ruleId().equals(f.ruleId()))
-                .findFirst()
-                .orElseThrow(() -> new AssertionError("SPRING_SECRET_MULTI_PROFILE finding not produced"));
+        Finding dupe =
+                findings.stream()
+                        .filter(
+                                f ->
+                                        FindingRules.SPRING_SECRET_MULTI_PROFILE
+                                                .ruleId()
+                                                .equals(f.ruleId()))
+                        .findFirst()
+                        .orElseThrow(
+                                () ->
+                                        new AssertionError(
+                                                "SPRING_SECRET_MULTI_PROFILE finding not"
+                                                        + " produced"));
 
         assertThat(dupe.primaryLocation())
                 .as("primaryLocation must be set so the UI can show 'View code'")
@@ -2646,10 +3348,12 @@ class StaticPracticeFindingAnalyzerTest {
         assertThat(dupe.occurrences())
                 .as("occurrences should list one entry per config file")
                 .hasSizeGreaterThanOrEqualTo(2);
-        assertThat(dupe.occurrences()).allSatisfy(occ -> {
-            assertThat(occ.location()).isNotNull();
-            assertThat(occ.location().filePath()).isNotBlank();
-        });
+        assertThat(dupe.occurrences())
+                .allSatisfy(
+                        occ -> {
+                            assertThat(occ.location()).isNotNull();
+                            assertThat(occ.location().filePath()).isNotBlank();
+                        });
     }
 
     @Test
@@ -2658,17 +3362,23 @@ class StaticPracticeFindingAnalyzerTest {
         Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
         // "trading.provider" contains "provider" — passes isDriftRelevantProperty()
         Files.writeString(resources.resolve("application.properties"), "trading.provider=stub\n");
-        Files.writeString(resources.resolve("application-prod.properties"), "trading.provider=real\n");
+        Files.writeString(
+                resources.resolve("application-prod.properties"), "trading.provider=real\n");
 
-        List<Finding> findings = analyzeStaticPractice(
-                tempDir,
-                emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web"))
-        );
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        Finding drift = findings.stream()
-                .filter(f -> FindingRules.SPRING_PROFILE_DRIFT.ruleId().equals(f.ruleId()))
-                .findFirst()
-                .orElseThrow(() -> new AssertionError("SPRING_PROFILE_DRIFT finding not produced"));
+        Finding drift =
+                findings.stream()
+                        .filter(f -> FindingRules.SPRING_PROFILE_DRIFT.ruleId().equals(f.ruleId()))
+                        .findFirst()
+                        .orElseThrow(
+                                () ->
+                                        new AssertionError(
+                                                "SPRING_PROFILE_DRIFT finding not produced"));
 
         assertThat(drift.primaryLocation())
                 .as("primaryLocation must be set so the UI can show 'View code'")
@@ -2682,41 +3392,57 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void repeatedFallbackPatternFindingHasPrimaryLocationFromFirstFallback() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("ParserA.java"), """
-                package com.example.demo;
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ParserA.java"),
+                """
+package com.example.demo;
 
-                class ParserA {
-                    Integer parseAmount(String v) {
-                        try { return Integer.valueOf(v); } catch (NumberFormatException e) { return null; }
-                    }
-                }
-                """);
-        Files.writeString(sourceRoot.resolve("ParserB.java"), """
-                package com.example.demo;
+class ParserA {
+    Integer parseAmount(String v) {
+        try { return Integer.valueOf(v); } catch (NumberFormatException e) { return null; }
+    }
+}
+""");
+        Files.writeString(
+                sourceRoot.resolve("ParserB.java"),
+                """
+package com.example.demo;
 
-                class ParserB {
-                    Integer parseCount(String v) {
-                        try { return Integer.valueOf(v); } catch (NumberFormatException e) { return null; }
-                    }
-                }
-                """);
-        Files.writeString(sourceRoot.resolve("ParserC.java"), """
-                package com.example.demo;
+class ParserB {
+    Integer parseCount(String v) {
+        try { return Integer.valueOf(v); } catch (NumberFormatException e) { return null; }
+    }
+}
+""");
+        Files.writeString(
+                sourceRoot.resolve("ParserC.java"),
+                """
+package com.example.demo;
 
-                class ParserC {
-                    Integer parseLimit(String v) {
-                        try { return Integer.valueOf(v); } catch (NumberFormatException e) { return null; }
-                    }
-                }
-                """);
+class ParserC {
+    Integer parseLimit(String v) {
+        try { return Integer.valueOf(v); } catch (NumberFormatException e) { return null; }
+    }
+}
+""");
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        Finding pattern = findings.stream()
-                .filter(f -> FindingRules.SPRING_REPEATED_FALLBACK_PARSING_PATTERN.ruleId().equals(f.ruleId()))
-                .findFirst()
-                .orElseThrow(() -> new AssertionError("SPRING_REPEATED_FALLBACK_PARSING_PATTERN finding not produced"));
+        Finding pattern =
+                findings.stream()
+                        .filter(
+                                f ->
+                                        FindingRules.SPRING_REPEATED_FALLBACK_PARSING_PATTERN
+                                                .ruleId()
+                                                .equals(f.ruleId()))
+                        .findFirst()
+                        .orElseThrow(
+                                () ->
+                                        new AssertionError(
+                                                "SPRING_REPEATED_FALLBACK_PARSING_PATTERN finding"
+                                                        + " not produced"));
 
         assertThat(pattern.primaryLocation())
                 .as("primaryLocation must be set from the first underlying fallback finding")
@@ -2732,8 +3458,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsBroadExceptionCatchInScheduledBoundary() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("SyncJob.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("SyncJob.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.scheduling.annotation.Scheduled;
@@ -2760,10 +3489,13 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_BROAD_EXCEPTION_SPRING_BOUNDARY.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.INFO
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_BROAD_EXCEPTION_SPRING_BOUNDARY
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.INFO);
     }
 
     // -------------------------------------------------------------------------
@@ -2773,8 +3505,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void allNewRuleFindingsCarryRichMetadata() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("AllRules.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("AllRules.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.beans.factory.annotation.Autowired;
@@ -2835,33 +3570,39 @@ class StaticPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web")));
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
 
-        List<String> expectedRules = List.of(
-                FindingRules.SPRING_ASYNC_PROXY_BYPASS.ruleId(),
-                FindingRules.SPRING_ASYNC_VOID_SWALLOWED_EXCEPTION.ruleId(),
-                FindingRules.SPRING_MESSAGING_LISTENER_NO_ERROR_HANDLER.ruleId(),
-                FindingRules.SPRING_TRANSACTIONAL_ON_SCHEDULED.ruleId(),
-                FindingRules.SPRING_BEAN_ON_NON_CONFIGURATION.ruleId(),
-                FindingRules.SPRING_FIELD_INJECTION.ruleId(),
-                FindingRules.SPRING_VALUE_NO_DEFAULT.ruleId(),
-                FindingRules.SPRING_REQUEST_MAPPING_NO_METHOD.ruleId()
-        );
+        List<String> expectedRules =
+                List.of(
+                        FindingRules.SPRING_ASYNC_PROXY_BYPASS.ruleId(),
+                        FindingRules.SPRING_ASYNC_VOID_SWALLOWED_EXCEPTION.ruleId(),
+                        FindingRules.SPRING_MESSAGING_LISTENER_NO_ERROR_HANDLER.ruleId(),
+                        FindingRules.SPRING_TRANSACTIONAL_ON_SCHEDULED.ruleId(),
+                        FindingRules.SPRING_BEAN_ON_NON_CONFIGURATION.ruleId(),
+                        FindingRules.SPRING_FIELD_INJECTION.ruleId(),
+                        FindingRules.SPRING_VALUE_NO_DEFAULT.ruleId(),
+                        FindingRules.SPRING_REQUEST_MAPPING_NO_METHOD.ruleId());
 
         for (String ruleId : expectedRules) {
-            Finding found = findings.stream()
-                    .filter(f -> ruleId.equals(f.ruleId()))
-                    .findFirst()
-                    .orElseThrow(() -> new AssertionError("Expected finding not produced: " + ruleId));
+            Finding found =
+                    findings.stream()
+                            .filter(f -> ruleId.equals(f.ruleId()))
+                            .findFirst()
+                            .orElseThrow(
+                                    () ->
+                                            new AssertionError(
+                                                    "Expected finding not produced: " + ruleId));
             assertThat(found.whyBadPractice())
                     .as(ruleId + ": whyBadPractice must not be blank")
                     .isNotBlank();
             assertThat(found.recommendation())
                     .as(ruleId + ": recommendation must not be blank")
                     .isNotBlank();
-            assertThat(found.evidence())
-                    .as(ruleId + ": evidence must not be blank")
-                    .isNotBlank();
+            assertThat(found.evidence()).as(ruleId + ": evidence must not be blank").isNotBlank();
         }
     }
 
@@ -2873,44 +3614,56 @@ class StaticPracticeFindingAnalyzerTest {
     void flagsActuatorWildcardExposure() throws IOException {
         Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
         Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(resources.resolve("application.properties"),
+        Files.writeString(
+                resources.resolve("application.properties"),
                 "management.endpoints.web.exposure.include=*\n");
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void flagsActuatorDangerousEndpointExposure() throws IOException {
         Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
         Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(resources.resolve("application.properties"),
+        Files.writeString(
+                resources.resolve("application.properties"),
                 "management.endpoints.web.exposure.include=health,info,env\n");
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     @Test
     void doesNotFlagSafeActuatorExposure() throws IOException {
         Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
         Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(resources.resolve("application.properties"),
+        Files.writeString(
+                resources.resolve("application.properties"),
                 "management.endpoints.web.exposure.include=health,info\n");
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -2921,30 +3674,38 @@ class StaticPracticeFindingAnalyzerTest {
     void flagsHikariPoolSizeTooSmall() throws IOException {
         Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
         Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(resources.resolve("application.properties"),
+        Files.writeString(
+                resources.resolve("application.properties"),
                 "spring.datasource.hikari.maximum-pool-size=1\n");
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_CONNECTION_POOL_MISCONFIGURED.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_CONNECTION_POOL_MISCONFIGURED
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void doesNotFlagReasonableHikariPoolSize() throws IOException {
         Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
         Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(resources.resolve("application.properties"),
+        Files.writeString(
+                resources.resolve("application.properties"),
                 "spring.datasource.hikari.maximum-pool-size=10\n");
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_CONNECTION_POOL_MISCONFIGURED.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_CONNECTION_POOL_MISCONFIGURED
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -2954,37 +3715,46 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsNativeQueryWithStringConcatenation() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("UserRepository.java"), """
-                package com.example.demo;
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("UserRepository.java"),
+                """
+package com.example.demo;
 
-                import jakarta.persistence.EntityManager;
-                import org.springframework.stereotype.Repository;
+import jakarta.persistence.EntityManager;
+import org.springframework.stereotype.Repository;
 
-                @Repository
-                class UserRepository {
-                    private EntityManager entityManager;
+@Repository
+class UserRepository {
+    private EntityManager entityManager;
 
-                    Object findByRole(String role) {
-                        return entityManager.createNativeQuery("SELECT * FROM users WHERE role = '" + role + "'");
-                    }
-                }
-                """);
+    Object findByRole(String role) {
+        return entityManager.createNativeQuery("SELECT * FROM users WHERE role = '" + role + "'");
+    }
+}
+""");
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_SQL_INJECTION_QUERY_CONCATENATION.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_SQL_INJECTION_QUERY_CONCATENATION
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void doesNotFlagNativeQueryWithLiteralOnly() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("UserRepository.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("UserRepository.java"),
+                """
                 package com.example.demo;
 
                 import jakarta.persistence.EntityManager;
@@ -3002,9 +3772,12 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_SQL_INJECTION_QUERY_CONCATENATION.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_SQL_INJECTION_QUERY_CONCATENATION
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -3014,8 +3787,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsLoggingPasswordVariable() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("AuthService.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("AuthService.java"),
+                """
                 package com.example.demo;
 
                 import org.slf4j.Logger;
@@ -3034,17 +3810,23 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_LOGGING_PII_EXPOSURE.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_LOGGING_PII_EXPOSURE
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING);
     }
 
     @Test
     void doesNotFlagLoggingNonSensitiveValues() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("OrderService.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
                 package com.example.demo;
 
                 import org.slf4j.Logger;
@@ -3063,9 +3845,12 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_LOGGING_PII_EXPOSURE.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_LOGGING_PII_EXPOSURE
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -3075,8 +3860,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsGetReferenceByIdWithoutTransaction() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("OrderService.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.stereotype.Service;
@@ -3093,18 +3881,24 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_JPA_LAZY_LOADING_OUTSIDE_TRANSACTION.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_JPA_LAZY_LOADING_OUTSIDE_TRANSACTION
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void doesNotFlagGetReferenceByIdWithTransactional() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("OrderService.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.stereotype.Service;
@@ -3123,9 +3917,12 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_JPA_LAZY_LOADING_OUTSIDE_TRANSACTION.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_JPA_LAZY_LOADING_OUTSIDE_TRANSACTION
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -3135,8 +3932,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsAsyncWithoutCustomExecutor() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("NotificationService.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("NotificationService.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.scheduling.annotation.Async;
@@ -3153,17 +3953,23 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_ASYNC_EXECUTOR_NOT_CONFIGURED.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_ASYNC_EXECUTOR_NOT_CONFIGURED
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING);
     }
 
     @Test
     void doesNotFlagAsyncWhenExecutorBeanPresent() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("NotificationService.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("NotificationService.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.scheduling.annotation.Async;
@@ -3177,7 +3983,9 @@ class StaticPracticeFindingAnalyzerTest {
                     }
                 }
                 """);
-        Files.writeString(sourceRoot.resolve("AsyncConfig.java"), """
+        Files.writeString(
+                sourceRoot.resolve("AsyncConfig.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.context.annotation.Bean;
@@ -3197,9 +4005,12 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_ASYNC_EXECUTOR_NOT_CONFIGURED.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_ASYNC_EXECUTOR_NOT_CONFIGURED
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -3209,8 +4020,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsMultipleScheduledMethodsWithoutTaskScheduler() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("CleanupJob.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("CleanupJob.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.scheduling.annotation.Scheduled;
@@ -3228,17 +4042,23 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_SCHEDULED_EXECUTOR_SERVICE_NOT_CONFIGURED.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_SCHEDULED_EXECUTOR_SERVICE_NOT_CONFIGURED
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING);
     }
 
     @Test
     void doesNotFlagScheduledWhenTaskSchedulerPresent() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("CleanupJob.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("CleanupJob.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.scheduling.annotation.Scheduled;
@@ -3253,7 +4073,9 @@ class StaticPracticeFindingAnalyzerTest {
                     void archiveOldRecords() {}
                 }
                 """);
-        Files.writeString(sourceRoot.resolve("SchedulingConfig.java"), """
+        Files.writeString(
+                sourceRoot.resolve("SchedulingConfig.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.context.annotation.Bean;
@@ -3274,9 +4096,12 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_SCHEDULED_EXECUTOR_SERVICE_NOT_CONFIGURED.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_SCHEDULED_EXECUTOR_SERVICE_NOT_CONFIGURED
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -3286,8 +4111,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsFeignClientWithoutFallback() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("InventoryClient.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("InventoryClient.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.cloud.openfeign.FeignClient;
@@ -3302,35 +4130,44 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_FEIGN_NO_FALLBACK_OR_TIMEOUT.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_FEIGN_NO_FALLBACK_OR_TIMEOUT
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void doesNotFlagFeignClientWithFallback() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("InventoryClient.java"), """
-                package com.example.demo;
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("InventoryClient.java"),
+                """
+package com.example.demo;
 
-                import org.springframework.cloud.openfeign.FeignClient;
-                import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
 
-                @FeignClient(name = "inventory", url = "http://inventory-service", fallback = InventoryClientFallback.class)
-                interface InventoryClient {
-                    @GetMapping("/items")
-                    java.util.List<String> getItems();
-                }
-                """);
+@FeignClient(name = "inventory", url = "http://inventory-service", fallback = InventoryClientFallback.class)
+interface InventoryClient {
+    @GetMapping("/items")
+    java.util.List<String> getItems();
+}
+""");
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_FEIGN_NO_FALLBACK_OR_TIMEOUT.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_FEIGN_NO_FALLBACK_OR_TIMEOUT
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -3340,8 +4177,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsRestTemplateBeanWithoutErrorHandler() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("WebConfig.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("WebConfig.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.context.annotation.Bean;
@@ -3359,18 +4199,24 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void doesNotFlagRestTemplateWithErrorHandler() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("WebConfig.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("WebConfig.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.context.annotation.Bean;
@@ -3390,9 +4236,12 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
     }
 
     // -------------------------------------------------------------------------
@@ -3402,8 +4251,11 @@ class StaticPracticeFindingAnalyzerTest {
     @Test
     void flagsReadUncommittedIsolation() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("ReportService.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ReportService.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.stereotype.Service;
@@ -3421,18 +4273,24 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).anyMatch(finding ->
-                FindingRules.SPRING_TRANSACTION_ISOLATION_READ_UNCOMMITTED.ruleId().equals(finding.ruleId())
-                        && finding.severity() == FindingSeverity.WARNING
-                        && finding.primaryLocation() != null
-        );
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_TRANSACTION_ISOLATION_READ_UNCOMMITTED
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.WARNING
+                                        && finding.primaryLocation() != null);
     }
 
     @Test
     void doesNotFlagReadCommittedIsolation() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot = Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(sourceRoot.resolve("ReportService.java"), """
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ReportService.java"),
+                """
                 package com.example.demo;
 
                 import org.springframework.stereotype.Service;
@@ -3450,8 +4308,270 @@ class StaticPracticeFindingAnalyzerTest {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings).noneMatch(finding ->
-                FindingRules.SPRING_TRANSACTION_ISOLATION_READ_UNCOMMITTED.ruleId().equals(finding.ruleId())
-        );
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_TRANSACTION_ISOLATION_READ_UNCOMMITTED
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
+    }
+
+    // -------------------------------------------------------------------------
+    // Observability gaps
+    // -------------------------------------------------------------------------
+
+    @Test
+    void flagsTimedOnBoot3PlusPreferObserved() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
+                package com.example.demo;
+
+                import io.micrometer.core.annotation.Timed;
+                import org.springframework.stereotype.Service;
+
+                @Service
+                public class OrderService {
+                    @Timed("orders.place")
+                    public void placeOrder(String symbol) {}
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_TIMED_PREFER_OBSERVED.ruleId());
+    }
+
+    @Test
+    void doesNotFlagTimedOnBoot2() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
+                package com.example.demo;
+
+                import io.micrometer.core.annotation.Timed;
+                import org.springframework.stereotype.Service;
+
+                @Service
+                public class OrderService {
+                    @Timed("orders.place")
+                    public void placeOrder(String symbol) {}
+                }
+                """);
+
+        var configurationResult = configurationAnalyzer.analyze(tempDir, emptyBuildInfo(List.of()));
+        var sourceAnalysis = javaSourceAnalyzer.analyze(tempDir);
+        HttpSurfaceAnalyzer.Result httpResult =
+                httpSurfaceAnalyzer.analyze(
+                        tempDir,
+                        configurationResult.configurationAnalysis(),
+                        emptyBuildInfo(List.of()),
+                        WebStack.SERVLET_MVC);
+        List<Finding> findings =
+                analyzer.analyze(
+                        tempDir,
+                        emptyBuildInfo(List.of()),
+                        configurationResult.configurationAnalysis(),
+                        GradleModelAnalysis.empty(
+                                GradleAnalysisStatus.NOT_REQUESTED, "TOOLING_API", List.of()),
+                        new RuntimeStackAnalysis(
+                                "2.7.18",
+                                "build.gradle",
+                                "17",
+                                WebStack.SERVLET_MVC,
+                                "boot 2",
+                                null,
+                                null),
+                        httpResult.httpSurfaceAnalysis(),
+                        sourceAnalysis.detectedClasses());
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_TIMED_PREFER_OBSERVED.ruleId());
+    }
+
+    @Test
+    void flagsScheduledMethodWithNoObservability() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ReportJob.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.scheduling.annotation.Scheduled;
+                import org.springframework.stereotype.Component;
+
+                @Component
+                public class ReportJob {
+                    @Scheduled(cron = "0 0 1 * * *")
+                    public void generateReport() {}
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_SCHEDULED_NO_OBSERVABILITY.ruleId());
+    }
+
+    @Test
+    void doesNotFlagScheduledMethodWithObserved() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ReportJob.java"),
+                """
+                package com.example.demo;
+
+                import io.micrometer.observation.annotation.Observed;
+                import org.springframework.scheduling.annotation.Scheduled;
+                import org.springframework.stereotype.Component;
+
+                @Component
+                public class ReportJob {
+                    @Observed(name = "report.generate")
+                    @Scheduled(cron = "0 0 1 * * *")
+                    public void generateReport() {}
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_SCHEDULED_NO_OBSERVABILITY.ruleId());
+    }
+
+    @Test
+    void flagsKafkaListenerWithNoObservability() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderConsumer.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.kafka.annotation.KafkaListener;
+                import org.springframework.stereotype.Component;
+
+                @Component
+                public class OrderConsumer {
+                    @KafkaListener(topics = "orders")
+                    public void onOrder(String message) {}
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_LISTENER_NO_OBSERVABILITY.ruleId());
+    }
+
+    @Test
+    void doesNotFlagKafkaListenerWithTimed() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderConsumer.java"),
+                """
+                package com.example.demo;
+
+                import io.micrometer.core.annotation.Timed;
+                import org.springframework.kafka.annotation.KafkaListener;
+                import org.springframework.stereotype.Component;
+
+                @Component
+                public class OrderConsumer {
+                    @KafkaListener(topics = "orders")
+                    @Timed("orders.consume")
+                    public void onOrder(String message) {}
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_LISTENER_NO_OBSERVABILITY.ruleId());
+    }
+
+    // -------------------------------------------------------------------------
+    // Validation gaps — @ModelAttribute without @Valid
+    // -------------------------------------------------------------------------
+
+    @Test
+    void flagsModelAttributeWithoutValid() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderController.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Controller;
+                import org.springframework.web.bind.annotation.ModelAttribute;
+                import org.springframework.web.bind.annotation.PostMapping;
+
+                @Controller
+                public class OrderController {
+                    @PostMapping("/orders")
+                    public String placeOrder(@ModelAttribute CreateOrderRequest request) {
+                        return "redirect:/orders";
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_MODEL_ATTRIBUTE_NO_VALID.ruleId());
+    }
+
+    @Test
+    void doesNotFlagModelAttributeWithValid() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderController.java"),
+                """
+                package com.example.demo;
+
+                import jakarta.validation.Valid;
+                import org.springframework.stereotype.Controller;
+                import org.springframework.web.bind.annotation.ModelAttribute;
+                import org.springframework.web.bind.annotation.PostMapping;
+
+                @Controller
+                public class OrderController {
+                    @PostMapping("/orders")
+                    public String placeOrder(@Valid @ModelAttribute CreateOrderRequest request) {
+                        return "redirect:/orders";
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_MODEL_ATTRIBUTE_NO_VALID.ruleId());
     }
 }

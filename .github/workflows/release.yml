@@ -1,0 +1,126 @@
+# Release workflow for Spring Boot Analyzer
+#
+# Triggered by a version tag push (v*.*.*) or manual workflow_dispatch.
+# Builds the frontend, assembles the Spring Boot fat-jar, and attaches it
+# to a GitHub Release.
+#
+# The release is created as a draft so the maintainer can review the
+# release notes before publishing.
+#
+# Prerequisites
+# -------------
+# The repository must have the standard Gradle wrapper committed and the
+# frontend must be buildable with `npm ci && npm run build`.
+#
+# Artifact naming
+# ---------------
+# The released jar is named spring-boot-analyzer.jar (see bootJar config
+# in build.gradle). A sha256 checksum file is generated alongside it.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v0.1.0)'
+        required: true
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: temurin
+          check-latest: true
+
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('build.gradle', 'settings.gradle') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Run backend tests
+        run: ./gradlew test --no-daemon
+
+      - name: Assemble release jar
+        run: ./gradlew bootJar --no-daemon
+
+      - name: Generate checksum
+        run: |
+          sha256sum build/libs/spring-boot-analyzer.jar \
+            > build/libs/spring-boot-analyzer.jar.sha256
+          cat build/libs/spring-boot-analyzer.jar.sha256
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Spring Boot Analyzer ${{ steps.version.outputs.tag }}
+          draft: true
+          body: |
+            ## Spring Boot Analyzer ${{ steps.version.outputs.tag }}
+
+            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for what changed in this release.
+
+            ### Running
+
+            ```bash
+            java -jar spring-boot-analyzer.jar
+            ```
+
+            The UI is served at `http://localhost:8085/`.
+
+            ### Verification
+
+            Verify the jar with the included SHA-256 checksum:
+
+            ```bash
+            sha256sum -c spring-boot-analyzer.jar.sha256
+            ```
+          files: |
+            build/libs/spring-boot-analyzer.jar
+            build/libs/spring-boot-analyzer.jar.sha256

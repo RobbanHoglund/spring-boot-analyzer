@@ -16,7 +16,8 @@ public class GradleSettingsPluginScanner {
     private static final Pattern GROOVY_ID_WITH_VERSION =
             Pattern.compile("id\\s+['\"]([^'\"]+)['\"]\\s+version\\s+['\"]([^'\"]+)['\"]");
     private static final Pattern KOTLIN_ID_WITH_VERSION =
-            Pattern.compile("id\\(\\s*['\"]([^'\"]+)['\"]\\s*\\)\\s*version\\s*['\"]([^'\"]+)['\"]");
+            Pattern.compile(
+                    "id\\(\\s*['\"]([^'\"]+)['\"]\\s*\\)\\s*version\\s*['\"]([^'\"]+)['\"]");
     private static final Pattern ID_WITHOUT_VERSION =
             Pattern.compile("id(?:\\(|\\s+)\\s*['\"]([^'\"]+)['\"]\\s*\\)?");
 
@@ -45,12 +46,12 @@ public class GradleSettingsPluginScanner {
                     found = matcher.find();
                 }
                 if (found) {
-                    plugins.add(new GradleSettingsPluginModel(
-                            matcher.group(1),
-                            matcher.group(2),
-                            file.getFileName().toString(),
-                            index + 1
-                    ));
+                    plugins.add(
+                            new GradleSettingsPluginModel(
+                                    matcher.group(1),
+                                    matcher.group(2),
+                                    file.getFileName().toString(),
+                                    index + 1));
                     continue;
                 }
 
@@ -60,12 +61,12 @@ public class GradleSettingsPluginScanner {
                     continue;
                 }
                 if (withoutVersionFound && (line.contains("id(") || line.contains("id "))) {
-                    plugins.add(new GradleSettingsPluginModel(
-                            withoutVersionMatcher.group(1),
-                            null,
-                            file.getFileName().toString(),
-                            index + 1
-                    ));
+                    plugins.add(
+                            new GradleSettingsPluginModel(
+                                    withoutVersionMatcher.group(1),
+                                    null,
+                                    file.getFileName().toString(),
+                                    index + 1));
                 }
             }
         } catch (IOException ignored) {

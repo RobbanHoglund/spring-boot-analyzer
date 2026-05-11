@@ -1,6 +1,5 @@
 package com.robbanhoglund.springbootanalyzer.analyzer.gradle;
 
-import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleExecutionMode;
 import com.robbanhoglund.springbootanalyzer.config.AnalyzerProperties;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -16,8 +15,7 @@ public class GradleCommandBuilder {
             Path reportFile,
             int maxResolvedDependencies,
             boolean allowNetwork,
-            AnalyzerProperties.GradleProperties properties
-    ) {
+            AnalyzerProperties.GradleProperties properties) {
         List<String> command = new ArrayList<>();
         command.add(executable);
         command.add("--no-daemon");

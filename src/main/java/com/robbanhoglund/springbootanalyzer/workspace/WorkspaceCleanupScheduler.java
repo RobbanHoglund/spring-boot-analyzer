@@ -17,43 +17,48 @@ public class WorkspaceCleanupScheduler implements SchedulingConfigurer {
     private final WorkspaceService workspaceService;
     private final AnalyzerProperties analyzerProperties;
 
-    public WorkspaceCleanupScheduler(WorkspaceService workspaceService, AnalyzerProperties analyzerProperties) {
+    public WorkspaceCleanupScheduler(
+            WorkspaceService workspaceService, AnalyzerProperties analyzerProperties) {
         this.workspaceService = workspaceService;
         this.analyzerProperties = analyzerProperties;
     }
 
     public void deleteStaleWorkspaces() {
-        AnalyzerProperties.ScheduledWorkspaceCleanupProperties cleanup = analyzerProperties.scheduledWorkspaceCleanup();
+        AnalyzerProperties.ScheduledWorkspaceCleanupProperties cleanup =
+                analyzerProperties.scheduledWorkspaceCleanup();
         if (!cleanup.enabled()) {
             return;
         }
 
-        WorkspaceService.WorkspaceCleanupResult result = workspaceService.deleteWorkspacesOlderThan(cleanup.maxAge());
+        WorkspaceService.WorkspaceCleanupResult result =
+                workspaceService.deleteWorkspacesOlderThan(cleanup.maxAge());
         if (result.deletedCount() > 0 || result.failedCount() > 0) {
             LOGGER.info(
-                    "Scheduled workspace cleanup completed: scanned={}, deleted={}, failed={}, maxAge={}, runsPerDay={}",
+                    "Scheduled workspace cleanup completed: scanned={}, deleted={}, failed={},"
+                            + " maxAge={}, runsPerDay={}",
                     result.scannedCount(),
                     result.deletedCount(),
                     result.failedCount(),
                     cleanup.maxAge(),
-                    cleanup.runsPerDay()
-            );
+                    cleanup.runsPerDay());
         } else {
             LOGGER.debug(
-                    "Scheduled workspace cleanup found nothing to delete: scanned={}, maxAge={}, runsPerDay={}",
+                    "Scheduled workspace cleanup found nothing to delete: scanned={}, maxAge={},"
+                            + " runsPerDay={}",
                     result.scannedCount(),
                     cleanup.maxAge(),
-                    cleanup.runsPerDay()
-            );
+                    cleanup.runsPerDay());
         }
     }
 
     @Override
     public void configureTasks(ScheduledTaskRegistrar taskRegistrar) {
-        taskRegistrar.addFixedDelayTask(new IntervalTask(
-                this::deleteStaleWorkspaces,
-                Duration.ofMillis(analyzerProperties.scheduledWorkspaceCleanupIntervalMillis()),
-                Duration.ofMillis(analyzerProperties.scheduledWorkspaceCleanupInitialDelayMillis())
-        ));
+        taskRegistrar.addFixedDelayTask(
+                new IntervalTask(
+                        this::deleteStaleWorkspaces,
+                        Duration.ofMillis(
+                                analyzerProperties.scheduledWorkspaceCleanupIntervalMillis()),
+                        Duration.ofMillis(
+                                analyzerProperties.scheduledWorkspaceCleanupInitialDelayMillis())));
     }
 }

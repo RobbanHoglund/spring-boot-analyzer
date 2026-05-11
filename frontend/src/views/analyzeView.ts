@@ -45,7 +45,8 @@ export function renderAnalyzeView(model: AnalyzeViewModel, actions: AnalyzeViewA
       statusMessage: model.statusMessage,
       errorMessage: model.errorMessage,
       warningMessage: model.warningMessage,
-      isAnalyzing: model.isAnalyzing
+      isAnalyzing: model.isAnalyzing,
+      analysisMode: model.analysisMode
     })
   );
 
@@ -190,23 +191,32 @@ function renderAnalysisModeSelector(model: AnalyzeViewModel, actions: AnalyzeVie
   select.appendChild(
     new Option(
       'Static + Gradle model',
-      'STATIC_PLUS_GRADLE_MODEL',
+      'EXTENDED',
       false,
-      model.analysisMode === 'STATIC_PLUS_GRADLE_MODEL'
+      model.analysisMode === 'EXTENDED'
     )
   );
   select.value = model.analysisMode;
   select.addEventListener('change', () => actions.onAnalysisModeChange(select.value as AnalysisMode));
-  return element(
-    'div',
-    { className: 'field' },
-    element('span', { text: 'Analysis mode' }),
-    select,
-    element('p', {
-      className: 'helper-text',
-      text: 'Static + Gradle model runs Gradle build logic in an isolated workspace to resolve dependencies. It does not start the target Spring Boot application.'
-    })
-  );
+
+  const helperText = element('p', {
+    className: 'helper-text',
+    text: 'Static + Gradle model runs Gradle build logic in an isolated workspace to resolve dependencies. It does not start the target Spring Boot application.'
+  });
+
+  const warning =
+    model.analysisMode === 'EXTENDED'
+      ? element('p', {
+          className: 'helper-text warning-text',
+          text: "Extended mode executes the repository's Gradle wrapper or a configured Gradle installation. Only use this with repositories you trust."
+        })
+      : null;
+
+  const children: HTMLElement[] = [element('span', { text: 'Analysis mode' }), select, helperText];
+  if (warning) {
+    children.push(warning);
+  }
+  return element('div', { className: 'field' }, ...children);
 }
 
 function renderCollapsedSidebar(model: AnalyzeViewModel, actions: AnalyzeViewActions): HTMLElement {

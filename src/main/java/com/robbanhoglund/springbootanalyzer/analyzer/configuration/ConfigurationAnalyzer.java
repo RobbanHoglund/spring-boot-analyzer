@@ -19,8 +19,6 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.CustomP
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertyDocumentation;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertyKind;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertyReference;
-import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertySourceType;
-import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertyValueHint;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -37,63 +35,58 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class ConfigurationAnalyzer {
-    private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("^\\$\\{([^}:]+)(?::([^}]*))?}$");
+    private static final Pattern PLACEHOLDER_PATTERN =
+            Pattern.compile("^\\$\\{([^}:]+)(?::([^}]*))?}$");
 
-    private static final List<MapPrefixMetadata> SPRING_BOOT_MAP_PREFIXES = List.of(
-            new MapPrefixMetadata(
-                    "logging.level.",
-                    "org.springframework.boot.logging.LogLevel",
-                    "Logger level for the named logger configured through logging.level.*",
-                    "java.lang.String"
-            ),
-            new MapPrefixMetadata(
-                    "spring.mail.properties.",
-                    "org.springframework.boot.autoconfigure.mail.MailProperties",
-                    "JavaMail session property passed through via spring.mail.properties.*",
-                    "java.lang.String"
-            ),
-            new MapPrefixMetadata(
-                    "management.endpoint.",
-                    "org.springframework.boot.actuate.autoconfigure.endpoint",
-                    "Actuator endpoint-specific configuration provided through management.endpoint.*.*",
-                    "java.lang.String"
-            ),
-            new MapPrefixMetadata(
-                    "management.endpoints.",
-                    "org.springframework.boot.actuate.autoconfigure.endpoint",
-                    "Actuator endpoint group or exposure configuration provided through management.endpoints.*.*",
-                    "java.lang.String"
-            ),
-            new MapPrefixMetadata(
-                    "spring.datasource.hikari.",
-                    "com.zaxxer.hikari.HikariConfig",
-                    "HikariCP pool property passed through via spring.datasource.hikari.*",
-                    "java.lang.String"
-            ),
-            new MapPrefixMetadata(
-                    "spring.jpa.properties.",
-                    "org.springframework.boot.autoconfigure.orm.jpa.JpaProperties",
-                    "JPA vendor property passed through via spring.jpa.properties.*",
-                    "java.lang.String"
-            ),
-            new MapPrefixMetadata(
-                    "spring.kafka.properties.",
-                    "org.springframework.boot.autoconfigure.kafka.KafkaProperties",
-                    "Kafka client property passed through via spring.kafka.properties.*",
-                    "java.lang.String"
-            ),
-            new MapPrefixMetadata(
-                    "management.metrics.tags.",
-                    "org.springframework.boot.actuate.autoconfigure.metrics.MetricsProperties",
-                    "Actuator metrics tag configured via management.metrics.tags.*",
-                    "java.lang.String"
-            )
-    );
+    private static final List<MapPrefixMetadata> SPRING_BOOT_MAP_PREFIXES =
+            List.of(
+                    new MapPrefixMetadata(
+                            "logging.level.",
+                            "org.springframework.boot.logging.LogLevel",
+                            "Logger level for the named logger configured through logging.level.*",
+                            "java.lang.String"),
+                    new MapPrefixMetadata(
+                            "spring.mail.properties.",
+                            "org.springframework.boot.autoconfigure.mail.MailProperties",
+                            "JavaMail session property passed through via spring.mail.properties.*",
+                            "java.lang.String"),
+                    new MapPrefixMetadata(
+                            "management.endpoint.",
+                            "org.springframework.boot.actuate.autoconfigure.endpoint",
+                            "Actuator endpoint-specific configuration provided through"
+                                    + " management.endpoint.*.*",
+                            "java.lang.String"),
+                    new MapPrefixMetadata(
+                            "management.endpoints.",
+                            "org.springframework.boot.actuate.autoconfigure.endpoint",
+                            "Actuator endpoint group or exposure configuration provided through"
+                                    + " management.endpoints.*.*",
+                            "java.lang.String"),
+                    new MapPrefixMetadata(
+                            "spring.datasource.hikari.",
+                            "com.zaxxer.hikari.HikariConfig",
+                            "HikariCP pool property passed through via spring.datasource.hikari.*",
+                            "java.lang.String"),
+                    new MapPrefixMetadata(
+                            "spring.jpa.properties.",
+                            "org.springframework.boot.autoconfigure.orm.jpa.JpaProperties",
+                            "JPA vendor property passed through via spring.jpa.properties.*",
+                            "java.lang.String"),
+                    new MapPrefixMetadata(
+                            "spring.kafka.properties.",
+                            "org.springframework.boot.autoconfigure.kafka.KafkaProperties",
+                            "Kafka client property passed through via spring.kafka.properties.*",
+                            "java.lang.String"),
+                    new MapPrefixMetadata(
+                            "management.metrics.tags.",
+                            "org.springframework.boot.actuate.autoconfigure.metrics.MetricsProperties",
+                            "Actuator metrics tag configured via management.metrics.tags.*",
+                            "java.lang.String"));
 
-    private static final List<ThirdPartyPrefixMetadata> THIRD_PARTY_PREFIXES = List.of(
-            new ThirdPartyPrefixMetadata("springdoc.", "springdoc-openapi"),
-            new ThirdPartyPrefixMetadata("resilience4j.", "Resilience4j")
-    );
+    private static final List<ThirdPartyPrefixMetadata> THIRD_PARTY_PREFIXES =
+            List.of(
+                    new ThirdPartyPrefixMetadata("springdoc.", "springdoc-openapi"),
+                    new ThirdPartyPrefixMetadata("resilience4j.", "Resilience4j"));
 
     private final ConfigurationFileScanner configurationFileScanner;
     private final PropertiesFileParser propertiesFileParser;
@@ -112,8 +105,7 @@ public class ConfigurationAnalyzer {
             ConfigurationPropertiesClassAnalyzer configurationPropertiesClassAnalyzer,
             PropertyReferenceAnalyzer propertyReferenceAnalyzer,
             SensitivePropertyValueRedactor redactor,
-            PropertyNameNormalizer propertyNameNormalizer
-    ) {
+            PropertyNameNormalizer propertyNameNormalizer) {
         this.configurationFileScanner = configurationFileScanner;
         this.propertiesFileParser = propertiesFileParser;
         this.yamlConfigurationParser = yamlConfigurationParser;
@@ -129,39 +121,45 @@ public class ConfigurationAnalyzer {
                 springConfigurationMetadataCatalog.load(repositoryRoot);
         List<ConfigurationPropertiesClass> customConfigurationClasses =
                 configurationPropertiesClassAnalyzer.analyze(repositoryRoot);
-        List<PropertyReference> propertyReferences = propertyReferenceAnalyzer.analyze(repositoryRoot).stream()
-                .filter(reference -> !isIgnoredSystemPropertyReference(reference))
-                .toList();
+        List<PropertyReference> propertyReferences =
+                propertyReferenceAnalyzer.analyze(repositoryRoot).stream()
+                        .filter(reference -> !isIgnoredSystemPropertyReference(reference))
+                        .toList();
 
-        Map<String, CustomPropertyContext> customPropertyDefinitions = indexCustomPropertyDefinitions(customConfigurationClasses);
-        Map<String, ConfigurationPropertiesClass> customPropertyPrefixes = indexCustomPropertyPrefixes(customConfigurationClasses);
+        Map<String, CustomPropertyContext> customPropertyDefinitions =
+                indexCustomPropertyDefinitions(customConfigurationClasses);
+        Map<String, ConfigurationPropertiesClass> customPropertyPrefixes =
+                indexCustomPropertyPrefixes(customConfigurationClasses);
         List<Finding> findings = new ArrayList<>();
 
-        List<ConfigurationFileScanner.ConfigurationCandidate> candidates = configurationFileScanner.scan(repositoryRoot);
+        List<ConfigurationFileScanner.ConfigurationCandidate> candidates =
+                configurationFileScanner.scan(repositoryRoot);
         List<ConfigurationFile> files = new ArrayList<>();
         List<ApplicationProperty> configuredProperties = new ArrayList<>();
         Map<String, ParsedConfigurationProperty> rawConfiguredProperties = new LinkedHashMap<>();
 
         for (ConfigurationFileScanner.ConfigurationCandidate candidate : candidates) {
             List<ParsedConfigurationProperty> parsedProperties = parse(candidate);
-            files.add(new ConfigurationFile(
-                    candidate.relativePath(),
-                    candidate.profile(),
-                    candidate.sourceType(),
-                    parsedProperties.size()
-            ));
+            files.add(
+                    new ConfigurationFile(
+                            candidate.relativePath(),
+                            candidate.profile(),
+                            candidate.sourceType(),
+                            parsedProperties.size()));
 
             for (ParsedConfigurationProperty parsedProperty : parsedProperties) {
                 String normalizedName = propertyNameNormalizer.normalize(parsedProperty.name());
-                rawConfiguredProperties.put(normalizedName + "@" + candidate.relativePath() + "@" + candidate.profile(), parsedProperty);
-                configuredProperties.add(toApplicationProperty(
-                        parsedProperty,
-                        metadataCatalog,
-                        customPropertyDefinitions,
-                        customPropertyPrefixes,
-                        propertyReferences,
-                        buildInfo
-                ));
+                rawConfiguredProperties.put(
+                        normalizedName + "@" + candidate.relativePath() + "@" + candidate.profile(),
+                        parsedProperty);
+                configuredProperties.add(
+                        toApplicationProperty(
+                                parsedProperty,
+                                metadataCatalog,
+                                customPropertyDefinitions,
+                                customPropertyPrefixes,
+                                propertyReferences,
+                                buildInfo));
             }
         }
 
@@ -181,67 +179,83 @@ public class ConfigurationAnalyzer {
         List<ApplicationProperty> allProperties = new ArrayList<>(configuredProperties);
         for (PropertyReference reference : referencedOnly) {
             String normalizedName = propertyNameNormalizer.normalize(reference.propertyName());
-            if (allProperties.stream().anyMatch(property -> propertyNameNormalizer.normalize(property.name()).equals(normalizedName))) {
+            if (allProperties.stream()
+                    .anyMatch(
+                            property ->
+                                    propertyNameNormalizer
+                                            .normalize(property.name())
+                                            .equals(normalizedName))) {
                 continue;
             }
 
-            PropertyDocumentation documentation = documentationFor(
-                    normalizedName,
-                    metadataCatalog,
-                    customPropertyDefinitions,
-                    customPropertyPrefixes,
-                    buildInfo
-            );
-            allProperties.add(new ApplicationProperty(
-                    reference.propertyName(),
-                    null,
-                    false,
-                    false,
-                    reference.sourceFile(),
-                    null,
-                    null,
-                    classifyReferencedProperty(
+            PropertyDocumentation documentation =
+                    documentationFor(
                             normalizedName,
-                            reference,
-                            documentation,
-                            buildInfo,
                             metadataCatalog,
                             customPropertyDefinitions,
-                            customPropertyPrefixes
-                    ),
-                    documentation,
-                    matchingReferences(reference.propertyName(), propertyReferences)
-            ));
+                            customPropertyPrefixes,
+                            buildInfo);
+            allProperties.add(
+                    new ApplicationProperty(
+                            reference.propertyName(),
+                            null,
+                            false,
+                            false,
+                            reference.sourceFile(),
+                            null,
+                            null,
+                            classifyReferencedProperty(
+                                    normalizedName,
+                                    reference,
+                                    documentation,
+                                    buildInfo,
+                                    metadataCatalog,
+                                    customPropertyDefinitions,
+                                    customPropertyPrefixes),
+                            documentation,
+                            matchingReferences(reference.propertyName(), propertyReferences)));
         }
 
-        for (Map.Entry<String, CustomPropertyContext> entry : customPropertyDefinitions.entrySet()) {
+        for (Map.Entry<String, CustomPropertyContext> entry :
+                customPropertyDefinitions.entrySet()) {
             String propertyName = entry.getKey();
-            if (allProperties.stream().anyMatch(property -> propertyNameNormalizer.normalize(property.name()).equals(propertyName))) {
+            if (allProperties.stream()
+                    .anyMatch(
+                            property ->
+                                    propertyNameNormalizer
+                                            .normalize(property.name())
+                                            .equals(propertyName))) {
                 continue;
             }
 
-            PropertyDocumentation documentation = documentationFor(
-                    propertyName,
-                    metadataCatalog,
-                    customPropertyDefinitions,
-                    customPropertyPrefixes,
-                    buildInfo
-            );
-            allProperties.add(new ApplicationProperty(
-                    propertyName,
-                    null,
-                    false,
-                    false,
-                    entry.getValue().sourceClass().sourceFile(),
-                    null,
-                    null,
-                    PropertyKind.CUSTOM_CONFIGURATION_PROPERTIES,
-                    documentation,
-                    matchingReferences(propertyName, propertyReferences)
-            ));
+            PropertyDocumentation documentation =
+                    documentationFor(
+                            propertyName,
+                            metadataCatalog,
+                            customPropertyDefinitions,
+                            customPropertyPrefixes,
+                            buildInfo);
+            allProperties.add(
+                    new ApplicationProperty(
+                            propertyName,
+                            null,
+                            false,
+                            false,
+                            entry.getValue().sourceClass().sourceFile(),
+                            null,
+                            null,
+                            PropertyKind.CUSTOM_CONFIGURATION_PROPERTIES,
+                            documentation,
+                            matchingReferences(propertyName, propertyReferences)));
         }
 
-        addConfigurationFindings(configuredProperties, rawConfiguredProperties, referencedOnly, files, customConfigurationClasses, findings);
+        addConfigurationFindings(
+                configuredProperties,
+                rawConfiguredProperties,
+                referencedOnly,
+                files,
+                customConfigurationClasses,
+                findings);
 
         ConfigurationSummary summary = buildSummary(configuredProperties, propertyReferences);
         allProperties.sort(Comparator.comparing(ApplicationProperty::name));
@@ -252,16 +266,23 @@ public class ConfigurationAnalyzer {
                         List.copyOf(allProperties),
                         List.copyOf(propertyReferences),
                         List.copyOf(customConfigurationClasses),
-                        summary
-                ),
-                List.copyOf(findings)
-        );
+                        summary),
+                List.copyOf(findings));
     }
 
-    private List<ParsedConfigurationProperty> parse(ConfigurationFileScanner.ConfigurationCandidate candidate) {
+    private List<ParsedConfigurationProperty> parse(
+            ConfigurationFileScanner.ConfigurationCandidate candidate) {
         return switch (candidate.sourceType()) {
-            case PROPERTIES -> propertiesFileParser.parse(candidate.absolutePath(), candidate.relativePath(), candidate.profile());
-            case YAML -> yamlConfigurationParser.parse(candidate.absolutePath(), candidate.relativePath(), candidate.profile());
+            case PROPERTIES ->
+                    propertiesFileParser.parse(
+                            candidate.absolutePath(),
+                            candidate.relativePath(),
+                            candidate.profile());
+            case YAML ->
+                    yamlConfigurationParser.parse(
+                            candidate.absolutePath(),
+                            candidate.relativePath(),
+                            candidate.profile());
             default -> List.of();
         };
     }
@@ -272,31 +293,32 @@ public class ConfigurationAnalyzer {
             Map<String, CustomPropertyContext> customPropertyDefinitions,
             Map<String, ConfigurationPropertiesClass> customPropertyPrefixes,
             List<PropertyReference> propertyReferences,
-            BuildInfo buildInfo
-    ) {
+            BuildInfo buildInfo) {
         String normalizedName = propertyNameNormalizer.normalize(parsedProperty.name());
-        PropertyDocumentation documentation = documentationFor(
-                normalizedName,
-                metadataCatalog,
-                customPropertyDefinitions,
-                customPropertyPrefixes,
-                buildInfo
-        );
+        PropertyDocumentation documentation =
+                documentationFor(
+                        normalizedName,
+                        metadataCatalog,
+                        customPropertyDefinitions,
+                        customPropertyPrefixes,
+                        buildInfo);
         List<PropertyReference> references = matchingReferences(normalizedName, propertyReferences);
-        PropertyKind propertyKind = determinePropertyKind(
-                normalizedName,
-                documentation,
-                customPropertyDefinitions,
-                customPropertyPrefixes,
-                references,
-                buildInfo,
-                metadataCatalog
-        );
+        PropertyKind propertyKind =
+                determinePropertyKind(
+                        normalizedName,
+                        documentation,
+                        customPropertyDefinitions,
+                        customPropertyPrefixes,
+                        references,
+                        buildInfo,
+                        metadataCatalog);
         boolean sensitive = redactor.isSensitive(normalizedName);
 
         return new ApplicationProperty(
                 normalizedName,
-                sensitive ? redactor.redact(parsedProperty.value()) : formatDisplayValue(parsedProperty.value()),
+                sensitive
+                        ? redactor.redact(parsedProperty.value())
+                        : formatDisplayValue(parsedProperty.value()),
                 sensitive,
                 isPlaceholder(parsedProperty.value()),
                 parsedProperty.sourceFile(),
@@ -304,8 +326,7 @@ public class ConfigurationAnalyzer {
                 parsedProperty.profile(),
                 propertyKind,
                 documentation,
-                references
-        );
+                references);
     }
 
     private PropertyDocumentation documentationFor(
@@ -313,9 +334,9 @@ public class ConfigurationAnalyzer {
             SpringConfigurationMetadataCatalog.MetadataCatalog metadataCatalog,
             Map<String, CustomPropertyContext> customPropertyDefinitions,
             Map<String, ConfigurationPropertiesClass> customPropertyPrefixes,
-            BuildInfo buildInfo
-    ) {
-        SpringConfigurationMetadataCatalog.MetadataProperty metadataProperty = metadataCatalog.find(propertyName);
+            BuildInfo buildInfo) {
+        SpringConfigurationMetadataCatalog.MetadataProperty metadataProperty =
+                metadataCatalog.find(propertyName);
         if (metadataProperty != null) {
             return metadataProperty.documentation();
         }
@@ -330,11 +351,11 @@ public class ConfigurationAnalyzer {
                     mapMetadata.sourceType(),
                     false,
                     null,
-                    List.of()
-            );
+                    List.of());
         }
 
-        ThirdPartyPrefixMetadata thirdPartyMetadata = thirdPartyMetadataFor(propertyName, buildInfo);
+        ThirdPartyPrefixMetadata thirdPartyMetadata =
+                thirdPartyMetadataFor(propertyName, buildInfo);
         if (thirdPartyMetadata != null) {
             return new PropertyDocumentation(
                     true,
@@ -344,15 +365,18 @@ public class ConfigurationAnalyzer {
                     thirdPartyMetadata.provider(),
                     false,
                     null,
-                    List.of()
-            );
+                    List.of());
         }
 
-        CustomPropertyContext customPropertyContext = findCustomPropertyContext(propertyName, customPropertyDefinitions);
+        CustomPropertyContext customPropertyContext =
+                findCustomPropertyContext(propertyName, customPropertyDefinitions);
         if (customPropertyContext != null) {
             String description = customPropertyContext.property().description();
             if (description == null || description.isBlank()) {
-                description = "Custom property defined by " + customPropertyContext.sourceClass().className() + ".";
+                description =
+                        "Custom property defined by "
+                                + customPropertyContext.sourceClass().className()
+                                + ".";
             }
             return new PropertyDocumentation(
                     true,
@@ -362,22 +386,24 @@ public class ConfigurationAnalyzer {
                     customPropertyContext.sourceClass().className(),
                     false,
                     null,
-                    List.of()
-            );
+                    List.of());
         }
 
-        ConfigurationPropertiesClass owningPrefix = findCustomPropertyPrefixOwner(propertyName, customPropertyPrefixes);
+        ConfigurationPropertiesClass owningPrefix =
+                findCustomPropertyPrefixOwner(propertyName, customPropertyPrefixes);
         if (owningPrefix != null) {
             return new PropertyDocumentation(
                     true,
                     null,
-                    "Custom property under @" + "ConfigurationProperties prefix " + owningPrefix.prefix() + ".",
+                    "Custom property under @"
+                            + "ConfigurationProperties prefix "
+                            + owningPrefix.prefix()
+                            + ".",
                     null,
                     owningPrefix.className(),
                     false,
                     null,
-                    List.of()
-            );
+                    List.of());
         }
 
         return PropertyDocumentation.unknown();
@@ -390,8 +416,7 @@ public class ConfigurationAnalyzer {
             Map<String, ConfigurationPropertiesClass> customPropertyPrefixes,
             List<PropertyReference> references,
             BuildInfo buildInfo,
-            SpringConfigurationMetadataCatalog.MetadataCatalog metadataCatalog
-    ) {
+            SpringConfigurationMetadataCatalog.MetadataCatalog metadataCatalog) {
         if (findCustomPropertyContext(propertyName, customPropertyDefinitions) != null) {
             return PropertyKind.CUSTOM_CONFIGURATION_PROPERTIES;
         }
@@ -399,7 +424,8 @@ public class ConfigurationAnalyzer {
             return PropertyKind.CUSTOM_CONFIGURATION_PROPERTIES;
         }
         if (metadataCatalog.find(propertyName) != null) {
-            if (documentation.known() && isThirdPartySource(documentation.sourceType(), buildInfo)) {
+            if (documentation.known()
+                    && isThirdPartySource(documentation.sourceType(), buildInfo)) {
                 return PropertyKind.THIRD_PARTY;
             }
             return PropertyKind.SPRING_BOOT;
@@ -413,7 +439,9 @@ public class ConfigurationAnalyzer {
         if (documentation.known()) {
             return PropertyKind.SPRING_BOOT;
         }
-        if (references.stream().anyMatch(reference -> "@ConditionalOnProperty".equals(reference.referenceType()))) {
+        if (references.stream()
+                .anyMatch(
+                        reference -> "@ConditionalOnProperty".equals(reference.referenceType()))) {
             return PropertyKind.CONDITIONAL_PROPERTY;
         }
         if (!references.isEmpty()) {
@@ -432,8 +460,7 @@ public class ConfigurationAnalyzer {
             BuildInfo buildInfo,
             SpringConfigurationMetadataCatalog.MetadataCatalog metadataCatalog,
             Map<String, CustomPropertyContext> customPropertyDefinitions,
-            Map<String, ConfigurationPropertiesClass> customPropertyPrefixes
-    ) {
+            Map<String, ConfigurationPropertiesClass> customPropertyPrefixes) {
         if ("@ConditionalOnProperty".equals(reference.referenceType())) {
             return PropertyKind.CONDITIONAL_PROPERTY;
         }
@@ -442,7 +469,8 @@ public class ConfigurationAnalyzer {
             return PropertyKind.CUSTOM_CONFIGURATION_PROPERTIES;
         }
         if (metadataCatalog.find(propertyName) != null) {
-            if (documentation.known() && isThirdPartySource(documentation.sourceType(), buildInfo)) {
+            if (documentation.known()
+                    && isThirdPartySource(documentation.sourceType(), buildInfo)) {
                 return PropertyKind.THIRD_PARTY;
             }
             return PropertyKind.SPRING_BOOT;
@@ -459,32 +487,39 @@ public class ConfigurationAnalyzer {
         return PropertyKind.CODE_REFERENCED;
     }
 
-    private List<PropertyReference> matchingReferences(String propertyName, List<PropertyReference> propertyReferences) {
+    private List<PropertyReference> matchingReferences(
+            String propertyName, List<PropertyReference> propertyReferences) {
         String normalizedName = propertyNameNormalizer.normalize(propertyName);
         return propertyReferences.stream()
-                .filter(reference -> propertyNameNormalizer.normalize(reference.propertyName()).equals(normalizedName))
+                .filter(
+                        reference ->
+                                propertyNameNormalizer
+                                        .normalize(reference.propertyName())
+                                        .equals(normalizedName))
                 .toList();
     }
 
     private Map<String, CustomPropertyContext> indexCustomPropertyDefinitions(
-            List<ConfigurationPropertiesClass> configurationPropertiesClasses
-    ) {
+            List<ConfigurationPropertiesClass> configurationPropertiesClasses) {
         Map<String, CustomPropertyContext> definitions = new LinkedHashMap<>();
         for (ConfigurationPropertiesClass configurationClass : configurationPropertiesClasses) {
             String prefix = propertyNameNormalizer.normalize(configurationClass.prefix());
             for (CustomPropertyDefinition property : configurationClass.properties()) {
-                String propertyName = prefix.isBlank()
-                        ? propertyNameNormalizer.normalize(property.propertyName())
-                        : prefix + "." + propertyNameNormalizer.normalize(property.propertyName());
-                definitions.put(propertyName, new CustomPropertyContext(configurationClass, property));
+                String propertyName =
+                        prefix.isBlank()
+                                ? propertyNameNormalizer.normalize(property.propertyName())
+                                : prefix
+                                        + "."
+                                        + propertyNameNormalizer.normalize(property.propertyName());
+                definitions.put(
+                        propertyName, new CustomPropertyContext(configurationClass, property));
             }
         }
         return definitions;
     }
 
     private Map<String, ConfigurationPropertiesClass> indexCustomPropertyPrefixes(
-            List<ConfigurationPropertiesClass> configurationPropertiesClasses
-    ) {
+            List<ConfigurationPropertiesClass> configurationPropertiesClasses) {
         Map<String, ConfigurationPropertiesClass> prefixes = new LinkedHashMap<>();
         for (ConfigurationPropertiesClass configurationClass : configurationPropertiesClasses) {
             String normalizedPrefix = propertyNameNormalizer.normalize(configurationClass.prefix());
@@ -496,9 +531,7 @@ public class ConfigurationAnalyzer {
     }
 
     private CustomPropertyContext findCustomPropertyContext(
-            String propertyName,
-            Map<String, CustomPropertyContext> customPropertyDefinitions
-    ) {
+            String propertyName, Map<String, CustomPropertyContext> customPropertyDefinitions) {
         CustomPropertyContext exact = customPropertyDefinitions.get(propertyName);
         if (exact != null) {
             return exact;
@@ -506,9 +539,11 @@ public class ConfigurationAnalyzer {
 
         CustomPropertyContext bestMatch = null;
         int bestMatchLength = -1;
-        for (Map.Entry<String, CustomPropertyContext> entry : customPropertyDefinitions.entrySet()) {
+        for (Map.Entry<String, CustomPropertyContext> entry :
+                customPropertyDefinitions.entrySet()) {
             String definitionName = entry.getKey();
-            if (!matchesCustomPropertyPath(propertyName, definitionName, entry.getValue().property().type())) {
+            if (!matchesCustomPropertyPath(
+                    propertyName, definitionName, entry.getValue().property().type())) {
                 continue;
             }
             if (definitionName.length() > bestMatchLength) {
@@ -519,7 +554,8 @@ public class ConfigurationAnalyzer {
         return bestMatch;
     }
 
-    private boolean matchesCustomPropertyPath(String propertyName, String definitionName, String declaredType) {
+    private boolean matchesCustomPropertyPath(
+            String propertyName, String definitionName, String declaredType) {
         if (propertyName == null || definitionName == null || propertyName.equals(definitionName)) {
             return false;
         }
@@ -527,7 +563,8 @@ public class ConfigurationAnalyzer {
             return true;
         }
         return isMapLikeType(declaredType)
-                && (propertyName.startsWith(definitionName + "[") || propertyName.startsWith(definitionName + "."));
+                && (propertyName.startsWith(definitionName + "[")
+                        || propertyName.startsWith(definitionName + "."));
     }
 
     private boolean isMapLikeType(String declaredType) {
@@ -541,12 +578,11 @@ public class ConfigurationAnalyzer {
     }
 
     private ConfigurationPropertiesClass findCustomPropertyPrefixOwner(
-            String propertyName,
-            Map<String, ConfigurationPropertiesClass> customPropertyPrefixes
-    ) {
+            String propertyName, Map<String, ConfigurationPropertiesClass> customPropertyPrefixes) {
         ConfigurationPropertiesClass bestMatch = null;
         int bestLength = -1;
-        for (Map.Entry<String, ConfigurationPropertiesClass> entry : customPropertyPrefixes.entrySet()) {
+        for (Map.Entry<String, ConfigurationPropertiesClass> entry :
+                customPropertyPrefixes.entrySet()) {
             String prefix = entry.getKey();
             if (!propertyName.startsWith(prefix + ".")) {
                 continue;
@@ -565,63 +601,112 @@ public class ConfigurationAnalyzer {
             List<PropertyReference> referencedOnly,
             List<ConfigurationFile> files,
             List<ConfigurationPropertiesClass> configurationPropertiesClasses,
-            List<Finding> findings
-    ) {
-        List<ConfigurationFile> profileSpecificFiles = files.stream()
-                .filter(file -> !"default".equals(file.profile()) && !"bootstrap".equals(file.profile()))
-                .toList();
+            List<Finding> findings) {
+        List<ConfigurationFile> profileSpecificFiles =
+                files.stream()
+                        .filter(
+                                file ->
+                                        !"default".equals(file.profile())
+                                                && !"bootstrap".equals(file.profile()))
+                        .toList();
         if (!profileSpecificFiles.isEmpty()) {
-            List<FindingOccurrence> occurrences = profileSpecificFiles.stream()
-                    .map(this::profileConfigurationOccurrence)
-                    .toList();
-            FindingFactory.Builder builder = FindingFactory.builder(
-                            "SPRING_PROFILE_SPECIFIC_CONFIG",
-                            "Profile-specific configuration files were found",
-                            FindingSeverity.INFO,
-                            FindingCategory.PROFILE_DRIFT,
-                            com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT,
-                            FindingConfidence.MEDIUM
-                    )
-                    .shortMessage("Profile-specific configuration files were found. Static analysis cannot determine which runtime profiles are active.")
-                    .whyBadPractice("Spring resolves only the active profile at runtime. Static configuration drift can stay invisible until a different environment activates a different file set.")
-                    .possibleImpact("Different profiles can silently change dependencies, security settings, scheduler behavior, or external service targets between environments.")
-                    .recommendation("Review default and profile-specific files together, keep critical operational settings explicit per environment, and add tests for important profile combinations.")
-                    .evidence("Configuration files such as application-prod.* or application-dev.* were detected.")
-                    .limitations("Static analysis cannot prove which profiles are active in production or how deployment systems inject additional properties.")
-                    .target("profiles")
-                    .location("Configuration")
-                    .occurrences(occurrences);
+            List<FindingOccurrence> occurrences =
+                    profileSpecificFiles.stream()
+                            .map(this::profileConfigurationOccurrence)
+                            .toList();
+            FindingFactory.Builder builder =
+                    FindingFactory.builder(
+                                    "SPRING_PROFILE_SPECIFIC_CONFIG",
+                                    "Profile-specific configuration files were found",
+                                    FindingSeverity.INFO,
+                                    FindingCategory.PROFILE_DRIFT,
+                                    com.robbanhoglund.springbootanalyzer.analyzer.model
+                                            .FindingRuntimeDetection
+                                            .ACTIVE_PROFILE_RUNTIME_MAY_DETECT,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    "Profile-specific configuration files were found. Static"
+                                        + " analysis cannot determine which runtime profiles are"
+                                        + " active.")
+                            .whyBadPractice(
+                                    "Spring resolves only the active profile at runtime. Static"
+                                        + " configuration drift can stay invisible until a"
+                                        + " different environment activates a different file set.")
+                            .possibleImpact(
+                                    "Different profiles can silently change dependencies, security"
+                                            + " settings, scheduler behavior, or external service"
+                                            + " targets between environments.")
+                            .recommendation(
+                                    "Review default and profile-specific files together, keep"
+                                        + " critical operational settings explicit per environment,"
+                                        + " and add tests for important profile combinations.")
+                            .evidence(
+                                    "Configuration files such as application-prod.* or"
+                                            + " application-dev.* were detected.")
+                            .limitations(
+                                    "Static analysis cannot prove which profiles are active in"
+                                        + " production or how deployment systems inject additional"
+                                        + " properties.")
+                            .target("profiles")
+                            .location("Configuration")
+                            .occurrences(occurrences);
             if (!occurrences.isEmpty()) {
                 builder.sourceLocation(occurrences.get(0).location());
             }
             findings.add(builder.build());
         }
 
-        long unknownCount = configuredProperties.stream().filter(property -> property.kind() == PropertyKind.UNKNOWN).count();
+        long unknownCount =
+                configuredProperties.stream()
+                        .filter(property -> property.kind() == PropertyKind.UNKNOWN)
+                        .count();
         if (unknownCount > 0) {
-            List<String> unknownExamples = configuredProperties.stream()
-                    .filter(property -> property.kind() == PropertyKind.UNKNOWN)
-                    .map(property -> property.name() + " (" + property.sourceFile() + ")")
-                    .distinct()
-                    .limit(10)
-                    .toList();
-            findings.add(FindingFactory.builder(
-                            "CONFIG_UNKNOWN_PROPERTY",
-                            "Unknown configuration properties detected",
-                            FindingSeverity.INFO,
-                            FindingCategory.CONFIGURATION,
-                            com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRuntimeDetection.NOT_NORMALLY_DETECTED,
-                            FindingConfidence.MEDIUM
-                    )
-                    .shortMessage(unknownCount + " configured properties could not be matched to Spring Boot, discovered custom metadata, or known third-party metadata. See Configuration > Unknown.")
-                    .whyBadPractice("Unknown properties are easy to miss because Spring often ignores typos and unsupported keys without turning them into startup failures.")
-                    .possibleImpact("A misspelled or outdated property can leave important behavior running with defaults in one environment while operators assume the setting is active.")
-                    .recommendation("Review unknown properties, confirm whether they belong to Spring Boot, a known third-party library, or a custom @ConfigurationProperties prefix, and remove or rename stale keys.")
-                    .evidence("Unknown properties included: " + String.join(", ", unknownExamples) + ".")
-                    .limitations("Static analysis cannot always prove whether a property is consumed indirectly by reflection, generated metadata, or runtime-only libraries that were not visible in the scanned sources.")
-                    .target("unknown configuration properties")
-                    .location("Configuration")
-                    .build());
+            List<String> unknownExamples =
+                    configuredProperties.stream()
+                            .filter(property -> property.kind() == PropertyKind.UNKNOWN)
+                            .map(property -> property.name() + " (" + property.sourceFile() + ")")
+                            .distinct()
+                            .limit(10)
+                            .toList();
+            findings.add(
+                    FindingFactory.builder(
+                                    "CONFIG_UNKNOWN_PROPERTY",
+                                    "Unknown configuration properties detected",
+                                    FindingSeverity.INFO,
+                                    FindingCategory.CONFIGURATION,
+                                    com.robbanhoglund.springbootanalyzer.analyzer.model
+                                            .FindingRuntimeDetection.NOT_NORMALLY_DETECTED,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    unknownCount
+                                            + " configured properties could not be matched to"
+                                            + " Spring Boot, discovered custom metadata, or known"
+                                            + " third-party metadata. See Configuration > Unknown.")
+                            .whyBadPractice(
+                                    "Unknown properties are easy to miss because Spring often"
+                                        + " ignores typos and unsupported keys without turning them"
+                                        + " into startup failures.")
+                            .possibleImpact(
+                                    "A misspelled or outdated property can leave important behavior"
+                                            + " running with defaults in one environment while"
+                                            + " operators assume the setting is active.")
+                            .recommendation(
+                                    "Review unknown properties, confirm whether they belong to"
+                                        + " Spring Boot, a known third-party library, or a custom"
+                                        + " @ConfigurationProperties prefix, and remove or rename"
+                                        + " stale keys.")
+                            .evidence(
+                                    "Unknown properties included: "
+                                            + String.join(", ", unknownExamples)
+                                            + ".")
+                            .limitations(
+                                    "Static analysis cannot always prove whether a property is"
+                                        + " consumed indirectly by reflection, generated metadata,"
+                                        + " or runtime-only libraries that were not visible in the"
+                                        + " scanned sources.")
+                            .target("unknown configuration properties")
+                            .location("Configuration")
+                            .build());
         }
 
         Set<String> deprecatedPropertyNames = new LinkedHashSet<>();
@@ -630,12 +715,13 @@ public class ConfigurationAnalyzer {
         Set<String> customLookingOrphans = new LinkedHashSet<>();
 
         for (ApplicationProperty property : configuredProperties) {
-            if (property.documentation().deprecated() && deprecatedPropertyNames.add(property.name())) {
-                findings.add(new Finding(
-                        FindingSeverity.WARNING,
-                        "Deprecated configuration property is used: " + property.name(),
-                        property.sourceFile()
-                ));
+            if (property.documentation().deprecated()
+                    && deprecatedPropertyNames.add(property.name())) {
+                findings.add(
+                        new Finding(
+                                FindingSeverity.WARNING,
+                                "Deprecated configuration property is used: " + property.name(),
+                                property.sourceFile()));
             }
 
             addRiskFinding(property, rawConfiguredProperties, findings);
@@ -643,11 +729,13 @@ public class ConfigurationAnalyzer {
             if (property.kind() == PropertyKind.UNKNOWN
                     && !property.references().isEmpty()
                     && customLookingOrphans.add(property.name())) {
-                findings.add(new Finding(
-                        FindingSeverity.INFO,
-                        "Configured property looks application-specific but has no matching @ConfigurationProperties metadata: " + property.name(),
-                        property.sourceFile()
-                ));
+                findings.add(
+                        new Finding(
+                                FindingSeverity.INFO,
+                                "Configured property looks application-specific but has no matching"
+                                        + " @ConfigurationProperties metadata: "
+                                        + property.name(),
+                                property.sourceFile()));
             }
         }
 
@@ -656,42 +744,68 @@ public class ConfigurationAnalyzer {
             if (missingReferencedProperties.add(reference.propertyName())) {
                 missingReferencesByProperty.put(reference.propertyName(), new ArrayList<>());
             }
-            List<PropertyReference> bucket = missingReferencesByProperty.get(reference.propertyName());
+            List<PropertyReference> bucket =
+                    missingReferencesByProperty.get(reference.propertyName());
             if (bucket != null) {
                 bucket.add(reference);
             }
         }
 
-        for (Map.Entry<String, List<PropertyReference>> entry : missingReferencesByProperty.entrySet()) {
+        for (Map.Entry<String, List<PropertyReference>> entry :
+                missingReferencesByProperty.entrySet()) {
             String propertyName = entry.getKey();
             List<PropertyReference> references = entry.getValue();
             if (references.isEmpty()) {
                 continue;
             }
             PropertyReference representative = references.get(0);
-            List<FindingOccurrence> occurrences = references.stream()
-                    .map(reference -> propertyReferenceOccurrence(
-                            reference,
-                            reference.referenceType() + " references " + reference.propertyName()
-                                    + (reference.className() != null ? " in " + reference.className() : "")
-                    ))
-                    .toList();
-            FindingFactory.Builder builder = FindingFactory.builder(
-                                "CONFIG_CODE_REFERENCE_MISSING",
-                                "Referenced property is not configured",
-                                FindingSeverity.WARNING,
-                                FindingCategory.CONFIGURATION,
-                                com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRuntimeDetection.NOT_NORMALLY_DETECTED,
-                                FindingConfidence.MEDIUM
-                        )
-                        .shortMessage("Property is referenced in code but no matching configured property was found in scanned files: " + propertyName)
-                        .whyBadPractice("A property that is only referenced in code can silently fall back to defaults, null-like behavior, or environment-only wiring that is hard to see in code review.")
-                        .possibleImpact("Behavior may differ between local development, CI, and production depending on environment variables, deployment secrets, or missing profile files.")
-                        .recommendation("Either configure the property explicitly, document that it must come from the environment, or remove the unused reference if it is stale.")
-                        .evidence(missingPropertyEvidence(propertyName, references))
-                        .limitations("Static analysis cannot see higher-precedence environment variables, deployment platform secrets, or late-bound property sources that may satisfy the reference at runtime.")
-                        .target(propertyName)
-                        .occurrences(occurrences);
+            List<FindingOccurrence> occurrences =
+                    references.stream()
+                            .map(
+                                    reference ->
+                                            propertyReferenceOccurrence(
+                                                    reference,
+                                                    reference.referenceType()
+                                                            + " references "
+                                                            + reference.propertyName()
+                                                            + (reference.className() != null
+                                                                    ? " in " + reference.className()
+                                                                    : "")))
+                            .toList();
+            FindingFactory.Builder builder =
+                    FindingFactory.builder(
+                                    "CONFIG_CODE_REFERENCE_MISSING",
+                                    "Referenced property is not configured",
+                                    FindingSeverity.WARNING,
+                                    FindingCategory.CONFIGURATION,
+                                    com.robbanhoglund.springbootanalyzer.analyzer.model
+                                            .FindingRuntimeDetection.NOT_NORMALLY_DETECTED,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    "Property is referenced in code but no matching configured"
+                                            + " property was found in scanned files: "
+                                            + propertyName)
+                            .whyBadPractice(
+                                    "A property that is only referenced in code can silently fall"
+                                            + " back to defaults, null-like behavior, or"
+                                            + " environment-only wiring that is hard to see in code"
+                                            + " review.")
+                            .possibleImpact(
+                                    "Behavior may differ between local development, CI, and"
+                                            + " production depending on environment variables,"
+                                            + " deployment secrets, or missing profile files.")
+                            .recommendation(
+                                    "Either configure the property explicitly, document that it"
+                                        + " must come from the environment, or remove the unused"
+                                        + " reference if it is stale.")
+                            .evidence(missingPropertyEvidence(propertyName, references))
+                            .limitations(
+                                    "Static analysis cannot see higher-precedence environment"
+                                        + " variables, deployment platform secrets, or late-bound"
+                                        + " property sources that may satisfy the reference at"
+                                        + " runtime.")
+                            .target(propertyName)
+                            .occurrences(occurrences);
             SourceLocation representativeLocation = occurrenceLocation(occurrences);
             if (representativeLocation != null) {
                 builder.sourceLocation(representativeLocation);
@@ -701,16 +815,23 @@ public class ConfigurationAnalyzer {
             findings.add(builder.build());
         }
 
-        for (ConfigurationPropertiesClass configurationPropertiesClass : configurationPropertiesClasses) {
+        for (ConfigurationPropertiesClass configurationPropertiesClass :
+                configurationPropertiesClasses) {
             String prefix = propertyNameNormalizer.normalize(configurationPropertiesClass.prefix());
-            boolean matched = configuredProperties.stream().anyMatch(property ->
-                    property.name().equals(prefix) || property.name().startsWith(prefix + "."));
+            boolean matched =
+                    configuredProperties.stream()
+                            .anyMatch(
+                                    property ->
+                                            property.name().equals(prefix)
+                                                    || property.name().startsWith(prefix + "."));
             if (!matched && orphanPrefixes.add(prefix)) {
-                findings.add(new Finding(
-                        FindingSeverity.INFO,
-                        "@ConfigurationProperties prefix was found but no matching configured properties were detected: " + prefix,
-                        configurationPropertiesClass.sourceFile()
-                ));
+                findings.add(
+                        new Finding(
+                                FindingSeverity.INFO,
+                                "@ConfigurationProperties prefix was found but no matching"
+                                        + " configured properties were detected: "
+                                        + prefix,
+                                configurationPropertiesClass.sourceFile()));
             }
         }
     }
@@ -718,8 +839,7 @@ public class ConfigurationAnalyzer {
     private void addRiskFinding(
             ApplicationProperty property,
             Map<String, ParsedConfigurationProperty> rawConfiguredProperties,
-            List<Finding> findings
-    ) {
+            List<Finding> findings) {
         String name = property.name();
         String rawValue = findRawValue(property, rawConfiguredProperties);
         String profile = property.profile() == null ? "default" : property.profile();
@@ -727,75 +847,175 @@ public class ConfigurationAnalyzer {
         if ("prod".equalsIgnoreCase(profile)
                 && "spring.jpa.hibernate.ddl-auto".equals(name)
                 && rawValue != null
-                && List.of("update", "create", "create-drop", "drop").contains(rawValue.toLowerCase(Locale.ROOT))) {
-            findings.add(FindingFactory.builder(FindingRules.SPRING_RISKY_PROD_CONFIG, FindingConfidence.HIGH)
-                    .shortMessage("spring.jpa.hibernate.ddl-auto=" + rawValue + " is risky in production.")
-                    .whyBadPractice("Schema-changing Hibernate DDL settings trade safety for convenience. They make database structure changes happen implicitly during application startup instead of through reviewed migrations.")
-                    .possibleImpact("Production schema can drift unexpectedly, destructive changes can happen during rollout, and failures become harder to reproduce across environments.")
-                    .recommendation("Use Flyway or Liquibase for reviewed migrations and keep production ddl-auto at validate or none.")
-                    .evidence(name + " was set to " + rawValue + " in " + property.sourceFile() + ".")
-                    .limitations("Static analysis cannot prove whether this file is always active, but the profile and filename strongly suggest a production-oriented configuration.")
-                    .source(property.sourceFile(), property.line())
-                    .target(name)
-                    .build());
+                && List.of("update", "create", "create-drop", "drop")
+                        .contains(rawValue.toLowerCase(Locale.ROOT))) {
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_RISKY_PROD_CONFIG, FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "spring.jpa.hibernate.ddl-auto="
+                                            + rawValue
+                                            + " is risky in production.")
+                            .whyBadPractice(
+                                    "Schema-changing Hibernate DDL settings trade safety for"
+                                        + " convenience. They make database structure changes"
+                                        + " happen implicitly during application startup instead of"
+                                        + " through reviewed migrations.")
+                            .possibleImpact(
+                                    "Production schema can drift unexpectedly, destructive changes"
+                                        + " can happen during rollout, and failures become harder"
+                                        + " to reproduce across environments.")
+                            .recommendation(
+                                    "Use Flyway or Liquibase for reviewed migrations and keep"
+                                            + " production ddl-auto at validate or none.")
+                            .evidence(
+                                    name
+                                            + " was set to "
+                                            + rawValue
+                                            + " in "
+                                            + property.sourceFile()
+                                            + ".")
+                            .limitations(
+                                    "Static analysis cannot prove whether this file is always"
+                                        + " active, but the profile and filename strongly suggest a"
+                                        + " production-oriented configuration.")
+                            .source(property.sourceFile(), property.line())
+                            .target(name)
+                            .build());
         }
 
         if ("management.endpoints.web.exposure.include".equals(name) && "*".equals(rawValue)) {
-            findings.add(FindingFactory.builder(FindingRules.SPRING_RISKY_PROD_CONFIG, FindingConfidence.HIGH)
-                    .shortMessage("management.endpoints.web.exposure.include=* exposes every actuator endpoint.")
-                    .whyBadPractice("Wildcard actuator exposure makes internal diagnostics easier to reach than intended and mixes operational endpoints into the normal HTTP surface.")
-                    .possibleImpact("Operational details, environment information, heap dumps, and debugging endpoints may become reachable in environments where they should stay restricted.")
-                    .recommendation("Expose only the actuator endpoints you intentionally operate, and keep broader exposure limited to tightly controlled environments.")
-                    .evidence(name + "=* was found in " + property.sourceFile() + ".")
-                    .limitations("Static analysis cannot prove the final network exposure or security policy applied at runtime.")
-                    .source(property.sourceFile(), property.line())
-                    .target(name)
-                    .build());
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_RISKY_PROD_CONFIG, FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "management.endpoints.web.exposure.include=* exposes every"
+                                            + " actuator endpoint.")
+                            .whyBadPractice(
+                                    "Wildcard actuator exposure makes internal diagnostics easier"
+                                        + " to reach than intended and mixes operational endpoints"
+                                        + " into the normal HTTP surface.")
+                            .possibleImpact(
+                                    "Operational details, environment information, heap dumps, and"
+                                            + " debugging endpoints may become reachable in"
+                                            + " environments where they should stay restricted.")
+                            .recommendation(
+                                    "Expose only the actuator endpoints you intentionally operate,"
+                                        + " and keep broader exposure limited to tightly controlled"
+                                        + " environments.")
+                            .evidence(name + "=* was found in " + property.sourceFile() + ".")
+                            .limitations(
+                                    "Static analysis cannot prove the final network exposure or"
+                                            + " security policy applied at runtime.")
+                            .source(property.sourceFile(), property.line())
+                            .target(name)
+                            .build());
         }
 
-        if ("management.endpoint.health.show-details".equals(name) && "always".equalsIgnoreCase(rawValue)) {
-            findings.add(FindingFactory.builder(FindingRules.SPRING_RISKY_PROD_CONFIG, FindingConfidence.HIGH)
-                    .shortMessage("management.endpoint.health.show-details=always reveals detailed health information.")
-                    .whyBadPractice("Detailed health output is useful operationally, but it increases the amount of internal state exposed through health responses.")
-                    .possibleImpact("Health responses may disclose component details, failing dependencies, or other internal signals that are better kept behind authenticated operations tooling.")
-                    .recommendation("Prefer when-authorized or a narrower exposure model outside development and local troubleshooting.")
-                    .evidence(name + "=always was found in " + property.sourceFile() + ".")
-                    .limitations("Static analysis cannot see who can reach the endpoint or whether response details are filtered elsewhere.")
-                    .source(property.sourceFile(), property.line())
-                    .target(name)
-                    .build());
+        if ("management.endpoint.health.show-details".equals(name)
+                && "always".equalsIgnoreCase(rawValue)) {
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_RISKY_PROD_CONFIG, FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "management.endpoint.health.show-details=always reveals"
+                                            + " detailed health information.")
+                            .whyBadPractice(
+                                    "Detailed health output is useful operationally, but it"
+                                        + " increases the amount of internal state exposed through"
+                                        + " health responses.")
+                            .possibleImpact(
+                                    "Health responses may disclose component details, failing"
+                                        + " dependencies, or other internal signals that are better"
+                                        + " kept behind authenticated operations tooling.")
+                            .recommendation(
+                                    "Prefer when-authorized or a narrower exposure model outside"
+                                            + " development and local troubleshooting.")
+                            .evidence(name + "=always was found in " + property.sourceFile() + ".")
+                            .limitations(
+                                    "Static analysis cannot see who can reach the endpoint or"
+                                            + " whether response details are filtered elsewhere.")
+                            .source(property.sourceFile(), property.line())
+                            .target(name)
+                            .build());
         }
 
         SecretFallback secretFallback = secretFallback(rawValue);
         if (property.valueRedacted() && secretFallback.weakDefault()) {
-            findings.add(FindingFactory.builder(FindingRules.SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT, FindingConfidence.HIGH)
-                    .shortMessage("Sensitive configuration property has a weak placeholder default: " + name)
-                    .whyBadPractice("A secret placeholder with a weak default can silently fall back to an insecure value when the environment variable is missing.")
-                    .possibleImpact("A deployment with missing secret injection may start successfully with a known password or weak credential.")
-                    .recommendation("Remove the default value for secrets or fail fast when the environment variable is absent.")
-                    .evidence(name + " uses placeholder " + rawValue + " in " + property.sourceFile() + ".")
-                    .limitations("Static analysis cannot prove whether deployment tooling always injects the expected secret before startup.")
-                    .source(property.sourceFile(), property.line())
-                    .target(name)
-                    .build());
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "Sensitive configuration property has a weak placeholder"
+                                            + " default: "
+                                            + name)
+                            .whyBadPractice(
+                                    "A secret placeholder with a weak default can silently fall"
+                                        + " back to an insecure value when the environment variable"
+                                        + " is missing.")
+                            .possibleImpact(
+                                    "A deployment with missing secret injection may start"
+                                        + " successfully with a known password or weak credential.")
+                            .recommendation(
+                                    "Remove the default value for secrets or fail fast when the"
+                                            + " environment variable is absent.")
+                            .evidence(
+                                    name
+                                            + " uses placeholder "
+                                            + rawValue
+                                            + " in "
+                                            + property.sourceFile()
+                                            + ".")
+                            .limitations(
+                                    "Static analysis cannot prove whether deployment tooling always"
+                                            + " injects the expected secret before startup.")
+                            .source(property.sourceFile(), property.line())
+                            .target(name)
+                            .build());
             return;
         }
 
-        if (property.valueRedacted() && (secretFallback.literalDefault() || hasDirectSensitiveLiteral(rawValue))) {
-            findings.add(FindingFactory.builder(FindingRules.SPRING_SECRET_LITERAL, FindingConfidence.HIGH)
-                    .shortMessage("Sensitive configuration property appears to use a literal value in a config file: " + name)
-                    .whyBadPractice("Secrets stored directly in static configuration are hard to rotate, easy to copy, and may leak through repository access, logs, screenshots, CI artifacts, or backups.")
-                    .possibleImpact("A committed password, token, or client secret may grant unintended access to production systems or third-party services, even after the value is removed later.")
-                    .recommendation("Use environment variables, a secret manager, or deployment platform secret references such as ${DB_PASSWORD}. Rotate any real value that may already have been committed.")
-                    .evidence(name + " was found in " + property.sourceFile() + " with a non-placeholder value.")
-                    .limitations("Static analysis cannot prove whether the value is real, already rotated, or only used in a private environment.")
-                    .source(property.sourceFile(), property.line())
-                    .target(name)
-                    .build());
+        if (property.valueRedacted()
+                && (secretFallback.literalDefault() || hasDirectSensitiveLiteral(rawValue))) {
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_SECRET_LITERAL, FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "Sensitive configuration property appears to use a literal"
+                                            + " value in a config file: "
+                                            + name)
+                            .whyBadPractice(
+                                    "Secrets stored directly in static configuration are hard to"
+                                        + " rotate, easy to copy, and may leak through repository"
+                                        + " access, logs, screenshots, CI artifacts, or backups.")
+                            .possibleImpact(
+                                    "A committed password, token, or client secret may grant"
+                                        + " unintended access to production systems or third-party"
+                                        + " services, even after the value is removed later.")
+                            .recommendation(
+                                    "Use environment variables, a secret manager, or deployment"
+                                            + " platform secret references such as ${DB_PASSWORD}."
+                                            + " Rotate any real value that may already have been"
+                                            + " committed.")
+                            .evidence(
+                                    name
+                                            + " was found in "
+                                            + property.sourceFile()
+                                            + " with a non-placeholder value.")
+                            .limitations(
+                                    "Static analysis cannot prove whether the value is real,"
+                                            + " already rotated, or only used in a private"
+                                            + " environment.")
+                            .source(property.sourceFile(), property.line())
+                            .target(name)
+                            .build());
         }
     }
 
-    private String findRawValue(ApplicationProperty property, Map<String, ParsedConfigurationProperty> rawConfiguredProperties) {
+    private String findRawValue(
+            ApplicationProperty property,
+            Map<String, ParsedConfigurationProperty> rawConfiguredProperties) {
         String key = property.name() + "@" + property.sourceFile() + "@" + property.profile();
         ParsedConfigurationProperty parsedProperty = rawConfiguredProperties.get(key);
         return parsedProperty == null ? null : parsedProperty.value();
@@ -806,41 +1026,43 @@ public class ConfigurationAnalyzer {
     }
 
     private FindingOccurrence profileConfigurationOccurrence(ConfigurationFile configurationFile) {
-        SourceLocation location = new SourceLocation(
-                configurationFile.path(),
-                0,
-                0,
-                null,
-                null,
-                configurationFile.profile(),
-                SourceLocation.inferLanguage(configurationFile.path()),
-                null
-        );
-        String profile = configurationFile.profile() == null || configurationFile.profile().isBlank()
-                ? "default"
-                : configurationFile.profile();
+        SourceLocation location =
+                new SourceLocation(
+                        configurationFile.path(),
+                        0,
+                        0,
+                        null,
+                        null,
+                        configurationFile.profile(),
+                        SourceLocation.inferLanguage(configurationFile.path()),
+                        null);
+        String profile =
+                configurationFile.profile() == null || configurationFile.profile().isBlank()
+                        ? "default"
+                        : configurationFile.profile();
         return new FindingOccurrence(
                 "Profile-specific configuration file detected for profile '" + profile + "'.",
                 location,
-                List.of()
-        );
+                List.of());
     }
 
-    private FindingOccurrence propertyReferenceOccurrence(PropertyReference reference, String message) {
+    private FindingOccurrence propertyReferenceOccurrence(
+            PropertyReference reference, String message) {
         Integer line = reference.line();
-        SourceLocation location = new SourceLocation(
-                reference.sourceFile(),
-                line != null && line > 0 ? line : 0,
-                line != null && line > 0 ? line : 0,
-                null,
-                null,
-                reference.className(),
-                SourceLocation.inferLanguage(reference.sourceFile()),
-                null
-        );
-        List<HighlightRange> ranges = line != null && line > 0
-                ? List.of(new HighlightRange(line, line, null, null, "issue"))
-                : List.of();
+        SourceLocation location =
+                new SourceLocation(
+                        reference.sourceFile(),
+                        line != null && line > 0 ? line : 0,
+                        line != null && line > 0 ? line : 0,
+                        null,
+                        null,
+                        reference.className(),
+                        SourceLocation.inferLanguage(reference.sourceFile()),
+                        null);
+        List<HighlightRange> ranges =
+                line != null && line > 0
+                        ? List.of(new HighlightRange(line, line, null, null, "issue"))
+                        : List.of();
         return new FindingOccurrence(message, location, ranges);
     }
 
@@ -852,18 +1074,21 @@ public class ConfigurationAnalyzer {
                 .orElse(null);
     }
 
-    private String missingPropertyEvidence(String propertyName, List<PropertyReference> references) {
-        List<String> examples = references.stream()
-                .map(reference -> {
-                    String location = reference.sourceFile();
-                    if (reference.line() != null && reference.line() > 0) {
-                        location += ":" + reference.line();
-                    }
-                    return reference.referenceType() + " in " + location;
-                })
-                .distinct()
-                .limit(5)
-                .toList();
+    private String missingPropertyEvidence(
+            String propertyName, List<PropertyReference> references) {
+        List<String> examples =
+                references.stream()
+                        .map(
+                                reference -> {
+                                    String location = reference.sourceFile();
+                                    if (reference.line() != null && reference.line() > 0) {
+                                        location += ":" + reference.line();
+                                    }
+                                    return reference.referenceType() + " in " + location;
+                                })
+                        .distinct()
+                        .limit(5)
+                        .toList();
         return propertyName + " was referenced from " + String.join(", ", examples) + ".";
     }
 
@@ -876,7 +1101,9 @@ public class ConfigurationAnalyzer {
     }
 
     private boolean isIgnoredSystemPropertyReference(PropertyReference reference) {
-        if (reference == null || reference.propertyName() == null || reference.propertyName().isBlank()) {
+        if (reference == null
+                || reference.propertyName() == null
+                || reference.propertyName().isBlank()) {
             return false;
         }
         if ("@Value".equals(reference.referenceType())) {
@@ -920,11 +1147,22 @@ public class ConfigurationAnalyzer {
 
     private boolean isWeakSecretDefault(String fallback) {
         String normalized = fallback.toLowerCase(Locale.ROOT);
-        return Set.of("admin", "password", "passwd", "changeme", "changeit", "secret", "default", "root", "token", "key")
+        return Set.of(
+                        "admin",
+                        "password",
+                        "passwd",
+                        "changeme",
+                        "changeit",
+                        "secret",
+                        "default",
+                        "root",
+                        "token",
+                        "key")
                 .contains(normalized);
     }
 
-    private ConfigurationSummary buildSummary(List<ApplicationProperty> configuredProperties, List<PropertyReference> references) {
+    private ConfigurationSummary buildSummary(
+            List<ApplicationProperty> configuredProperties, List<PropertyReference> references) {
         int knownSpringBootCount = 0;
         int customCount = 0;
         int unknownCount = 0;
@@ -936,8 +1174,7 @@ public class ConfigurationAnalyzer {
                 case SPRING_BOOT, SPRING_BOOT_MAP_PROPERTY -> knownSpringBootCount++;
                 case CUSTOM_CONFIGURATION_PROPERTIES -> customCount++;
                 case UNKNOWN -> unknownCount++;
-                default -> {
-                }
+                default -> {}
             }
             if (property.valueRedacted()) {
                 sensitiveCount++;
@@ -954,8 +1191,7 @@ public class ConfigurationAnalyzer {
                 unknownCount,
                 references.size(),
                 sensitiveCount,
-                List.copyOf(profiles)
-        );
+                List.copyOf(profiles));
     }
 
     private String formatDisplayValue(String rawValue) {
@@ -984,10 +1220,13 @@ public class ConfigurationAnalyzer {
                 .orElse(null);
     }
 
-    private ThirdPartyPrefixMetadata thirdPartyMetadataFor(String propertyName, BuildInfo buildInfo) {
+    private ThirdPartyPrefixMetadata thirdPartyMetadataFor(
+            String propertyName, BuildInfo buildInfo) {
         return THIRD_PARTY_PREFIXES.stream()
                 .filter(metadata -> propertyName.startsWith(metadata.prefix()))
-                .filter(metadata -> dependencyPresent(buildInfo, metadata.providerDependencyMarker()))
+                .filter(
+                        metadata ->
+                                dependencyPresent(buildInfo, metadata.providerDependencyMarker()))
                 .findFirst()
                 .orElse(null);
     }
@@ -997,8 +1236,11 @@ public class ConfigurationAnalyzer {
             return false;
         }
         return THIRD_PARTY_PREFIXES.stream()
-                .anyMatch(metadata -> sourceType.equalsIgnoreCase(metadata.provider())
-                        && dependencyPresent(buildInfo, metadata.providerDependencyMarker()));
+                .anyMatch(
+                        metadata ->
+                                sourceType.equalsIgnoreCase(metadata.provider())
+                                        && dependencyPresent(
+                                                buildInfo, metadata.providerDependencyMarker()));
     }
 
     private boolean dependencyPresent(BuildInfo buildInfo, String marker) {
@@ -1008,41 +1250,22 @@ public class ConfigurationAnalyzer {
     }
 
     private record CustomPropertyContext(
-            ConfigurationPropertiesClass sourceClass,
-            CustomPropertyDefinition property
-    ) {
-    }
+            ConfigurationPropertiesClass sourceClass, CustomPropertyDefinition property) {}
 
     private record MapPrefixMetadata(
-            String prefix,
-            String sourceType,
-            String description,
-            String type
-    ) {
-    }
+            String prefix, String sourceType, String description, String type) {}
 
-    private record ThirdPartyPrefixMetadata(
-            String prefix,
-            String providerDependencyMarker
-    ) {
+    private record ThirdPartyPrefixMetadata(String prefix, String providerDependencyMarker) {
         String provider() {
             return providerDependencyMarker;
         }
     }
 
-    private record SecretFallback(
-            String value,
-            boolean weakDefault,
-            boolean literalDefault
-    ) {
+    private record SecretFallback(String value, boolean weakDefault, boolean literalDefault) {
         static SecretFallback none() {
             return new SecretFallback(null, false, false);
         }
     }
 
-    public record Result(
-            ConfigurationAnalysis configurationAnalysis,
-            List<Finding> findings
-    ) {
-    }
+    public record Result(ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {}
 }

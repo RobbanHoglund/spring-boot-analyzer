@@ -8,6 +8,4 @@ public record DetectedClass(
         String packageName,
         String filePath,
         SpringComponentType componentType,
-        List<String> annotationNames
-) {
-}
+        List<String> annotationNames) {}

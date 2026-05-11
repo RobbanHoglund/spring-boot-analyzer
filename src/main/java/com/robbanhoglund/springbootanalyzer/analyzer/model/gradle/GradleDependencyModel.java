@@ -6,6 +6,4 @@ public record GradleDependencyModel(
         String notation,
         String group,
         String artifact,
-        String version
-) {
-}
+        String version) {}

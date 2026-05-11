@@ -1,4 +1,5 @@
 ﻿import { element } from '../dom';
+import { copySummary, downloadJson, downloadMarkdown, downloadSarif } from '../export/exportActions';
 import { tokenizeJavaLines } from '../code/javaHighlighter';
 import { expandSnippetHighlightRanges } from '../code/highlightRanges';
 import type {
@@ -31,11 +32,15 @@ import type {
   HttpSurfaceAnalysis,
   HighlightRange,
   InboundEndpoint,
+  MessageListenerEndpoint,
   OutboundEndpoint,
   PropertyReference,
   RuntimeStackAnalysis,
+  ScheduledTaskEndpoint,
+  AsyncMethodEndpoint,
   SourceLocation,
-  SourceSnippetResponse
+  SourceSnippetResponse,
+  AnalysisMode
 } from '../types';
 
 const FINDING_SEVERITIES = ['ALL', 'ERROR', 'WARNING', 'INFO'] as const;
@@ -56,7 +61,9 @@ const FINDING_CATEGORIES = [
   'ACTUATOR',
   'API_SURFACE',
   'OBSERVABILITY',
-  'MAINTAINABILITY'
+  'MAINTAINABILITY',
+  'TESTING',
+  'CACHING'
 ] as const;
 const FINDING_RUNTIME_DETECTIONS = [
   'ALL',
@@ -239,33 +246,42 @@ export function renderResultsView(
   result: AnalyzeRepositoryResponse | null,
   state: ResultsViewState,
   actions: ResultsViewActions,
-  status?: { statusMessage?: string; errorMessage?: string; warningMessage?: string; isAnalyzing?: boolean }
+  status?: {
+    statusMessage?: string;
+    errorMessage?: string;
+    warningMessage?: string;
+    isAnalyzing?: boolean;
+    analysisMode?: AnalysisMode;
+  }
 ): HTMLElement {
   const panel = element('section', { className: 'panel panel-compact panel-results' });
-  panel.appendChild(renderResultsHeader(status));
 
   if (!result) {
-    panel.appendChild(
-      element(
-        'div',
-        { className: 'empty-state' },
-        element('p', {
-          text: 'Enter a repository URL, optionally choose a branch and HTTPS token, then click "Clone and analyze".'
-        }),
-        element('p', {
-          text: 'The backend clones the repository into a temporary workspace and analyzes source, configuration, and framework usage without starting the application.'
-        })
-      )
-    );
+    // When there's no result, the idle panel handles error/status display.
+    // Pass a header-safe status that omits the error/status message (shown in
+    // the idle panel) to avoid duplication. Warnings are still shown (e.g. SSH).
+    const headerStatus = { warningMessage: status?.warningMessage };
+    panel.appendChild(renderResultsHeader(headerStatus));
+
+    if (status?.isAnalyzing) {
+      panel.appendChild(renderAnalyzingState(status?.statusMessage));
+    } else if (status?.errorMessage) {
+      panel.appendChild(renderErrorState(status.errorMessage));
+    } else {
+      panel.appendChild(renderInitialState());
+    }
     return panel;
   }
 
+  panel.appendChild(renderResultsHeader(status, result));
+
   panel.appendChild(renderSectionJumpNav());
-  panel.appendChild(renderProjectSection(result));
+  panel.appendChild(renderProjectSection(result, status?.analysisMode));
   panel.appendChild(renderResultsOverviewBlock(result, actions));
   panel.appendChild(renderRuntimeStackSection(result));
   panel.appendChild(renderFindingsSection(result.findings ?? [], state, actions));
   panel.appendChild(renderHttpSurfaceSection(result.httpSurfaceAnalysis, state, actions));
+  panel.appendChild(renderSchedulingSection(result, actions));
   panel.appendChild(renderConfigurationSection(result, state, actions));
   panel.appendChild(renderSpringApiUsageSection(result));
   panel.appendChild(renderComponentsSection(result.detectedComponents ?? [], state, actions));
@@ -278,7 +294,7 @@ export function renderResultsView(
   return panel;
 }
 
-function renderProjectSection(result: AnalyzeRepositoryResponse): HTMLElement {
+function renderProjectSection(result: AnalyzeRepositoryResponse, analysisMode?: AnalysisMode): HTMLElement {
   const section = resultsSection(
     'Project',
     'results-project',
@@ -286,11 +302,53 @@ function renderProjectSection(result: AnalyzeRepositoryResponse): HTMLElement {
   );
   const block = element('div', { className: 'project-summary-card project-summary-card-compact' });
   const rows = element('div', { className: 'project-summary-grid project-summary-grid-compact' });
+
   rows.appendChild(summaryValueRow('Repository URL', result.repositoryUrl ?? 'Unknown', true));
   rows.appendChild(summaryValueRow('Branch', result.branch?.trim() ? result.branch : 'default branch'));
+
+  if (result.commitSha?.trim()) {
+    rows.appendChild(summaryValueRow('Commit SHA', result.commitSha.trim(), true));
+  }
+
+  const modeLabel =
+    analysisMode === 'EXTENDED'
+      ? 'Extended (static + Gradle model)'
+      : analysisMode === 'STATIC_ONLY'
+        ? 'Static only'
+        : 'Static only';
+  rows.appendChild(summaryValueRow('Analysis mode', modeLabel));
+
+  const findings = result.findings ?? [];
+  const findingCount = findings.length;
+  const severityRank: Record<string, number> = { ERROR: 3, WARNING: 2, INFO: 1 };
+  const highestSeverity = findings.reduce<string | null>((best, f) => {
+    const rank = severityRank[f.severity ?? ''] ?? 0;
+    const bestRank = severityRank[best ?? ''] ?? 0;
+    return rank > bestRank ? (f.severity ?? null) : best;
+  }, null);
+  const findingSummary =
+    findingCount === 0
+      ? 'None'
+      : highestSeverity
+        ? `${findingCount} finding${findingCount !== 1 ? 's' : ''} · highest ${highestSeverity.toLowerCase()}`
+        : `${findingCount} finding${findingCount !== 1 ? 's' : ''}`;
+  rows.appendChild(summaryValueRow('Findings', findingSummary));
+
   rows.appendChild(summaryValueRow('Workspace ID', result.workspaceId ?? 'Not returned', true));
+
   block.appendChild(rows);
   section.appendChild(block);
+
+  if (result.springBootDetected === false) {
+    const notice = element('div', { className: 'partial-analysis-notice' });
+    notice.appendChild(
+      element('p', {
+        text: 'Spring Boot was not detected in this repository. Findings are limited to general Java patterns. Ensure the analyzed repository is a Spring Boot project.'
+      })
+    );
+    section.appendChild(notice);
+  }
+
   return section;
 }
 
@@ -699,12 +757,12 @@ function renderSecurityPostureCard(result: AnalyzeRepositoryResponse, actions: R
   list.appendChild(renderDetailRow('Inbound endpoints',
     String(inboundCount),
     inboundCount > 0 ? 'positive' : 'muted',
-    inboundCount > 0 ? { kind: 'href', href: '#results-http', label: 'View inbound endpoints' } : undefined));
+    inboundCount > 0 ? { kind: 'href', href: '#results-http-inbound', label: 'View inbound endpoints' } : undefined));
 
   list.appendChild(renderDetailRow('Actuator exposures',
     actuatorExposureCount > 0 ? String(actuatorExposureCount) : '0 detected',
     actuatorExposureCount > 0 ? 'warning' : 'neutral',
-    actuatorExposureCount > 0 ? { kind: 'href', href: '#results-http', label: 'View actuator exposures' } : undefined));
+    actuatorExposureCount > 0 ? { kind: 'href', href: '#results-http-actuator', label: 'View actuator exposures' } : undefined));
 
   list.appendChild(renderDetailRow('Sensitive values redacted',
     String(sensitiveValues),
@@ -868,43 +926,70 @@ function renderFindingsSection(
   );
   if (findings.length === 0) {
     section.appendChild(
-      element('div', { className: 'empty-note success-note', text: 'No issues detected by the current checks.' })
+      element(
+        'div',
+        { className: 'empty-note success-note' },
+        element('strong', { text: 'No issues detected. ' }),
+        element('span', {
+          text: 'The current rule set found nothing of concern in the analyzed source, configuration, and dependency tree. This does not guarantee the application is free of issues — always complement static analysis with code review and testing.'
+        })
+      )
     );
     return section;
   }
 
+  const errorCount = findings.filter((f) => normalizeSeverity(f.severity) === 'ERROR').length;
+  const infoCount = findings.filter((f) => normalizeSeverity(f.severity) === 'INFO').length;
+
   const summary = element('div', { className: 'stat-grid compact' });
-  const summaryStats: Array<{ label: string; value: number; className?: string }> = [
-    { label: 'Total findings', value: findings.length },
-    { label: 'Errors / blocking', value: findings.filter((finding) => normalizeSeverity(finding.severity) === 'ERROR').length, className: 'severity-error' },
-    { label: 'Warnings', value: findings.filter((finding) => normalizeSeverity(finding.severity) === 'WARNING').length, className: 'severity-warning' },
-    { label: 'Info', value: findings.filter((finding) => normalizeSeverity(finding.severity) === 'INFO').length, className: 'severity-info' },
-    {
-      label: 'Detected statically',
-      value: findings.filter((finding) => normalizeRuntimeDetection(finding.runtimeDetection) === 'NOT_NORMALLY_DETECTED').length
-    },
-    {
-      label: 'Depends on active profile',
-      value: findings.filter((finding) => normalizeRuntimeDetection(finding.runtimeDetection) === 'ACTIVE_PROFILE_RUNTIME_MAY_DETECT').length
-    },
-    {
-      label: 'Requires runtime verification',
-      value: findings.filter((finding) => normalizeRuntimeDetection(finding.runtimeDetection) === 'RUNTIME_REQUIRED').length
-    }
+
+  // Total — non-interactive
+  summary.appendChild(
+    element(
+      'div',
+      { className: 'mini-stat' },
+      element('div', { className: 'mini-stat-label', text: 'Total findings' }),
+      element('div', { className: 'mini-stat-value', text: String(findings.length) })
+    )
+  );
+
+  // Severity cards — clickable filter toggles
+  const severityButtons: Array<{ label: string; count: number; severity: string; cls: string }> = [
+    { label: 'Errors', count: errorCount, severity: 'ERROR', cls: 'severity-error' },
+    { label: 'Warnings', count: warningCount, severity: 'WARNING', cls: 'severity-warning' },
+    { label: 'Info', count: infoCount, severity: 'INFO', cls: 'severity-info' }
   ];
-  for (const stat of summaryStats) {
+  for (const { label, count, severity, cls } of severityButtons) {
+    const isActive = state.findingsSeverity === severity;
+    const btn = element('button', {
+      className: `mini-stat severity-filter-btn ${cls}${isActive ? ' active' : ''}`
+    });
+    (btn as HTMLButtonElement).title = isActive
+      ? `Showing ${severity} only — click to clear`
+      : `Click to show ${severity} findings only`;
+    btn.appendChild(element('div', { className: 'mini-stat-label', text: label }));
+    btn.appendChild(element('div', { className: 'mini-stat-value', text: String(count) }));
+    btn.addEventListener('click', () => actions.onFindingsSeverityChange(isActive ? 'ALL' : severity));
+    summary.appendChild(btn);
+  }
+
+  // Runtime detection stats — non-interactive
+  const runtimeStats: Array<{ label: string; value: number }> = [
+    { label: 'Detected statically', value: findings.filter((f) => normalizeRuntimeDetection(f.runtimeDetection) === 'NOT_NORMALLY_DETECTED').length },
+    { label: 'Depends on active profile', value: findings.filter((f) => normalizeRuntimeDetection(f.runtimeDetection) === 'ACTIVE_PROFILE_RUNTIME_MAY_DETECT').length },
+    { label: 'Requires runtime', value: findings.filter((f) => normalizeRuntimeDetection(f.runtimeDetection) === 'RUNTIME_REQUIRED').length }
+  ];
+  for (const stat of runtimeStats) {
     summary.appendChild(
       element(
         'div',
-        { className: `mini-stat ${stat.className ?? ''}`.trim() },
+        { className: 'mini-stat' },
         element('div', { className: 'mini-stat-label', text: stat.label }),
-        element('div', {
-          className: 'mini-stat-value',
-          text: String(stat.value)
-        })
+        element('div', { className: 'mini-stat-value', text: String(stat.value) })
       )
     );
   }
+
   section.appendChild(summary);
   section.appendChild(
     element('p', {
@@ -914,20 +999,23 @@ function renderFindingsSection(
   );
 
   const primaryControls = element('div', { className: 'filter-row compact-filter-row' });
+
+  // Category counts for dropdown labels
+  const categoryCountMap = new Map<string, number>();
+  for (const finding of findings) {
+    const cat = normalizeFindingCategory(finding.category);
+    categoryCountMap.set(cat, (categoryCountMap.get(cat) ?? 0) + 1);
+  }
+
   primaryControls.append(
-    labeledInlineField(
-      'Severity',
-      selectInput(
-        FINDING_SEVERITIES.map((value) => ({ value, label: value === 'ALL' ? 'All severities' : value })),
-        state.findingsSeverity,
-        actions.onFindingsSeverityChange,
-        'results-findings-severity'
-      )
-    ),
     labeledInlineField(
       'Category',
       selectInput(
-        FINDING_CATEGORIES.map((value) => ({ value, label: value === 'ALL' ? 'All categories' : findingCategoryLabel(value) })),
+        FINDING_CATEGORIES.map((value) => {
+          if (value === 'ALL') return { value, label: `All categories (${findings.length})` };
+          const count = categoryCountMap.get(value) ?? 0;
+          return { value, label: count > 0 ? `${findingCategoryLabel(value)} (${count})` : findingCategoryLabel(value) };
+        }),
         state.findingsCategory,
         actions.onFindingsCategoryChange,
         'results-findings-category'
@@ -1009,6 +1097,16 @@ function renderFindingsSection(
   if (filtered.length === 0) {
     section.appendChild(element('p', { className: 'muted-text', text: 'No findings match the current filters.' }));
     return section;
+  }
+
+  const isFiltered = filtered.length < findings.length;
+  if (isFiltered) {
+    section.appendChild(
+      element('p', {
+        className: 'muted-text findings-filter-summary',
+        text: `Showing ${filtered.length} of ${findings.length} findings`
+      })
+    );
   }
 
   const grouped = state.findingsGrouped ? groupFindings(filtered) : [];
@@ -1138,12 +1236,101 @@ function renderHttpSurfaceSection(
   return section;
 }
 
+function renderSchedulingSection(result: AnalyzeRepositoryResponse, actions: ResultsViewActions): HTMLElement {
+  const scheduling = result.schedulingAnalysis;
+  const messaging = result.messagingAnalysis;
+  const tasks = scheduling?.scheduledTasks ?? [];
+  const asyncMethods = scheduling?.asyncMethods ?? [];
+  const listeners = messaging?.listeners ?? [];
+
+  const section = resultsSection(
+    'Scheduling & messaging',
+    'results-scheduling',
+    'Scheduled tasks, async methods, and inbound messaging listeners detected statically.',
+    [
+      sectionChip(`${tasks.length} scheduled tasks`, tasks.length > 0 ? 'info' : 'default'),
+      sectionChip(`${asyncMethods.length} async methods`, asyncMethods.length > 0 ? 'info' : 'default'),
+      sectionChip(`${listeners.length} message listeners`, listeners.length > 0 ? 'info' : 'default'),
+    ]
+  );
+
+  if (tasks.length === 0 && asyncMethods.length === 0 && listeners.length === 0) {
+    section.appendChild(element('div', {
+      className: 'empty-note',
+      text: 'No scheduled tasks, async methods, or message listeners were detected.'
+    }));
+    return section;
+  }
+
+  if (tasks.length > 0) {
+    const block = element('section', { className: 'subsection-block' }, element('h4', { text: 'Scheduled tasks' }));
+    const table = createTable(['Type', 'Schedule', 'Zone', 'Class', 'Method', 'Source'], 'http-table scheduling-tasks-table');
+    const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
+    for (const task of tasks) {
+      const row = tbody.insertRow();
+      row.className = 'data-row';
+      const srcId = `sched-src-${Math.random().toString(36).slice(2, 9)}`;
+      appendCells(row, [
+        badgeCell(task.scheduleType ?? 'UNKNOWN', 'badge badge-runtime'),
+        truncateCell(task.scheduleValue ?? '—', 'http-cell-path'),
+        truncateCell(task.zone ?? '—', 'http-cell-client'),
+        technicalClampCell(task.className ?? '?', undefined, 'http-cell-controller'),
+        truncateCell(task.methodName ?? '?', 'http-cell-handler'),
+        httpSourceLinkCell(task.sourceFile, task.line, `${task.className ?? ''}#${task.methodName ?? ''}`, srcId, actions),
+      ]);
+    }
+    block.appendChild(wrapTable(table));
+    section.appendChild(block);
+  }
+
+  if (asyncMethods.length > 0) {
+    const block = element('section', { className: 'subsection-block' }, element('h4', { text: '@Async methods' }));
+    const table = createTable(['Class', 'Method', 'Source'], 'http-table scheduling-async-table');
+    const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
+    for (const m of asyncMethods) {
+      const row = tbody.insertRow();
+      row.className = 'data-row';
+      const srcId = `async-src-${Math.random().toString(36).slice(2, 9)}`;
+      appendCells(row, [
+        technicalClampCell(m.className ?? '?', undefined, 'http-cell-controller'),
+        truncateCell(m.methodName ?? '?', 'http-cell-handler'),
+        httpSourceLinkCell(m.sourceFile, m.line, `${m.className ?? ''}#${m.methodName ?? ''}`, srcId, actions),
+      ]);
+    }
+    block.appendChild(wrapTable(table));
+    section.appendChild(block);
+  }
+
+  if (listeners.length > 0) {
+    const block = element('section', { className: 'subsection-block' }, element('h4', { text: 'Message listeners' }));
+    const table = createTable(['Type', 'Destinations', 'Group ID', 'Class', 'Method', 'Source'], 'http-table scheduling-listeners-table');
+    const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
+    for (const listener of listeners) {
+      const row = tbody.insertRow();
+      row.className = 'data-row';
+      const srcId = `msg-src-${Math.random().toString(36).slice(2, 9)}`;
+      appendCells(row, [
+        badgeCell(listener.listenerType ?? '?', 'badge badge-category'),
+        truncateCell((listener.destinations ?? []).join(', ') || '—', 'http-cell-path'),
+        truncateCell(listener.groupId ?? '—', 'http-cell-client'),
+        technicalClampCell(listener.className ?? '?', undefined, 'http-cell-controller'),
+        truncateCell(listener.methodName ?? '?', 'http-cell-handler'),
+        httpSourceLinkCell(listener.sourceFile, listener.line, `${listener.className ?? ''}#${listener.methodName ?? ''}`, srcId, actions),
+      ]);
+    }
+    block.appendChild(wrapTable(table));
+    section.appendChild(block);
+  }
+
+  return section;
+}
+
 function renderInboundEndpointsTable(
   endpoints: InboundEndpoint[],
   state: ResultsViewState,
   actions: ResultsViewActions
 ): HTMLElement {
-  const block = element('section', { className: 'subsection-block' }, element('h4', { text: 'Inbound endpoints' }));
+  const block = element('section', { className: 'subsection-block', attributes: { id: 'results-http-inbound' } }, element('h4', { text: 'Inbound endpoints' }));
   if (endpoints.length === 0) {
     block.appendChild(element('p', { className: 'muted-text', text: 'No inbound endpoints were detected.' }));
     return block;
@@ -1192,7 +1379,7 @@ function renderOutboundEndpointsTable(
   state: ResultsViewState,
   actions: ResultsViewActions
 ): HTMLElement {
-  const block = element('section', { className: 'subsection-block' }, element('h4', { text: 'Outbound calls' }));
+  const block = element('section', { className: 'subsection-block', attributes: { id: 'results-http-outbound' } }, element('h4', { text: 'Outbound calls' }));
   if (endpoints.length === 0) {
     block.appendChild(element('p', { className: 'muted-text', text: 'No outbound HTTP calls were detected.' }));
     return block;
@@ -1241,7 +1428,7 @@ function renderConfiguredUrlsTable(
   state: ResultsViewState,
   actions: ResultsViewActions
 ): HTMLElement {
-  const block = element('section', { className: 'subsection-block' }, element('h4', { text: 'Configured URLs' }));
+  const block = element('section', { className: 'subsection-block', attributes: { id: 'results-http-configured-urls' } }, element('h4', { text: 'Configured URLs' }));
   if (urls.length === 0) {
     block.appendChild(element('p', { className: 'muted-text', text: 'No externalized URLs or hosts were detected.' }));
     return block;
@@ -1293,7 +1480,7 @@ function renderActuatorTable(
   state: ResultsViewState,
   actions: ResultsViewActions
 ): HTMLElement {
-  const block = element('section', { className: 'subsection-block' }, element('h4', { text: 'Actuator exposure' }));
+  const block = element('section', { className: 'subsection-block', attributes: { id: 'results-http-actuator' } }, element('h4', { text: 'Actuator exposure' }));
   if (exposures.length === 0) {
     block.appendChild(element('p', { className: 'muted-text', text: 'No actuator exposure properties were detected.' }));
     return block;
@@ -1764,7 +1951,9 @@ function renderComponentsSection(
       sourceButton.addEventListener('click', () => {
         actions.onOpenComponentSource(component, sourceButtonId);
       });
-      sourceCell.appendChild(sourceButton);
+      const sourceWrap = element('div', { className: 'cell-technical-wrap' });
+      sourceWrap.appendChild(sourceButton);
+      sourceCell.appendChild(sourceWrap);
     } else {
       sourceCell.textContent = '—';
     }
@@ -1962,45 +2151,10 @@ function renderDependenciesSection(
   }
 
   if (resolved.length > 0) {
-    const details = element('details', { className: 'subsection-block advanced-details-block' });
-    details.appendChild(element('summary', { text: `Advanced resolved dependency graph (${resolved.length})` }));
-    const inner = element('div', { className: 'subsection-block-inner' });
-    inner.appendChild(
-      element('p', {
-        className: 'muted-text',
-        text: 'Resolved dependencies are kept available for deep inspection, but collapsed by default because transitive graphs are usually much noisier than declared dependencies.'
-      })
+    section.appendChild(
+      element('h4', { text: `Resolved dependency tree (${resolved.length} entries)` })
     );
-    const table = createTable([
-      'Project',
-      'Configuration',
-      sortableHeader('Group', 'group', state.dependenciesSort, actions.onSetDependenciesSort),
-      sortableHeader('Artifact', 'artifact', state.dependenciesSort, actions.onSetDependenciesSort),
-      sortableHeader('Version', 'version', state.dependenciesSort, actions.onSetDependenciesSort),
-      'Direct / transitive',
-      'Selected reason'
-    ], 'dependencies-table');
-    const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
-    for (const dependency of sortResolvedDependencies(resolved, state.dependenciesSort).slice(0, 50)) {
-      const row = tbody.insertRow();
-      row.className = 'data-row';
-      appendCells(row, [
-        truncateCell(dependency.projectPath ?? '—'),
-        truncateCell(dependency.configuration ?? '—'),
-        truncateCell(dependency.group ?? ''),
-        truncateCell(dependency.artifact ?? ''),
-        truncateCell(dependency.version ?? ''),
-        truncateCell(dependency.direct ? 'Direct' : 'Transitive'),
-        truncateCellWithTitle(
-          selectedReasonSummary(dependency),
-          dependency.selectedReason ?? selectedReasonSummary(dependency),
-          'cell-wrap-two'
-        )
-      ]);
-    }
-    inner.appendChild(wrapTable(table));
-    details.appendChild(inner);
-    section.appendChild(details);
+    section.appendChild(renderDependencyTree(resolved));
   }
 
   if (resolutionResults.length > 0) {
@@ -2506,7 +2660,7 @@ function renderConfigurationTable(
   state: ResultsViewState,
   actions: ResultsViewActions
 ): HTMLElement {
-  const table = createTable(['', 'Property', 'Value', 'Profile', 'Source', 'Kind', 'Type', 'Meaning'], 'configuration-table');
+  const table = createTable(['', 'Property', 'Value', 'Profile', 'Source', 'Kind', 'Type'], 'configuration-table');
   const tbody = table.querySelector('tbody') as HTMLTableSectionElement;
 
   for (const property of properties) {
@@ -2553,21 +2707,29 @@ function renderConfigurationTable(
       sourceCell.textContent = '\u2014';
     }
 
+    const nameCell = document.createElement('td');
+    nameCell.className = 'configuration-property-name';
+    const nameLabel = element('div', { className: 'property-name-label', text: property.name ?? 'Unknown property' });
+    nameCell.appendChild(nameLabel);
+    const meaning = compactPropertyMeaning(property);
+    if (meaning) {
+      nameCell.appendChild(element('div', { className: 'property-inline-meaning', text: meaning }));
+    }
+
     appendCells(row, [
-      truncateCell(property.name ?? 'Unknown property'),
+      nameCell,
       truncateCell(displayPropertyValue(property)),
       truncateCell(property.profile ?? 'default'),
       sourceCell,
       badgeCell(configurationKindLabel(property.kind ?? 'UNKNOWN'), `badge ${configurationBadgeClass(property.kind)}`),
       truncateCell(property.documentation?.type ?? 'Unknown type'),
-      truncateCell(compactPropertyMeaning(property))
     ]);
 
     if (expanded) {
       const detailsRow = tbody.insertRow();
       detailsRow.className = 'details-row';
       const detailsCell = detailsRow.insertCell();
-      detailsCell.colSpan = 8;
+      detailsCell.colSpan = 7;
       detailsCell.appendChild(renderConfigurationDetails(property));
     }
   }
@@ -2652,15 +2814,24 @@ function renderProfileComparisonTable(
   return wrapTable(table);
 }
 
-function renderResultsHeader(status?: {
-  statusMessage?: string;
-  errorMessage?: string;
-  warningMessage?: string;
-  isAnalyzing?: boolean;
-}): HTMLElement {
+function renderResultsHeader(
+  status?: {
+    statusMessage?: string;
+    errorMessage?: string;
+    warningMessage?: string;
+    isAnalyzing?: boolean;
+  },
+  result?: AnalyzeRepositoryResponse | null
+): HTMLElement {
   const header = element('div', { className: 'results-header' });
   header.appendChild(element('h2', { text: 'Results' }));
+
   const right = element('div', { className: 'results-header-status' });
+
+  if (result) {
+    right.appendChild(renderExportBar(result));
+  }
+
   if (status?.errorMessage) {
     right.appendChild(element('span', { className: 'status-chip status-chip-error', text: status.errorMessage }));
   } else if (status?.warningMessage) {
@@ -2673,8 +2844,79 @@ function renderResultsHeader(status?: {
       })
     );
   }
+
   header.appendChild(right);
   return header;
+}
+
+function renderExportBar(result: AnalyzeRepositoryResponse): HTMLElement {
+  const bar = element('div', { className: 'results-export-bar' });
+
+  // Download JSON
+  const jsonBtn = exportButton(
+    `<svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 2v7M4 6l3 3 3-3"/><path d="M2 11h10"/></svg>`,
+    'JSON'
+  );
+  jsonBtn.title = 'Download full analysis as JSON';
+  jsonBtn.setAttribute('aria-label', 'Download analysis result as JSON');
+  jsonBtn.addEventListener('click', () => downloadJson(result));
+  bar.appendChild(jsonBtn);
+
+  // Download SARIF
+  const sarifBtn = exportButton(
+    `<svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 2v7M4 6l3 3 3-3"/><path d="M2 11h10"/></svg>`,
+    'SARIF'
+  );
+  sarifBtn.title = 'Download findings as SARIF 2.1.0 (compatible with GitHub Code Scanning)';
+  sarifBtn.setAttribute('aria-label', 'Download findings as SARIF');
+  sarifBtn.addEventListener('click', () => downloadSarif(result));
+  bar.appendChild(sarifBtn);
+
+  // Download Markdown
+  const mdBtn = exportButton(
+    `<svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 2v7M4 6l3 3 3-3"/><path d="M2 11h10"/></svg>`,
+    'Markdown'
+  );
+  mdBtn.title = 'Download findings as a structured Markdown report';
+  mdBtn.setAttribute('aria-label', 'Download findings as Markdown');
+  mdBtn.addEventListener('click', () => downloadMarkdown(result));
+  bar.appendChild(mdBtn);
+
+  // Copy summary
+  const copyBtn = exportButton(
+    `<svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="7" height="8" rx="1"/><path d="M9 5V3a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h2"/></svg>`,
+    'Copy summary'
+  );
+  copyBtn.title = 'Copy a plain-text summary of findings to the clipboard';
+  copyBtn.setAttribute('aria-label', 'Copy findings summary to clipboard');
+  copyBtn.addEventListener('click', () => {
+    void copySummary(result).then(() => {
+      copyBtn.classList.add('copied');
+      const label = copyBtn.querySelector('.export-btn-label');
+      if (label) label.textContent = 'Copied!';
+      setTimeout(() => {
+        copyBtn.classList.remove('copied');
+        if (label) label.textContent = 'Copy summary';
+      }, 2000);
+    });
+  });
+  bar.appendChild(copyBtn);
+
+  return bar;
+}
+
+function exportButton(iconSvg: string, label: string): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.className = 'export-button';
+  btn.type = 'button';
+  const icon = document.createElement('span');
+  icon.innerHTML = iconSvg;
+  btn.appendChild(icon);
+  const labelEl = document.createElement('span');
+  labelEl.className = 'export-btn-label';
+  labelEl.textContent = label;
+  btn.appendChild(labelEl);
+  return btn;
 }
 
 function resultsSection(title: string, id?: string, description?: string, chips: SectionChip[] = []): HTMLElement {
@@ -3241,7 +3483,9 @@ function httpSourceLinkCell(
   btn.addEventListener('click', () => {
     actions.onOpenHttpSource(sourceFile, line ?? undefined, label, triggerId);
   });
-  cell.appendChild(btn);
+  const wrap = element('div', { className: 'cell-technical-wrap' });
+  wrap.appendChild(btn);
+  cell.appendChild(wrap);
   return cell;
 }
 
@@ -3892,6 +4136,121 @@ function badgeCell(text: string, badgeClass: string): HTMLTableCellElement {
   return cell;
 }
 
+// ---------------------------------------------------------------------------
+// Empty / error / analyzing states
+// ---------------------------------------------------------------------------
+
+function renderInitialState(): HTMLElement {
+  const wrapper = element('div', { className: 'results-idle-state' });
+
+  const iconEl = document.createElement('div');
+  iconEl.className = 'results-idle-icon';
+  iconEl.innerHTML = `<svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <circle cx="11" cy="11" r="8"/>
+    <path d="M21 21l-4.35-4.35"/>
+    <path d="M8 11h6M11 8v6"/>
+  </svg>`;
+  wrapper.appendChild(iconEl);
+
+  const body = element('div', { className: 'results-idle-body' });
+  body.appendChild(element('h3', { className: 'results-idle-title', text: 'Point it at a repository' }));
+  body.appendChild(
+    element('p', {
+      className: 'results-idle-desc',
+      text: 'Enter a repository URL on the left, then click "Clone and analyze". The backend clones the repo into a temporary workspace and analyzes it without starting the application.'
+    })
+  );
+
+  const features = element('ul', { className: 'results-idle-features' });
+  for (const text of [
+    'Security, configuration, and persistence findings across 45+ rules',
+    'Component inventory: controllers, services, repositories, entities',
+    'HTTP surface map: inbound endpoints, outbound clients, actuator exposure',
+    'Configuration analysis: property drift, secrets, unknown properties',
+    'Scheduling & messaging: @Scheduled tasks, Kafka, RabbitMQ, SQS listeners'
+  ]) {
+    features.appendChild(element('li', { text }));
+  }
+  body.appendChild(features);
+  wrapper.appendChild(body);
+  return wrapper;
+}
+
+function renderAnalyzingState(statusMessage?: string): HTMLElement {
+  const wrapper = element('div', { className: 'results-idle-state' });
+
+  const iconEl = document.createElement('div');
+  iconEl.className = 'results-idle-icon analyzing-icon';
+  iconEl.innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+  </svg>`;
+  wrapper.appendChild(iconEl);
+
+  const body = element('div', { className: 'results-idle-body' });
+  body.appendChild(element('h3', { className: 'results-idle-title', text: 'Analyzing repository…' }));
+  body.appendChild(
+    element('p', {
+      className: 'results-idle-desc',
+      text: statusMessage || 'Cloning and analyzing. Large repositories or Gradle model resolution can take a moment.'
+    })
+  );
+
+  const bar = element('div', { className: 'results-idle-analyzing-bar' });
+  bar.appendChild(element('div', { className: 'results-idle-analyzing-fill' }));
+  body.appendChild(bar);
+  wrapper.appendChild(body);
+  return wrapper;
+}
+
+function renderErrorState(errorMessage: string): HTMLElement {
+  const wrapper = element('div', { className: 'results-idle-state' });
+
+  const iconEl = document.createElement('div');
+  iconEl.className = 'results-idle-icon error-icon';
+  iconEl.innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="10"/>
+    <path d="M12 8v4M12 16h.01"/>
+  </svg>`;
+  wrapper.appendChild(iconEl);
+
+  const body = element('div', { className: 'results-idle-body' });
+  body.appendChild(element('h3', { className: 'results-idle-title', text: 'Analysis failed' }));
+
+  const errBox = element('div', { className: 'results-idle-error-message', text: errorMessage });
+  body.appendChild(errBox);
+
+  const hints = element('ul', { className: 'results-idle-error-hints' });
+
+  const lowerMsg = errorMessage.toLowerCase();
+  const isAuthError =
+    lowerMsg.includes('auth') || lowerMsg.includes('401') || lowerMsg.includes('credential') ||
+    lowerMsg.includes('not authorized') || lowerMsg.includes('token');
+  const isNotFound =
+    lowerMsg.includes('not found') || lowerMsg.includes('404') || lowerMsg.includes('repository') ||
+    lowerMsg.includes('does not exist');
+  const isTimeout = lowerMsg.includes('timeout') || lowerMsg.includes('timed out');
+
+  if (isAuthError) {
+    hints.appendChild(element('li', { text: 'Check that the HTTPS token has read access to the repository.' }));
+    hints.appendChild(element('li', { text: 'Ensure the username matches the token owner.' }));
+    hints.appendChild(element('li', { text: 'SSH repositories do not use HTTPS tokens — use the server SSH agent.' }));
+  } else if (isNotFound) {
+    hints.appendChild(element('li', { text: 'Verify the repository URL is correct and the repository exists.' }));
+    hints.appendChild(element('li', { text: 'Private repositories require a valid HTTPS token or SSH access.' }));
+  } else if (isTimeout) {
+    hints.appendChild(element('li', { text: 'The operation timed out — try again or check network connectivity.' }));
+    hints.appendChild(element('li', { text: 'Large repositories may need more time; try a shallower clone branch.' }));
+  } else {
+    hints.appendChild(element('li', { text: 'Verify the repository URL, branch name, and network connectivity.' }));
+    hints.appendChild(element('li', { text: 'Private repositories require a valid HTTPS token or SSH access.' }));
+    hints.appendChild(element('li', { text: 'Check the browser console or backend logs for more detail.' }));
+  }
+
+  body.appendChild(hints);
+  wrapper.appendChild(body);
+  return wrapper;
+}
+
 function summaryValueRow(label: string, value: string, copyable = false): HTMLElement {
   const valueNode = element('div', {
     className: 'project-summary-value',
@@ -4175,17 +4534,86 @@ function severityExplanation(value: string): string {
   }
 }
 
+function renderDependencyTree(resolved: GradleResolvedDependencyModel[]): HTMLElement {
+  const container = element('div', { className: 'dep-tree' });
+
+  // Group by Maven group ID
+  const groupMap = new Map<string, GradleResolvedDependencyModel[]>();
+  for (const dep of resolved) {
+    const g = dep.group ?? '(unknown)';
+    if (!groupMap.has(g)) groupMap.set(g, []);
+    groupMap.get(g)!.push(dep);
+  }
+
+  // Spring groups first, then alphabetical
+  const sortedGroups = [...groupMap.keys()].sort((a, b) => {
+    const aSpring = a.startsWith('org.springframework');
+    const bSpring = b.startsWith('org.springframework');
+    if (aSpring !== bSpring) return aSpring ? -1 : 1;
+    return a.localeCompare(b);
+  });
+
+  for (const groupId of sortedGroups) {
+    const deps = [...groupMap.get(groupId)!].sort((a, b) => {
+      // Direct deps before transitives, then alphabetical by artifact
+      if (a.direct !== b.direct) return a.direct ? -1 : 1;
+      return (a.artifact ?? '').localeCompare(b.artifact ?? '');
+    });
+    const directCount = deps.filter((d) => d.direct).length;
+    const countText =
+      directCount > 0
+        ? deps.length === directCount
+          ? `${deps.length} direct`
+          : `${deps.length}, ${directCount} direct`
+        : `${deps.length} transitive`;
+
+    const groupEl = element('details', { className: 'dep-tree-group' });
+    // Auto-open groups that have at least one direct dependency
+    if (directCount > 0) groupEl.setAttribute('open', '');
+
+    const summary = element('summary', { className: 'dep-tree-group-summary' });
+    summary.appendChild(element('span', { className: 'dep-tree-group-name', text: groupId }));
+    summary.appendChild(element('span', { className: 'dep-tree-group-count', text: countText }));
+    groupEl.appendChild(summary);
+
+    const list = element('ul', { className: 'dep-tree-list' });
+    for (let i = 0; i < deps.length; i++) {
+      const dep = deps[i];
+      const isLast = i === deps.length - 1;
+      const li = element('li', { className: 'dep-tree-item' });
+      li.appendChild(element('span', { className: 'dep-tree-connector', text: isLast ? '└─' : '├─' }));
+      li.appendChild(element('span', { className: 'dep-tree-artifact', text: dep.artifact ?? '—' }));
+      li.appendChild(element('span', { className: 'dep-tree-version', text: dep.version ?? '' }));
+      if (dep.direct) {
+        li.appendChild(element('span', { className: 'badge badge-success dep-tree-badge', text: 'direct' }));
+      }
+      if (dep.selectedReason && !dep.direct) {
+        const reason = selectedReasonSummary(dep);
+        if (reason && reason !== 'Transitive dependency') {
+          li.appendChild(element('span', { className: 'dep-tree-reason', text: reason }));
+        }
+      }
+      list.appendChild(li);
+    }
+    groupEl.appendChild(list);
+    container.appendChild(groupEl);
+  }
+
+  return container;
+}
+
 function renderSectionJumpNav(): HTMLElement {
   const nav = element('nav', { className: 'results-jump-nav', attributes: { 'aria-label': 'Results sections' } });
   for (const [label, href] of [
     ['Runtime', '#results-runtime'],
     ['Findings', '#results-findings'],
     ['HTTP', '#results-http'],
+    ['Scheduling', '#results-scheduling'],
     ['Configuration', '#results-configuration'],
     ['Spring API', '#results-spring-api'],
     ['Components', '#results-components'],
-    ['Dependencies', '#results-dependencies']
-    ,['Build model', '#results-build-model']
+    ['Dependencies', '#results-dependencies'],
+    ['Build model', '#results-build-model']
   ] as Array<[string, string]>) {
     nav.appendChild(element('a', { className: 'results-jump-link', text: label, attributes: { href } }));
   }
@@ -4985,6 +5413,14 @@ function componentClassCell(component: Partial<DetectedClass>): HTMLTableCellEle
       attributes: { title: qualified ?? primary }
     })
   );
+  if (qualified && qualified !== primary) {
+    cell.appendChild(
+      element('div', {
+        className: 'component-class-secondary',
+        text: qualified
+      })
+    );
+  }
   return cell;
 }
 
@@ -4997,10 +5433,13 @@ function componentAnnotationsCell(component: Partial<DetectedClass>): HTMLTableC
     return cell;
   }
   const redundant = isRedundantComponentAnnotation(component, annotations);
+  if (redundant) {
+    cell.className = 'component-annotations-cell is-redundant';
+  }
   if (annotations.length === 1) {
-    cell.appendChild(element('span', {
-      className: redundant ? 'annotation-single annotation-single-muted' : 'annotation-single',
-      text: `@${annotations[0]}`
+    cell.appendChild(element('div', {
+      className: 'cell-technical-wrap',
+      text: annotations[0]
     }));
     return cell;
   }
@@ -5124,6 +5563,18 @@ function propertyMeaning(property: ApplicationProperty): string {
       ? 'Referenced in code and configured in the scanned files.'
       : 'Referenced in code but no matching configured property was found in the scanned files.';
   }
+  if (property.kind === 'CUSTOM_CONFIGURATION_PROPERTIES') {
+    const desc = property.documentation?.description ?? '';
+    // Auto-generated descriptions like "Custom property defined by com.example.Config" add no
+    // value — the Kind badge already communicates that. Show a namespace-aware label instead.
+    if (!desc.startsWith('Custom property defined by') && desc) {
+      return desc;
+    }
+    const name = property.name ?? '';
+    const lastDot = name.lastIndexOf('.');
+    const namespace = lastDot > 0 ? name.substring(0, lastDot) : name;
+    return namespace ? `Custom ${namespace} property.` : 'Custom application configuration property.';
+  }
   if (property.documentation?.description) {
     return property.documentation.description;
   }
@@ -5133,16 +5584,10 @@ function propertyMeaning(property: ApplicationProperty): string {
   if (property.kind === 'UNKNOWN') {
     return 'No Spring Boot or custom metadata found for this property.';
   }
-  if (property.kind === 'CUSTOM_CONFIGURATION_PROPERTIES') {
-    return 'Custom application configuration property.';
-  }
   return 'No description available.';
 }
 
 function compactPropertyMeaning(property: ApplicationProperty): string {
-  if (property.kind === 'CUSTOM_CONFIGURATION_PROPERTIES' && !property.documentation?.description) {
-    return '';
-  }
   return propertyMeaning(property);
 }
 

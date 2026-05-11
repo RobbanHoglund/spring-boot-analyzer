@@ -10,12 +10,12 @@ public class GradleScriptValueRenderer {
         if (value == null) {
             return "\"\"";
         }
-        String escaped = value
-                .replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("$", "\\$")
-                .replace("\r", "\\r")
-                .replace("\n", "\\n");
+        String escaped =
+                value.replace("\\", "\\\\")
+                        .replace("\"", "\\\"")
+                        .replace("$", "\\$")
+                        .replace("\r", "\\r")
+                        .replace("\n", "\\n");
         return "\"" + escaped + "\"";
     }
 

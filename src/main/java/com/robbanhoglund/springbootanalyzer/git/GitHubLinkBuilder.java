@@ -8,11 +8,21 @@ import org.springframework.stereotype.Component;
 @Component
 public class GitHubLinkBuilder {
 
-    private static final Pattern HTTPS_PATTERN = Pattern.compile("^https://github\\.com/([^/]+)/([^/]+?)(?:\\.git)?/?$");
-    private static final Pattern SSH_PATTERN = Pattern.compile("^git@github\\.com:([^/]+)/([^/]+?)(?:\\.git)?$");
+    private static final Pattern HTTPS_PATTERN =
+            Pattern.compile("^https://github\\.com/([^/]+)/([^/]+?)(?:\\.git)?/?$");
+    private static final Pattern SSH_PATTERN =
+            Pattern.compile("^git@github\\.com:([^/]+)/([^/]+?)(?:\\.git)?$");
 
-    public String buildBlobUrl(String repositoryUrl, String commitSha, String relativePath, Integer startLine, Integer endLine) {
-        if (repositoryUrl == null || commitSha == null || relativePath == null || relativePath.isBlank()) {
+    public String buildBlobUrl(
+            String repositoryUrl,
+            String commitSha,
+            String relativePath,
+            Integer startLine,
+            Integer endLine) {
+        if (repositoryUrl == null
+                || commitSha == null
+                || relativePath == null
+                || relativePath.isBlank()) {
             return null;
         }
         String normalizedPath = relativePath.replace('\\', '/');
@@ -24,15 +34,23 @@ public class GitHubLinkBuilder {
             return null;
         }
         String fragment = buildLineFragment(startLine, endLine);
-        return "https://github.com/" + coordinates.owner() + "/" + coordinates.repository()
-                + "/blob/" + commitSha + "/" + normalizedPath + fragment;
+        return "https://github.com/"
+                + coordinates.owner()
+                + "/"
+                + coordinates.repository()
+                + "/blob/"
+                + commitSha
+                + "/"
+                + normalizedPath
+                + fragment;
     }
 
     private RepoCoordinates parse(String repositoryUrl) {
         String trimmed = repositoryUrl.trim();
         Matcher httpsMatcher = HTTPS_PATTERN.matcher(trimmed);
         if (httpsMatcher.matches()) {
-            return new RepoCoordinates(httpsMatcher.group(1), stripGitSuffix(httpsMatcher.group(2)));
+            return new RepoCoordinates(
+                    httpsMatcher.group(1), stripGitSuffix(httpsMatcher.group(2)));
         }
         Matcher sshMatcher = SSH_PATTERN.matcher(trimmed);
         if (sshMatcher.matches()) {
@@ -42,9 +60,10 @@ public class GitHubLinkBuilder {
     }
 
     private String stripGitSuffix(String repository) {
-        String normalized = repository.toLowerCase(Locale.ROOT).endsWith(".git")
-                ? repository.substring(0, repository.length() - 4)
-                : repository;
+        String normalized =
+                repository.toLowerCase(Locale.ROOT).endsWith(".git")
+                        ? repository.substring(0, repository.length() - 4)
+                        : repository;
         return normalized;
     }
 
@@ -58,6 +77,5 @@ public class GitHubLinkBuilder {
         return "#L" + startLine + "-L" + endLine;
     }
 
-    private record RepoCoordinates(String owner, String repository) {
-    }
+    private record RepoCoordinates(String owner, String repository) {}
 }

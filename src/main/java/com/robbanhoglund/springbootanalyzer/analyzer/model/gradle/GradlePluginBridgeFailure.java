@@ -10,6 +10,4 @@ public record GradlePluginBridgeFailure(
         String message,
         boolean markerPresentLocally,
         boolean implementationPresentLocally,
-        String implementationCoordinates
-) {
-}
+        String implementationCoordinates) {}

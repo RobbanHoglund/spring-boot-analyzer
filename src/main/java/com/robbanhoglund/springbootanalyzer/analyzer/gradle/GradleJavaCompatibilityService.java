@@ -88,13 +88,14 @@ public class GradleJavaCompatibilityService {
         String normalized = version.replaceAll("[^0-9.].*$", "");
         return java.util.Arrays.stream(normalized.split("\\."))
                 .filter(part -> !part.isBlank())
-                .map(part -> {
-                    try {
-                        return Integer.parseInt(part);
-                    } catch (NumberFormatException exception) {
-                        return 0;
-                    }
-                })
+                .map(
+                        part -> {
+                            try {
+                                return Integer.parseInt(part);
+                            } catch (NumberFormatException exception) {
+                                return 0;
+                            }
+                        })
                 .toList();
     }
 
@@ -102,7 +103,5 @@ public class GradleJavaCompatibilityService {
             boolean compatible,
             int javaFeatureVersion,
             String gradleVersion,
-            String minimumGradleVersion
-    ) {
-    }
+            String minimumGradleVersion) {}
 }

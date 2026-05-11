@@ -62,7 +62,8 @@ public class WorkspaceService {
         int deletedCount = 0;
         int failedCount = 0;
 
-        try (Stream<Path> workspacePaths = Files.list(workspaceRoot).sorted(Comparator.naturalOrder())) {
+        try (Stream<Path> workspacePaths =
+                Files.list(workspaceRoot).sorted(Comparator.naturalOrder())) {
             for (Path workspacePath : workspacePaths.toList()) {
                 if (!Files.isDirectory(workspacePath)) {
                     continue;
@@ -74,7 +75,8 @@ public class WorkspaceService {
                 }
 
                 try {
-                    deleteWorkspace(new Workspace(workspacePath.getFileName().toString(), workspacePath));
+                    deleteWorkspace(
+                            new Workspace(workspacePath.getFileName().toString(), workspacePath));
                     deletedCount++;
                 } catch (IllegalStateException exception) {
                     failedCount++;
@@ -82,7 +84,8 @@ public class WorkspaceService {
                 }
             }
         } catch (IOException exception) {
-            throw new IllegalStateException("Failed to scan analyzer workspace root: " + workspaceRoot, exception);
+            throw new IllegalStateException(
+                    "Failed to scan analyzer workspace root: " + workspaceRoot, exception);
         }
 
         return new WorkspaceCleanupResult(scannedCount, deletedCount, failedCount);
@@ -106,7 +109,8 @@ public class WorkspaceService {
                 }
                 pauseBeforeRetry(workspacePath, attempt, exception);
             } catch (IOException exception) {
-                throw new IllegalStateException("Failed to delete analyzer workspace: " + workspacePath, exception);
+                throw new IllegalStateException(
+                        "Failed to delete analyzer workspace: " + workspacePath, exception);
             }
         }
 
@@ -114,30 +118,36 @@ public class WorkspaceService {
     }
 
     void deleteWorkspacePath(Path workspacePath) throws IOException {
-        Files.walkFileTree(workspacePath, new SimpleFileVisitor<>() {
-            @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) throws IOException {
-                Files.deleteIfExists(file);
-                return FileVisitResult.CONTINUE;
-            }
+        Files.walkFileTree(
+                workspacePath,
+                new SimpleFileVisitor<>() {
+                    @Override
+                    public FileVisitResult visitFile(Path file, BasicFileAttributes attributes)
+                            throws IOException {
+                        Files.deleteIfExists(file);
+                        return FileVisitResult.CONTINUE;
+                    }
 
-            @Override
-            public FileVisitResult postVisitDirectory(Path directory, IOException exception) throws IOException {
-                if (exception != null) {
-                    throw exception;
-                }
-                Files.deleteIfExists(directory);
-                return FileVisitResult.CONTINUE;
-            }
-        });
+                    @Override
+                    public FileVisitResult postVisitDirectory(Path directory, IOException exception)
+                            throws IOException {
+                        if (exception != null) {
+                            throw exception;
+                        }
+                        Files.deleteIfExists(directory);
+                        return FileVisitResult.CONTINUE;
+                    }
+                });
     }
 
-    private void pauseBeforeRetry(Path workspacePath, int attempt, AccessDeniedException exception) {
+    private void pauseBeforeRetry(
+            Path workspacePath, int attempt, AccessDeniedException exception) {
         try {
             Thread.sleep(DELETE_RETRY_DELAY_MILLIS * attempt);
         } catch (InterruptedException interruptedException) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("Interrupted while retrying workspace cleanup: " + workspacePath, exception);
+            throw new IllegalStateException(
+                    "Interrupted while retrying workspace cleanup: " + workspacePath, exception);
         }
     }
 
@@ -173,12 +183,16 @@ public class WorkspaceService {
         LOGGER.warn("Deferred workspace cleanup failed for {}", workspacePath, lastException);
     }
 
-    private void pauseBeforeDeferredRetry(Path workspacePath, int attempt, AccessDeniedException exception) {
+    private void pauseBeforeDeferredRetry(
+            Path workspacePath, int attempt, AccessDeniedException exception) {
         try {
             Thread.sleep(DEFERRED_DELETE_DELAY_MILLIS * Math.min(attempt, 5));
         } catch (InterruptedException interruptedException) {
             Thread.currentThread().interrupt();
-            LOGGER.warn("Interrupted while waiting to retry deferred cleanup for {}", workspacePath, exception);
+            LOGGER.warn(
+                    "Interrupted while waiting to retry deferred cleanup for {}",
+                    workspacePath,
+                    exception);
         }
     }
 
@@ -186,21 +200,13 @@ public class WorkspaceService {
         try {
             return Files.getLastModifiedTime(workspacePath).toInstant().isBefore(cutoff);
         } catch (IOException exception) {
-            LOGGER.warn("Failed to read last modified time for workspace {}", workspacePath, exception);
+            LOGGER.warn(
+                    "Failed to read last modified time for workspace {}", workspacePath, exception);
             return false;
         }
     }
 
-    public record Workspace(
-            String id,
-            Path path
-    ) {
-    }
+    public record Workspace(String id, Path path) {}
 
-    public record WorkspaceCleanupResult(
-            int scannedCount,
-            int deletedCount,
-            int failedCount
-    ) {
-    }
+    public record WorkspaceCleanupResult(int scannedCount, int deletedCount, int failedCount) {}
 }

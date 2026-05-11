@@ -7,6 +7,4 @@ public record GradleResolvedDependencyModel(
         String artifact,
         String version,
         boolean direct,
-        String selectedReason
-) {
-}
+        String selectedReason) {}

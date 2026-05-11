@@ -9,9 +9,9 @@ public record GradlePluginResolutionFailure(
         String settingsFile,
         Integer line,
         List<String> searchedRepositories,
-        String message
-) {
+        String message) {
     public GradlePluginResolutionFailure {
-        searchedRepositories = searchedRepositories == null ? List.of() : List.copyOf(searchedRepositories);
+        searchedRepositories =
+                searchedRepositories == null ? List.of() : List.copyOf(searchedRepositories);
     }
 }

@@ -8,8 +8,7 @@ public record GradlePluginResolutionBridgeResult(
         String localMavenRepository,
         List<ResolvedGradlePlugin> resolvedPlugins,
         List<GradlePluginBridgeFailure> failures,
-        List<Finding> findings
-) {
+        List<Finding> findings) {
     public static GradlePluginResolutionBridgeResult empty() {
         return new GradlePluginResolutionBridgeResult(false, null, List.of(), List.of(), List.of());
     }

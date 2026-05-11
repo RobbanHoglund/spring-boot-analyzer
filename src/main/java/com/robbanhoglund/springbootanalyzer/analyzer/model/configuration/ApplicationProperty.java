@@ -12,6 +12,4 @@ public record ApplicationProperty(
         String profile,
         PropertyKind kind,
         PropertyDocumentation documentation,
-        List<PropertyReference> references
-) {
-}
+        List<PropertyReference> references) {}

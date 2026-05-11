@@ -118,7 +118,7 @@ function createInitialState(): AppState {
     oneTimeRepositoryUrl: persistedSession?.oneTimeRepositoryUrl ?? DEFAULT_REPOSITORY_URL,
     oneTimeBranch: persistedSession?.oneTimeBranch ?? '',
     oneTimeTokenProfileId,
-    analysisMode: persistedSession?.analysisMode === 'STATIC_PLUS_GRADLE_MODEL' ? 'STATIC_PLUS_GRADLE_MODEL' : 'STATIC_ONLY',
+    analysisMode: persistedSession?.analysisMode === 'EXTENDED' ? 'EXTENDED' : 'STATIC_ONLY',
     statusMessage: persistedSession?.result ? 'Restored previous analysis from this browser tab.' : '',
     errorMessage: '',
     warningMessage: '',

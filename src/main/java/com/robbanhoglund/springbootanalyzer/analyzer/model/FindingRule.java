@@ -5,6 +5,4 @@ public record FindingRule(
         String title,
         FindingSeverity defaultSeverity,
         FindingCategory category,
-        FindingRuntimeDetection runtimeDetection
-) {
-}
+        FindingRuntimeDetection runtimeDetection) {}

@@ -6,14 +6,14 @@ public record GitRepositoryReference(
         String repositoryUrl,
         String branch,
         GitRepositoryCredentials credentials,
-        AnalysisMode analysisMode
-) {
+        AnalysisMode analysisMode) {
 
     public GitRepositoryReference(String repositoryUrl, String branch) {
         this(repositoryUrl, branch, null, AnalysisMode.STATIC_ONLY);
     }
 
-    public GitRepositoryReference(String repositoryUrl, String branch, GitRepositoryCredentials credentials) {
+    public GitRepositoryReference(
+            String repositoryUrl, String branch, GitRepositoryCredentials credentials) {
         this(repositoryUrl, branch, credentials, AnalysisMode.STATIC_ONLY);
     }
 
@@ -25,6 +25,23 @@ public record GitRepositoryReference(
 
     public boolean hasCredentials() {
         return credentials != null && credentials.hasToken();
+    }
+
+    /**
+     * Returns a redacted representation that is safe to include in log messages.
+     * Credentials are summarised as a boolean flag so tokens are never exposed.
+     */
+    @Override
+    public String toString() {
+        return "GitRepositoryReference[repositoryUrl="
+                + repositoryUrl
+                + ", branch="
+                + branch
+                + ", credentialsPresent="
+                + hasCredentials()
+                + ", analysisMode="
+                + analysisMode
+                + "]";
     }
 
     private static String normalizeBranch(String branch) {

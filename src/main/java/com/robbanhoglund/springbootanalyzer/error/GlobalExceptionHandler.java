@@ -11,6 +11,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -35,9 +36,19 @@ public class GlobalExceptionHandler {
         return problemDetail;
     }
 
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ProblemDetail handleNotReadable(HttpMessageNotReadableException exception) {
+        ProblemDetail problemDetail = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problemDetail.setTitle("Malformed request");
+        problemDetail.setDetail(
+                "The request body could not be read. Check that all field values are valid (e.g."
+                        + " analysisMode must be STATIC_ONLY or EXTENDED).");
+        return problemDetail;
+    }
+
     @ExceptionHandler({
-            InvalidRepositoryReferenceException.class,
-            UnsupportedRepositoryProtocolException.class
+        InvalidRepositoryReferenceException.class,
+        UnsupportedRepositoryProtocolException.class
     })
     public ProblemDetail handleBadRequest(RuntimeException exception) {
         LOGGER.warn("Invalid repository request: {}", exception.getMessage());
@@ -57,7 +68,8 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(InvalidSourceSnippetRequestException.class)
-    public ProblemDetail handleInvalidSourceSnippetRequest(InvalidSourceSnippetRequestException exception) {
+    public ProblemDetail handleInvalidSourceSnippetRequest(
+            InvalidSourceSnippetRequestException exception) {
         ProblemDetail problemDetail = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
         problemDetail.setTitle("Invalid source snippet request");
         problemDetail.setDetail(exception.getMessage());

@@ -6,6 +6,4 @@ public record GradleDependencyConflict(
         String group,
         String artifact,
         String requestedVersions,
-        String selectedVersion
-) {
-}
+        String selectedVersion) {}

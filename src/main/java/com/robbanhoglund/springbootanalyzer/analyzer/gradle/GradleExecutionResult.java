@@ -16,6 +16,4 @@ public record GradleExecutionResult(
         String javaVersion,
         GradleExecutionFailureType failureType,
         String errorMessage,
-        GradlePluginResolutionFailure pluginResolutionFailure
-) {
-}
+        GradlePluginResolutionFailure pluginResolutionFailure) {}

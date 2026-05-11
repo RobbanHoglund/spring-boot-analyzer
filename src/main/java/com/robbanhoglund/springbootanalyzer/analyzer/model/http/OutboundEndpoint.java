@@ -12,6 +12,4 @@ public record OutboundEndpoint(
         String className,
         String methodName,
         boolean fromConfiguration,
-        String configurationPropertyName
-) {
-}
+        String configurationPropertyName) {}

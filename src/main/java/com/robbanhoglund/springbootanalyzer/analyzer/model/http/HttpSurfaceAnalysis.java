@@ -7,15 +7,13 @@ public record HttpSurfaceAnalysis(
         List<InboundEndpoint> inboundEndpoints,
         List<OutboundEndpoint> outboundEndpoints,
         List<ConfiguredUrl> configuredUrls,
-        List<ActuatorEndpointExposure> actuatorExposures
-) {
+        List<ActuatorEndpointExposure> actuatorExposures) {
     public static HttpSurfaceAnalysis empty() {
         return new HttpSurfaceAnalysis(
                 new HttpSurfaceSummary(0, 0, 0, 0, List.of(), List.of()),
                 List.of(),
                 List.of(),
                 List.of(),
-                List.of()
-        );
+                List.of());
     }
 }

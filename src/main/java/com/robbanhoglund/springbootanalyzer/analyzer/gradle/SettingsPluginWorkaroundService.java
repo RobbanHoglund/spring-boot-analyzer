@@ -15,36 +15,40 @@ import org.springframework.stereotype.Component;
 @Component
 public class SettingsPluginWorkaroundService {
 
-    private static final String DISABLE_COMMENT = "// Disabled by Spring Boot Analyzer build-model workaround:";
+    private static final String DISABLE_COMMENT =
+            "// Disabled by Spring Boot Analyzer build-model workaround:";
 
     public WorkaroundResult createSanitizedCopyAndApply(
             Path repositoryRoot,
             GradlePluginResolutionFailure failure,
-            AnalyzerProperties.GradleProperties properties
-    ) {
+            AnalyzerProperties.GradleProperties properties) {
         if (failure == null || failure.pluginId() == null) {
             return new WorkaroundResult(repositoryRoot, List.of(), false);
         }
-        Path sanitizedRoot = repositoryRoot.getParent()
-                .resolve("gradle-analysis-sanitized")
-                .resolve("repository");
+        Path sanitizedRoot =
+                repositoryRoot
+                        .getParent()
+                        .resolve("gradle-analysis-sanitized")
+                        .resolve("repository");
         try {
             if (Files.exists(sanitizedRoot.getParent())) {
                 deleteRecursively(sanitizedRoot.getParent());
             }
             copyTree(repositoryRoot, sanitizedRoot);
-            List<GradleSettingsPluginWorkaround> applied = applyWorkaroundToSettingsFiles(sanitizedRoot, failure, properties);
+            List<GradleSettingsPluginWorkaround> applied =
+                    applyWorkaroundToSettingsFiles(sanitizedRoot, failure, properties);
             return new WorkaroundResult(sanitizedRoot, applied, !applied.isEmpty());
         } catch (IOException exception) {
-            throw new IllegalStateException("Failed to create sanitized Gradle analysis copy.", exception);
+            throw new IllegalStateException(
+                    "Failed to create sanitized Gradle analysis copy.", exception);
         }
     }
 
     List<GradleSettingsPluginWorkaround> applyWorkaroundToSettingsFiles(
             Path repositoryRoot,
             GradlePluginResolutionFailure failure,
-            AnalyzerProperties.GradleProperties properties
-    ) throws IOException {
+            AnalyzerProperties.GradleProperties properties)
+            throws IOException {
         List<GradleSettingsPluginWorkaround> applied = new ArrayList<>();
         for (String settingsFileName : List.of("settings.gradle", "settings.gradle.kts")) {
             Path settingsFile = repositoryRoot.resolve(settingsFileName);
@@ -58,14 +62,15 @@ public class SettingsPluginWorkaroundService {
                 if (shouldDisable(line, failure.pluginId(), properties)) {
                     rewritten.add(DISABLE_COMMENT);
                     rewritten.add("// " + line.trim());
-                    applied.add(new GradleSettingsPluginWorkaround(
-                            failure.pluginId(),
-                            failure.version(),
-                            settingsFile.getFileName().toString(),
-                            index + 1,
-                            "Disabled in sanitized analysis copy",
-                            "Plugin resolution failed; toolchain resolver not required for dependency extraction"
-                    ));
+                    applied.add(
+                            new GradleSettingsPluginWorkaround(
+                                    failure.pluginId(),
+                                    failure.version(),
+                                    settingsFile.getFileName().toString(),
+                                    index + 1,
+                                    "Disabled in sanitized analysis copy",
+                                    "Plugin resolution failed; toolchain resolver not required for"
+                                            + " dependency extraction"));
                 } else {
                     rewritten.add(line);
                 }
@@ -76,10 +81,7 @@ public class SettingsPluginWorkaroundService {
     }
 
     private boolean shouldDisable(
-            String line,
-            String pluginId,
-            AnalyzerProperties.GradleProperties properties
-    ) {
+            String line, String pluginId, AnalyzerProperties.GradleProperties properties) {
         if (line == null || line.isBlank()) {
             return false;
         }
@@ -89,9 +91,7 @@ public class SettingsPluginWorkaroundService {
         if (!properties.settingsPluginWorkarounds().knownNonessentialPlugins().contains(pluginId)) {
             return false;
         }
-        return line.contains(pluginId)
-                && line.contains("version")
-                && line.contains("id");
+        return line.contains(pluginId) && line.contains("version") && line.contains("id");
     }
 
     private void copyTree(Path source, Path target) throws IOException {
@@ -103,7 +103,11 @@ public class SettingsPluginWorkaroundService {
                     Files.createDirectories(destination);
                 } else {
                     Files.createDirectories(destination.getParent());
-                    Files.copy(path, destination, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
+                    Files.copy(
+                            path,
+                            destination,
+                            StandardCopyOption.REPLACE_EXISTING,
+                            StandardCopyOption.COPY_ATTRIBUTES);
                 }
             }
         }
@@ -120,7 +124,5 @@ public class SettingsPluginWorkaroundService {
     public record WorkaroundResult(
             Path sanitizedRepositoryRoot,
             List<GradleSettingsPluginWorkaround> appliedWorkarounds,
-            boolean applied
-    ) {
-    }
+            boolean applied) {}
 }

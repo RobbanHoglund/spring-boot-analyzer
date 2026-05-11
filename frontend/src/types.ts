@@ -5,7 +5,7 @@ export interface AnalyzeRepositoryRequest {
   analysisMode?: AnalysisMode;
 }
 
-export type AnalysisMode = 'STATIC_ONLY' | 'STATIC_PLUS_GRADLE_MODEL';
+export type AnalysisMode = 'STATIC_ONLY' | 'EXTENDED';
 
 export interface AnalyzeRepositoryCredentials {
   username?: string | null;
@@ -30,7 +30,47 @@ export interface AnalyzeRepositoryResponse {
   runtimeStackAnalysis?: RuntimeStackAnalysis;
   httpSurfaceAnalysis?: HttpSurfaceAnalysis;
   gradleModelAnalysis?: GradleModelAnalysis;
+  schedulingAnalysis?: SchedulingAnalysis;
+  messagingAnalysis?: MessagingAnalysis;
   [key: string]: unknown;
+}
+
+export interface SchedulingAnalysis {
+  scheduledTasks?: ScheduledTaskEndpoint[];
+  asyncMethods?: AsyncMethodEndpoint[];
+  enableSchedulingPresent?: boolean;
+  enableAsyncPresent?: boolean;
+}
+
+export interface ScheduledTaskEndpoint {
+  className?: string | null;
+  methodName?: string | null;
+  sourceFile?: string | null;
+  line?: number | null;
+  scheduleType?: string | null;
+  scheduleValue?: string | null;
+  zone?: string | null;
+}
+
+export interface AsyncMethodEndpoint {
+  className?: string | null;
+  methodName?: string | null;
+  sourceFile?: string | null;
+  line?: number | null;
+}
+
+export interface MessagingAnalysis {
+  listeners?: MessageListenerEndpoint[];
+}
+
+export interface MessageListenerEndpoint {
+  listenerType?: string | null;
+  destinations?: string[];
+  groupId?: string | null;
+  className?: string | null;
+  methodName?: string | null;
+  sourceFile?: string | null;
+  line?: number | null;
 }
 
 export interface DetectedClass {

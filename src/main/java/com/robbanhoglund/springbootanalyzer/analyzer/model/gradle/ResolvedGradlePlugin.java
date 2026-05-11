@@ -9,6 +9,4 @@ public record ResolvedGradlePlugin(
         Integer line,
         boolean markerDownloaded,
         boolean implementationDownloaded,
-        int transitiveArtifactCount
-) {
-}
+        int transitiveArtifactCount) {}

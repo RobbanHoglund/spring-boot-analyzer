@@ -7,6 +7,4 @@ public record CustomPropertyDefinition(
         String javaName,
         String type,
         List<String> validationAnnotations,
-        String description
-) {
-}
+        String description) {}

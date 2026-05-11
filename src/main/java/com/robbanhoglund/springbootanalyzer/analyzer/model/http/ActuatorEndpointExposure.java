@@ -8,6 +8,4 @@ public record ActuatorEndpointExposure(
         String sourceFile,
         Integer line,
         String profile,
-        List<String> exposedEndpoints
-) {
-}
+        List<String> exposedEndpoints) {}

@@ -26,7 +26,5 @@ public class AnalysisSessionRegistry {
             Path repositoryRoot,
             String repositoryUrl,
             String branch,
-            String commitSha
-    ) {
-    }
+            String commitSha) {}
 }

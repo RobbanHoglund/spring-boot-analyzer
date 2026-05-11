@@ -1,7 +1,7 @@
 package com.robbanhoglund.springbootanalyzer.analyzer.gradle;
 
-import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleExecutionMode;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleExecutionFailureType;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleExecutionMode;
 import com.robbanhoglund.springbootanalyzer.config.AnalyzerProperties;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -29,14 +29,14 @@ import org.springframework.stereotype.Service;
 @Service
 public class GradleToolingApiExecutionService {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(GradleToolingApiExecutionService.class);
+    private static final Logger LOGGER =
+            LoggerFactory.getLogger(GradleToolingApiExecutionService.class);
     private final GradleJavaCompatibilityService gradleJavaCompatibilityService;
     private final GradleFailureClassifier gradleFailureClassifier;
 
     public GradleToolingApiExecutionService(
             GradleJavaCompatibilityService gradleJavaCompatibilityService,
-            GradleFailureClassifier gradleFailureClassifier
-    ) {
+            GradleFailureClassifier gradleFailureClassifier) {
         this.gradleJavaCompatibilityService = gradleJavaCompatibilityService;
         this.gradleFailureClassifier = gradleFailureClassifier;
     }
@@ -47,9 +47,15 @@ public class GradleToolingApiExecutionService {
             Path wrapperScript,
             String gradleVersion,
             int javaFeatureVersion,
-            AnalyzerProperties.GradleProperties properties
-    ) {
-        return execute(repositoryRoot, executionMode, wrapperScript, gradleVersion, javaFeatureVersion, properties, null);
+            AnalyzerProperties.GradleProperties properties) {
+        return execute(
+                repositoryRoot,
+                executionMode,
+                wrapperScript,
+                gradleVersion,
+                javaFeatureVersion,
+                properties,
+                null);
     }
 
     public GradleExecutionResult execute(
@@ -59,30 +65,33 @@ public class GradleToolingApiExecutionService {
             String gradleVersion,
             int javaFeatureVersion,
             AnalyzerProperties.GradleProperties properties,
-            Path localPluginRepository
-    ) {
-        String executionLabel = GradleExecutionSupport.executionModeLabel("TOOLING_API", executionMode);
+            Path localPluginRepository) {
+        String executionLabel =
+                GradleExecutionSupport.executionModeLabel("TOOLING_API", executionMode);
         try {
             GradleExecutionSupport.ExecutionFiles files =
-                    GradleExecutionSupport.prepareExecutionFiles(repositoryRoot, properties, localPluginRepository);
+                    GradleExecutionSupport.prepareExecutionFiles(
+                            repositoryRoot, properties, localPluginRepository);
             CappedOutputStream output = new CappedOutputStream(properties.maxOutputBytes());
             List<String> arguments = arguments(files, properties);
 
             LOGGER.info(
-                    "Executing Gradle diagnostic task via Tooling API: executionMode={}, repositoryRoot={}, reportFile={}, timeout={}, useWrapper={}",
+                    "Executing Gradle diagnostic task via Tooling API: executionMode={},"
+                            + " repositoryRoot={}, reportFile={}, timeout={}, useWrapper={}",
                     executionMode,
                     repositoryRoot,
                     files.reportFile(),
                     properties.timeout(),
-                    executionMode == GradleExecutionMode.WRAPPER
-            );
+                    executionMode == GradleExecutionMode.WRAPPER);
 
-            GradleConnector connector = GradleConnector.newConnector()
-                    .forProjectDirectory(repositoryRoot.toFile())
-                    .useGradleUserHomeDir(files.gradleUserHome().toFile());
+            GradleConnector connector =
+                    GradleConnector.newConnector()
+                            .forProjectDirectory(repositoryRoot.toFile())
+                            .useGradleUserHomeDir(files.gradleUserHome().toFile());
             configureConnector(connector, executionMode, wrapperScript, gradleVersion);
 
-            CancellationTokenSource cancellationTokenSource = GradleConnector.newCancellationTokenSource();
+            CancellationTokenSource cancellationTokenSource =
+                    GradleConnector.newCancellationTokenSource();
             ExecutorService executorService = Executors.newSingleThreadExecutor(daemonFactory());
             try (ProjectConnection connection = connector.connect()) {
                 BuildLauncher launcher = connection.newBuild().forTasks("springBootAnalyzerModel");
@@ -106,20 +115,19 @@ public class GradleToolingApiExecutionService {
                         output,
                         executionLabel,
                         gradleVersion,
-                        javaFeatureVersion
-                );
+                        javaFeatureVersion);
             } finally {
                 executorService.shutdownNow();
             }
         } catch (IOException | GradleConnectionException exception) {
             String message = GradleExecutionSupport.redact(exception.getMessage());
-            GradleFailureClassifier.ClassifiedGradleFailure classifiedFailure = GradleExecutionSupport.classifyFailure(
-                    message,
-                    gradleVersion,
-                    javaFeatureVersion,
-                    gradleJavaCompatibilityService,
-                    gradleFailureClassifier
-            );
+            GradleFailureClassifier.ClassifiedGradleFailure classifiedFailure =
+                    GradleExecutionSupport.classifyFailure(
+                            message,
+                            gradleVersion,
+                            javaFeatureVersion,
+                            gradleJavaCompatibilityService,
+                            gradleFailureClassifier);
             GradleExecutionFailureType failureType = classifiedFailure.failureType();
             logFailure(failureType, message, gradleVersion, javaFeatureVersion, exception);
             return new GradleExecutionResult(
@@ -133,13 +141,21 @@ public class GradleToolingApiExecutionService {
                     gradleVersion,
                     String.valueOf(javaFeatureVersion),
                     failureType,
-                    conciseErrorMessage(failureType, gradleVersion, javaFeatureVersion, message, classifiedFailure.pluginResolutionFailure()),
-                    classifiedFailure.pluginResolutionFailure()
-            );
+                    conciseErrorMessage(
+                            failureType,
+                            gradleVersion,
+                            javaFeatureVersion,
+                            message,
+                            classifiedFailure.pluginResolutionFailure()),
+                    classifiedFailure.pluginResolutionFailure());
         }
     }
 
-    private void configureConnector(GradleConnector connector, GradleExecutionMode executionMode, Path wrapperScript, String gradleVersion) {
+    private void configureConnector(
+            GradleConnector connector,
+            GradleExecutionMode executionMode,
+            Path wrapperScript,
+            String gradleVersion) {
         if (executionMode == GradleExecutionMode.WRAPPER && wrapperScript != null) {
             connector.useBuildDistribution();
             return;
@@ -147,7 +163,9 @@ public class GradleToolingApiExecutionService {
         connector.useGradleVersion(gradleVersion);
     }
 
-    private List<String> arguments(GradleExecutionSupport.ExecutionFiles files, AnalyzerProperties.GradleProperties properties) {
+    private List<String> arguments(
+            GradleExecutionSupport.ExecutionFiles files,
+            AnalyzerProperties.GradleProperties properties) {
         List<String> arguments = new ArrayList<>();
         arguments.add("--console=plain");
         arguments.addAll(GradleExecutionSupport.joinJvmArgs(properties));
@@ -171,75 +189,75 @@ public class GradleToolingApiExecutionService {
             CappedOutputStream output,
             String executionLabel,
             String gradleVersion,
-            int javaFeatureVersion
-    ) {
+            int javaFeatureVersion) {
         try {
             future.get(timeout.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
             LOGGER.info("Tooling API Gradle diagnostic task completed successfully");
             return new GradleExecutionResult(
                     true,
-                false,
-                0,
-                reportFile,
-                initScript,
-                GradleExecutionSupport.redact(output.asString()),
-                executionLabel,
-                gradleVersion,
-                String.valueOf(javaFeatureVersion),
-                GradleExecutionFailureType.NONE,
-                null,
-                null
-            );
+                    false,
+                    0,
+                    reportFile,
+                    initScript,
+                    GradleExecutionSupport.redact(output.asString()),
+                    executionLabel,
+                    gradleVersion,
+                    String.valueOf(javaFeatureVersion),
+                    GradleExecutionFailureType.NONE,
+                    null,
+                    null);
         } catch (TimeoutException exception) {
             cancellationTokenSource.cancel();
             future.cancel(true);
             LOGGER.warn("Tooling API Gradle diagnostic task timed out after {}", timeout);
             return new GradleExecutionResult(
-                false,
-                true,
-                -1,
-                reportFile,
-                initScript,
-                GradleExecutionSupport.redact(output.asString()),
-                executionLabel,
-                gradleVersion,
-                String.valueOf(javaFeatureVersion),
-                GradleExecutionFailureType.TIMED_OUT,
-                "Gradle diagnostic task timed out.",
-                null
-            );
+                    false,
+                    true,
+                    -1,
+                    reportFile,
+                    initScript,
+                    GradleExecutionSupport.redact(output.asString()),
+                    executionLabel,
+                    gradleVersion,
+                    String.valueOf(javaFeatureVersion),
+                    GradleExecutionFailureType.TIMED_OUT,
+                    "Gradle diagnostic task timed out.",
+                    null);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             cancellationTokenSource.cancel();
             LOGGER.warn("Tooling API Gradle diagnostic task interrupted");
             LOGGER.debug("Tooling API Gradle diagnostic task interrupted", exception);
             return new GradleExecutionResult(
-                false,
-                false,
-                -1,
-                reportFile,
-                initScript,
-                GradleExecutionSupport.redact(output.asString()),
-                executionLabel,
-                gradleVersion,
-                String.valueOf(javaFeatureVersion),
-                GradleExecutionFailureType.UNKNOWN,
-                "Gradle diagnostic task was interrupted.",
-                null
-            );
+                    false,
+                    false,
+                    -1,
+                    reportFile,
+                    initScript,
+                    GradleExecutionSupport.redact(output.asString()),
+                    executionLabel,
+                    gradleVersion,
+                    String.valueOf(javaFeatureVersion),
+                    GradleExecutionFailureType.UNKNOWN,
+                    "Gradle diagnostic task was interrupted.",
+                    null);
         } catch (ExecutionException exception) {
             String outputMessage = GradleExecutionSupport.redact(output.asString());
-            String exceptionMessage = exception.getCause() == null ? exception.getMessage() : exception.getCause().getMessage();
-            String combinedMessage = (outputMessage == null || outputMessage.isBlank())
-                    ? GradleExecutionSupport.redact(exceptionMessage)
-                    : outputMessage;
-            GradleFailureClassifier.ClassifiedGradleFailure classifiedFailure = GradleExecutionSupport.classifyFailure(
-                    combinedMessage,
-                    gradleVersion,
-                    javaFeatureVersion,
-                    gradleJavaCompatibilityService,
-                    gradleFailureClassifier
-            );
+            String exceptionMessage =
+                    exception.getCause() == null
+                            ? exception.getMessage()
+                            : exception.getCause().getMessage();
+            String combinedMessage =
+                    (outputMessage == null || outputMessage.isBlank())
+                            ? GradleExecutionSupport.redact(exceptionMessage)
+                            : outputMessage;
+            GradleFailureClassifier.ClassifiedGradleFailure classifiedFailure =
+                    GradleExecutionSupport.classifyFailure(
+                            combinedMessage,
+                            gradleVersion,
+                            javaFeatureVersion,
+                            gradleJavaCompatibilityService,
+                            gradleFailureClassifier);
             GradleExecutionFailureType failureType = classifiedFailure.failureType();
             logFailure(failureType, combinedMessage, gradleVersion, javaFeatureVersion, exception);
             return new GradleExecutionResult(
@@ -258,10 +276,8 @@ public class GradleToolingApiExecutionService {
                             gradleVersion,
                             javaFeatureVersion,
                             combinedMessage,
-                            classifiedFailure.pluginResolutionFailure()
-                    ),
-                    classifiedFailure.pluginResolutionFailure()
-            );
+                            classifiedFailure.pluginResolutionFailure()),
+                    classifiedFailure.pluginResolutionFailure());
         } finally {
             executorService.shutdownNow();
         }
@@ -272,23 +288,30 @@ public class GradleToolingApiExecutionService {
             String gradleVersion,
             int javaFeatureVersion,
             String message,
-            com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradlePluginResolutionFailure pluginResolutionFailure
-    ) {
+            com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradlePluginResolutionFailure
+                    pluginResolutionFailure) {
         return switch (failureType) {
             case INCOMPATIBLE_JAVA_AND_GRADLE ->
                     "Diagnostic Gradle %s cannot run on Java %d. Use Gradle 9.1.0+ or configure analyzer.gradle.java-home."
                             .formatted(gradleVersion, javaFeatureVersion);
             case TIMED_OUT -> "Gradle diagnostic task timed out.";
-            case INIT_SCRIPT_COMPILATION_FAILED ->
-                    helperScopeMessage(message);
+            case INIT_SCRIPT_COMPILATION_FAILED -> helperScopeMessage(message);
             case SETTINGS_PLUGIN_RESOLUTION_FAILED ->
                     pluginResolutionFailure == null
-                            ? "Settings plugin could not be resolved before the analyzer diagnostic task could run."
+                            ? "Settings plugin could not be resolved before the analyzer diagnostic"
+                                    + " task could run."
                             : "Settings plugin could not be resolved: %s:%s"
-                                    .formatted(pluginResolutionFailure.pluginId(), pluginResolutionFailure.version());
-            case PLUGIN_RESOLUTION_FAILED -> "Build plugin could not be resolved before the analyzer diagnostic task could run.";
+                                    .formatted(
+                                            pluginResolutionFailure.pluginId(),
+                                            pluginResolutionFailure.version());
+            case PLUGIN_RESOLUTION_FAILED ->
+                    "Build plugin could not be resolved before the analyzer diagnostic task could"
+                            + " run.";
             case BUILD_LOGIC_FAILED -> "Gradle diagnostic task failed during build configuration.";
-            default -> message == null || message.isBlank() ? "Gradle diagnostic task failed." : message;
+            default ->
+                    message == null || message.isBlank()
+                            ? "Gradle diagnostic task failed."
+                            : message;
         };
     }
 
@@ -297,25 +320,29 @@ public class GradleToolingApiExecutionService {
             String message,
             String gradleVersion,
             int javaFeatureVersion,
-            Exception exception
-    ) {
+            Exception exception) {
         if (failureType == GradleExecutionFailureType.INCOMPATIBLE_JAVA_AND_GRADLE) {
             LOGGER.warn(
-                    "Gradle model analysis skipped: diagnostic Gradle {} is not compatible with Java {}. Use Gradle 9.1.0+.",
+                    "Gradle model analysis skipped: diagnostic Gradle {} is not compatible with"
+                            + " Java {}. Use Gradle 9.1.0+.",
                     gradleVersion,
-                    javaFeatureVersion
-            );
+                    javaFeatureVersion);
             LOGGER.debug("Tooling API Gradle diagnostic task failed", exception);
             return;
         }
         if (failureType == GradleExecutionFailureType.SETTINGS_PLUGIN_RESOLUTION_FAILED
                 || failureType == GradleExecutionFailureType.PLUGIN_RESOLUTION_FAILED) {
-            LOGGER.warn("Tooling API Gradle diagnostic task failed during plugin resolution: {}", message);
+            LOGGER.warn(
+                    "Tooling API Gradle diagnostic task failed during plugin resolution: {}",
+                    message);
             LOGGER.debug("Tooling API Gradle diagnostic task failed", exception);
             return;
         }
         if (failureType == GradleExecutionFailureType.INIT_SCRIPT_COMPILATION_FAILED) {
-            LOGGER.warn("Tooling API Gradle diagnostic task failed because the analyzer generated an invalid init script: {}", message);
+            LOGGER.warn(
+                    "Tooling API Gradle diagnostic task failed because the analyzer generated an"
+                            + " invalid init script: {}",
+                    message);
             LOGGER.debug("Tooling API Gradle diagnostic task failed", exception);
             return;
         }
@@ -327,9 +354,12 @@ public class GradleToolingApiExecutionService {
         String normalized = message == null ? "" : message.toLowerCase();
         if (normalized.contains("could not find method sanitizevalue()")
                 || normalized.contains("could not find method sbasanitizevalue()")) {
-            return "Gradle model analysis failed because the generated init script called helper method sanitizeValue from a Gradle task closure. This is an analyzer init-script scoping bug.";
+            return "Gradle model analysis failed because the generated init script called helper"
+                    + " method sanitizeValue from a Gradle task closure. This is an analyzer"
+                    + " init-script scoping bug.";
         }
-        return "Gradle model analysis failed because the analyzer generated an invalid Gradle init script. This is likely a path escaping or helper scoping issue.";
+        return "Gradle model analysis failed because the analyzer generated an invalid Gradle init"
+                + " script. This is likely a path escaping or helper scoping issue.";
     }
 
     private ThreadFactory daemonFactory() {
