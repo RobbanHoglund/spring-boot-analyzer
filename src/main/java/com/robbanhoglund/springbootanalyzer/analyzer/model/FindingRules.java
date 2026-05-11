@@ -88,7 +88,7 @@ public final class FindingRules {
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
     /** A {@code fixedRate} or {@code fixedDelay} scheduler is configured with an interval
-     *  shorter than one second, which may overwhelm downstream systems or the thread pool. */
+     *  shorter than one minute, which may overwhelm downstream systems or the thread pool. */
     public static final FindingRule SPRING_SCHEDULED_SHORT_INTERVAL =
             rule(
                     "SPRING_SCHEDULED_SHORT_INTERVAL",

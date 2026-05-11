@@ -40,7 +40,7 @@ This catalog documents every static-analysis rule built into the Spring Boot Ana
 | `SPRING_VALUE_NO_DEFAULT` | WARNING | `@Value("${prop}")` without a `:default` fallback | Application fails to start if the property is absent in any environment | Add a safe default (`@Value("${prop:false}")`) or validate eagerly with `@ConfigurationProperties` |
 | `SPRING_JPA_SHOW_SQL_PROD` | WARNING | `spring.jpa.show-sql=true` in a production-oriented profile | SQL is written directly to stdout, bypassing log-level controls and structured logging | Use `logging.level.org.hibernate.SQL=DEBUG` instead, gated to non-production profiles |
 | `SPRING_CONNECTION_POOL_MISCONFIGURED` | WARNING | `spring.datasource.hikari.maximum-pool-size` set to 1 or less | Serializes all database access; causes severe throughput bottleneck under load | Set pool size to a value appropriate for your workload (commonly 5–20) |
-| `SPRING_CONFIGURATION_PROPERTIES_NOT_VALIDATED` | INFO | `@ConfigurationProperties` class has no `@Validated` annotation | Bean Validation constraints on the class are silently ignored at startup | Add `@Validated` to the class so constraint violations fail fast on context load |
+| `SPRING_VIRTUAL_THREADS_JAVA_TOO_OLD` | WARNING | `spring.threads.virtual.enabled=true` configured but detected Java version is below 21 | Virtual threads require Java 21 (Project Loom); on older JVMs Spring Boot may fail to start or silently fall back to platform threads | Upgrade to Java 21+ or remove the virtual-threads property |
 
 ---
 
@@ -112,7 +112,6 @@ spring.jpa.hibernate.ddl-auto=create-drop
 | `SPRING_SCHEDULED_EXECUTOR_SERVICE_NOT_CONFIGURED` | WARNING | Multiple `@Scheduled` methods without a dedicated `TaskScheduler` | The default single-threaded scheduler means a slow job delays all subsequent jobs | Configure a `ThreadPoolTaskScheduler` bean |
 | `SPRING_SCHEDULED_SHORT_INTERVAL` | INFO | `fixedRate` or `fixedDelay` shorter than 1 minute | High-frequency polling increases load and may mask underlying inefficiencies | Consider event-driven alternatives or increase the interval |
 | `SPRING_SCHEDULED_CRON_NO_ZONE` | INFO | `@Scheduled` cron expression has no `zone` attribute | Fires at different wall-clock times depending on the JVM default time zone | Add `zone = "UTC"` (or another explicit zone) to the annotation |
-| `SPRING_SCHEDULED_NO_OBSERVABILITY` | INFO | `@Scheduled` method has no observability annotation | Job executions are invisible to distributed tracing | Add `@Observed` (Spring Boot 3+) or a `@Timed` annotation |
 
 ---
 
@@ -150,6 +149,7 @@ spring.jpa.hibernate.ddl-auto=create-drop
 |---------|----------|-----------------|----------------|----------------|
 | `SPRING_REQUEST_BODY_NO_VALID` | INFO | `@RequestBody` parameter is missing `@Valid` | Bean Validation constraints on the DTO are silently ignored | Add `@Valid` (or `@Validated`) to the parameter |
 | `SPRING_MODEL_ATTRIBUTE_NO_VALID` | INFO | `@ModelAttribute` parameter is missing `@Valid` | Same as above for form-binding scenarios | Add `@Valid` to the parameter |
+| `SPRING_CONFIGURATION_PROPERTIES_NOT_VALIDATED` | INFO | `@ConfigurationProperties` class has no `@Validated` annotation | Bean Validation constraints on the class are silently ignored at startup | Add `@Validated` to the class so constraint violations fail fast on context load |
 
 ---
 
@@ -249,6 +249,7 @@ spring.jpa.hibernate.ddl-auto=create-drop
 | Rule ID | Severity | What it detects | Why it matters | Recommendation |
 |---------|----------|-----------------|----------------|----------------|
 | `SPRING_HIBERNATE_VERSION_MISMATCH` | **ERROR** | Resolved `hibernate-core` version is below 6.x while the resolved Spring Boot version is 3.x | Spring Boot 3 requires Hibernate 6; an older Hibernate causes startup failures and incompatible JPA behaviour. Only detected when Gradle model data is available (`EXTENDED` mode). | Remove the explicit Hibernate version override and let the Spring Boot BOM manage it, or upgrade to Hibernate 6+ |
+| `SPRING_BOOT3_REQUIRES_JAVA17` | **ERROR** | Spring Boot version is 3.x but the detected Java version (from Gradle toolchain or build-file hint) is below 17 | Spring Boot 3 requires Java 17 as a minimum; the application will fail to start on Java 11 or earlier | Upgrade to Java 17+ or downgrade to Spring Boot 2.x |
 
 ---
 

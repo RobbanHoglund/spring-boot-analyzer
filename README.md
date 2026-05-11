@@ -66,12 +66,12 @@ Detects Spring stereotypes and maps the application's component structure:
 
 ## Findings
 
-The analyzer produces **84 rules** across 18 categories. Each finding includes severity, confidence, why it matters, recommended action, evidence, and — for Gradle-model-backed rules — the exact resolved library versions involved.
+The analyzer produces **86 rules** across 18 categories. Each finding includes severity, confidence, why it matters, recommended action, evidence, and — for Gradle-model-backed rules — the exact resolved library versions involved.
 
 | Category | Rules | Highest severity |
 |----------|------:|-----------------|
 | Security | 9 | WARNING |
-| Configuration | 4 | WARNING |
+| Configuration | 5 | WARNING |
 | Profile drift | 7 | WARNING |
 | Persistence | 8 | ERROR |
 | Transaction | 5 | WARNING |
@@ -87,7 +87,7 @@ The analyzer produces **84 rules** across 18 categories. Each finding includes s
 | Startup | 1 | WARNING |
 | Actuator | 1 | WARNING |
 | API surface | 1 | INFO |
-| Dependency compatibility | 1 | ERROR |
+| Dependency compatibility | 2 | ERROR |
 
 See [docs/RULES.md](docs/RULES.md) for the complete rule catalog including detection logic, recommendations, and false-positive guidance.
 

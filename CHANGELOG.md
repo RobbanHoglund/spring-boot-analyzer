@@ -6,26 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-05-11
+
 ### Added
 
-- Initial Spring Boot static analysis engine with 45+ rules across security, configuration, persistence, transactions, HTTP clients, exception handling, observability, and maintainability categories
-- Component inventory detection for `@SpringBootApplication`, `@RestController`, `@Service`, `@Repository`, `@Component`, `@Configuration`, `@Entity`, and `@ConfigurationProperties`
-- HTTP surface analysis covering inbound REST endpoints, outbound HTTP calls, and actuator exposure
-- Scheduling and messaging analysis for `@Scheduled`, `@Async`, `@KafkaListener`, `@RabbitListener`, `@JmsListener`, and `@SqsListener`
-- Configuration analysis for `application.properties`, `application.yml`, and profile-specific variants, with sensitive value redaction
-- Gradle model analysis in EXTENDED mode via the Gradle Tooling API
-- STATIC_ONLY and EXTENDED analysis modes
-- Private repository support via HTTPS credentials
-- GitHub permalink generation for findings
-- Browser UI with findings table, configuration review, HTTP surface, components, dependencies, and Gradle model tabs
-- CI pipeline (GitHub Actions) for backend and frontend
+- 86 static-analysis rules across 18 categories: Security, Configuration, Profile Drift, Persistence, Transaction, Scheduling, HTTP Clients, Exception Handling, Validation, Maintainability, Observability, Caching, Testing Practice, Conditional Beans, Startup, Actuator, API Surface, Dependency Compatibility
+- Java version compatibility rules: `SPRING_BOOT3_REQUIRES_JAVA17` (ERROR) and `SPRING_VIRTUAL_THREADS_JAVA_TOO_OLD` (WARNING)
+- Finding suppression via `.analyzer-suppress.yml` in the analyzed repository root — suppress by `ruleId` with optional `reason`
+- Collapsible dependency tree in the Dependencies tab, grouped by Maven group ID, Spring groups pinned to the top
+- Severity filter toggle buttons and per-category counts in the category dropdown
+- 5 profile-drift detection rules (cross-profile property drift, H2 in non-test profiles, Flyway disabled in test, etc.)
+- 8 observability gap rules (`@Observed` / `@Timed` coverage for controllers, listeners, async methods, event listeners, exception handlers)
+- 5 caching-practice rules (`@Cacheable` on void methods, mutable return types, private methods, self-invocation, evict without `allEntries`)
+- 5 testing-practice rules (`@SpringBootTest` overuse, missing transactional rollback, `@MockBean` overuse, missing fixed clock, unnecessary web environment)
+- Structured Markdown report export (download as `.md`) alongside existing JSON, SARIF 2.1.0, and plain-text summary exports
+- CLI mode: `java -jar spring-boot-analyzer.jar --repo <url>` with `--format text|json|sarif`, `--fail-on`, `--quiet`, and `--output` flags
+- Multi-stage Dockerfile; `docker run -p 8085:8085 spring-boot-analyzer` starts the full stack
+- STATIC_ONLY and EXTENDED analysis modes; EXTENDED uses the Gradle Tooling API for resolved dependency versions
+- GitHub permalink generation for every finding location
+- Real-time analysis progress streamed to the browser
+- Settings page: HTTPS token profiles and saved repository profiles stored in browser `localStorage`
 - Apache 2.0 license
 
 ### Changed
 
+- Dependency tree replaces the flat resolved-dependencies table
+- Gradle model uses resolved library versions in finding rules (Hibernate version mismatch, Spring Boot BOM checks)
+- CI pipeline (GitHub Actions) runs `spotlessCheck` on every push and PR
+
 ### Fixed
 
-### Security
+- Section anchor links in the results view now scroll below the sticky jump navigation bar (`scroll-margin-top`)
+- Deep-link targets for HTTP subsections (inbound, outbound, actuator) point to the correct table rather than the top of the HTTP section
 
 ---
 
