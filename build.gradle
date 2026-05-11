@@ -6,7 +6,7 @@ plugins {
 }
 
 group = 'io.github.robbanhoglund'
-version = '0.0.1-SNAPSHOT'
+version = '0.1.0'
 description = 'spring-boot-analyzer'
 
 repositories {

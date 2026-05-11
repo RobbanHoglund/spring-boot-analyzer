@@ -15,7 +15,7 @@ import type { AnalyzeRepositoryResponse, Finding } from '../types';
 // Minimal SARIF 2.1.0 type surface (only what we produce)
 // ---------------------------------------------------------------------------
 
-export interface SarifDocument {
+interface SarifDocument {
   $schema: string;
   version: '2.1.0';
   runs: SarifRun[];

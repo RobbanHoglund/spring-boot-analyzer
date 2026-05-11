@@ -23,7 +23,7 @@ import org.junit.jupiter.api.io.TempDir;
  * {@link ApplicationProperty} objects directly so the tests are independent
  * of the configuration file parser.
  */
-class ProfileDriftFindingAnalyzerTest {
+class ConfigurationFindingAnalyzerProfileDriftTest {
 
     @TempDir Path repoRoot;
 

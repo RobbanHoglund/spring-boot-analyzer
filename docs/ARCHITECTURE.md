@@ -73,9 +73,12 @@ HttpSurfaceAnalyzer        maps @RequestMapping endpoints + outbound HTTP calls 
 SchedulingAnalyzer         finds @Scheduled / @Async methods
 MessagingAnalyzer          finds @KafkaListener / @RabbitListener / @JmsListener / @SqsListener
         │
-StaticPracticeFindingAnalyzer   source-code rule findings (transactions, async, exceptions …)
-ConfigurationFindingAnalyzer    configuration + Gradle model rule findings
-ObservabilityFindingAnalyzer    observability gap findings (@Timed vs @Observed, etc.)
+StaticPracticeFindingAnalyzer    source-code rule findings (transactions, async, exceptions …)
+ConfigurationFindingAnalyzer     configuration + Gradle model rule findings
+ObservabilityFindingAnalyzer     observability gap findings (@Timed vs @Observed, etc.)
+TestingPracticeFindingAnalyzer   testing practice rule findings
+CachingPracticeFindingAnalyzer   caching practice rule findings
+ObservabilityGapFindingAnalyzer  observability coverage gap findings
         │
         └──► AnalysisResult (all findings + all sub-analyses combined)
 ```
@@ -114,7 +117,10 @@ com.robbanhoglund.springbootanalyzer
 │   ├── JavaSourceAnalyzer.java             Java AST analysis (JavaParser)
 │   ├── StaticPracticeFindingAnalyzer.java  source-code practice rules
 │   ├── ConfigurationFindingAnalyzer.java   configuration + Gradle model rules
-│   ├── ObservabilityFindingAnalyzer.java   observability gap rules
+│   ├── ObservabilityFindingAnalyzer.java   observability gap rules (@Timed vs @Observed)
+│   ├── TestingPracticeFindingAnalyzer.java testing practice rules
+│   ├── CachingPracticeFindingAnalyzer.java caching practice rules
+│   ├── ObservabilityGapFindingAnalyzer.java observability coverage gap rules
 │   │
 │   ├── configuration/                      application.properties / YAML parsing
 │   │   ├── ConfigurationAnalyzer.java
@@ -135,7 +141,6 @@ com.robbanhoglund.springbootanalyzer
 │   │   ├── GradleExecutableLocator.java
 │   │   ├── GradleFailureClassifier.java
 │   │   ├── GradleModelReportParser.java
-│   │   ├── GradlePluginPortalPreflightChecker.java
 │   │   ├── GradleJavaCompatibilityService.java
 │   │   ├── GradleSettingsPluginScanner.java
 │   │   ├── SettingsPluginWorkaroundService.java
@@ -289,8 +294,11 @@ analyze()
 | 8 | `StaticPracticeFindingAnalyzer` | root + all prior analyses + classes | findings |
 | 9 | `ConfigurationFindingAnalyzer` | root + `BuildInfo` + `ConfigurationAnalysis` + `GradleModelAnalysis` | findings |
 | 10 | `ObservabilityFindingAnalyzer` | root + `RuntimeStackAnalysis` | findings |
-| 11 | `SchedulingAnalyzer` | repository root | `SchedulingAnalysis` |
-| 12 | `MessagingAnalyzer` | repository root | `MessagingAnalysis` |
+| 11 | `TestingPracticeFindingAnalyzer` | root + classes | findings |
+| 12 | `CachingPracticeFindingAnalyzer` | root + classes | findings |
+| 13 | `ObservabilityGapFindingAnalyzer` | root + `RuntimeStackAnalysis` + classes | findings |
+| 14 | `SchedulingAnalyzer` | repository root | `SchedulingAnalysis` |
+| 15 | `MessagingAnalyzer` | repository root | `MessagingAnalysis` |
 
 All collected findings are assembled into an `AnalysisResult` record and returned. No deduplication happens inside the analyzer — that is done by `FindingNormalizer` in the application layer.
 
@@ -366,6 +374,18 @@ Configuration and build model rules: plaintext secrets (`SPRING_SECRET_LITERAL`)
 
 Checks that `@Scheduled` methods and messaging listeners carry `@Timed` or `@Observed`. On Spring Boot 3+ projects, flags uses of `@Timed` and recommends `@Observed` instead (which produces both a metric and a trace span).
 
+### TestingPracticeFindingAnalyzer
+
+Detects testing anti-patterns: `@SpringBootTest` overuse where a slice test would suffice, integration test classes missing `@Transactional` rollback, excessive `@MockBean` usage, time-sensitive tests missing a fixed `Clock`, and `@SpringBootTest` starting an unnecessary mock web environment.
+
+### CachingPracticeFindingAnalyzer
+
+Detects caching anti-patterns: `@Cacheable` on `void` methods, `@Cacheable`/`@CachePut` returning mutable collections, cache annotations on private methods (silently ignored by Spring AOP), cache self-invocation, and `@CacheEvict` without `allEntries = true` on no-arg methods.
+
+### ObservabilityGapFindingAnalyzer
+
+Detects observability coverage gaps: async methods, event listeners, and exception handlers that carry no `@Observed` or `@Timed` annotation; `WebClient` constructed manually instead of via the auto-configured `WebClient.Builder` (which bypasses Micrometer tracing); and `@Observed` placed on private methods where Spring AOP cannot intercept.
+
 ---
 
 ## Finding model
@@ -412,7 +432,7 @@ The `builder(FindingRule, FindingConfidence)` overload is strongly preferred bec
 
 ### Rule catalogue
 
-All ~50 rule constants live in `FindingRules.java`. Rule IDs are stable public identifiers — do not rename them without a migration step, as clients may suppress specific rules by ID.
+All 86 rule constants live in `FindingRules.java`. Rule IDs are stable public identifiers — do not rename them without a migration step, as clients may suppress specific rules by ID.
 
 ---
 

@@ -1,4 +1,3 @@
-import { inferRepositoryHost as inferHostFromUrl } from './tokenStore';
 import type { RepositoryProfile, RepositoryProfileInput } from './types';
 
 const STORAGE_KEY = 'springBootAnalyzer.repositories.v1';
@@ -113,10 +112,6 @@ export function inferAuthMode(repositoryUrl: string): 'none' | 'token' | 'ssh' {
   }
 
   return 'none';
-}
-
-export function inferRepositoryHost(repositoryUrl: string): string | null {
-  return inferHostFromUrl(repositoryUrl);
 }
 
 function isRepositoryProfileLike(value: unknown): value is RepositoryProfile {
