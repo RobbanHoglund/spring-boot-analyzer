@@ -176,6 +176,7 @@ spring.jpa.hibernate.ddl-auto=create-drop
 | `SPRING_BEAN_ON_NON_CONFIGURATION` | WARNING | `@Bean` method in a class annotated with `@Component` instead of `@Configuration` | Without CGLIB proxying, inter-bean method calls create new instances instead of singletons | Change the class annotation to `@Configuration` |
 | `SPRING_SIDE_EFFECT_ORCHESTRATION_NO_BOUNDARY` | INFO | Multiple external calls with no compensation or consistency boundary | A failure mid-sequence leaves the system in a partially applied state | Use the Saga pattern, outbox pattern, or an explicit rollback strategy |
 | `SPRING_REPEATED_FALLBACK_PARSING_PATTERN` | INFO | Try-parse-then-fallback repeated three or more times in the same class | Duplicated error-handling logic that should be extracted to a utility | Extract a reusable `parseOrDefault(value, fallback)` helper |
+| `SPRING_ASYNC_PROXY_BYPASS` | WARNING | `@Async` on a private method | Spring's proxy cannot intercept private methods; the method runs synchronously | Make the method at least package-private, or move it to a separate bean |
 
 ---
 
@@ -209,14 +210,6 @@ spring.jpa.hibernate.ddl-auto=create-drop
 | Rule ID | Severity | What it detects | Why it matters | Recommendation |
 |---------|----------|-----------------|----------------|----------------|
 | `SPRING_REQUEST_MAPPING_NO_METHOD` | INFO | `@RequestMapping` has no `method` attribute | Matches all HTTP verbs, including mutating methods like DELETE and PUT | Use `@GetMapping`, `@PostMapping`, etc., or add `method = RequestMethod.GET` explicitly |
-
----
-
-## Async
-
-| Rule ID | Severity | What it detects | Why it matters | Recommendation |
-|---------|----------|-----------------|----------------|----------------|
-| `SPRING_ASYNC_PROXY_BYPASS` | WARNING | `@Async` on a private method | Spring's proxy cannot intercept private methods; the method runs synchronously | Make the method at least package-private, or move it to a separate bean |
 
 ---
 
