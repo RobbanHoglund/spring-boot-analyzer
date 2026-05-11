@@ -234,6 +234,7 @@ spring.jpa.hibernate.ddl-auto=create-drop
 | `SPRING_CACHE_ON_PRIVATE_METHOD` | WARNING | Cache annotation (`@Cacheable`, `@CacheEvict`, `@CachePut`) on a private method | Spring AOP cannot intercept private methods; the annotation is silently ignored at runtime | Make the method at least package-private, or move it to a separate bean |
 | `SPRING_CACHE_SELF_INVOCATION` | WARNING | Cached method called directly from within the same class | Internal calls bypass the Spring proxy, so the cache annotation has no effect | Extract the cached method to a separate bean, or inject a self-reference with `@Autowired` |
 | `SPRING_CACHE_EVICT_WITHOUT_ALL_ENTRIES` | INFO | `@CacheEvict` on a no-arg method without `allEntries = true` | Without parameters, Spring uses `SimpleKey.EMPTY` as the eviction key, which only removes a single entry stored under that key — not the whole cache | Add `allEntries = true` if the intent is to clear all entries; add parameters if you need key-targeted eviction |
+| `SPRING_CACHEABLE_SYNC_INCOMPATIBLE` | **ERROR** | `@Cacheable(sync = true)` combined with `unless` attribute or multiple cache names | Spring's `CacheAspectSupport` explicitly rejects these combinations and throws `IllegalArgumentException` on the first method invocation | Remove `unless` when using `sync = true`; use a single cache name per synchronized `@Cacheable` |
 
 ---
 

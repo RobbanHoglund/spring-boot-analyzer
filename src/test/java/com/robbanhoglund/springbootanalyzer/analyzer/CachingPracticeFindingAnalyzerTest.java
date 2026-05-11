@@ -308,4 +308,110 @@ class CachingPracticeFindingAnalyzerTest {
 
         assertThat(byRule(findings(), "SPRING_CACHE_EVICT_WITHOUT_ALL_ENTRIES")).isNull();
     }
+
+    // ── SPRING_CACHEABLE_SYNC_INCOMPATIBLE ────────────────────────────────────
+
+    @Test
+    void flagsCacheableSyncTrueWithUnless() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ProductService.java",
+                """
+                package com.example;
+                import org.springframework.cache.annotation.Cacheable;
+                public class ProductService {
+                    @Cacheable(value = "products", sync = true, unless = "#result == null")
+                    public String getById(Long id) { return ""; }
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_CACHEABLE_SYNC_INCOMPATIBLE");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("ProductService#getById");
+        assertThat(f.message()).contains("unless");
+    }
+
+    @Test
+    void flagsCacheableSyncTrueWithMultipleCacheNames() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ProductService.java",
+                """
+                package com.example;
+                import org.springframework.cache.annotation.Cacheable;
+                public class ProductService {
+                    @Cacheable(value = {"products", "catalog"}, sync = true)
+                    public String getById(Long id) { return ""; }
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_CACHEABLE_SYNC_INCOMPATIBLE");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("ProductService#getById");
+        assertThat(f.message()).contains("multiple cache names");
+    }
+
+    @Test
+    void flagsCacheableSyncTrueWithCacheNamesAndUnless() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ProductService.java",
+                """
+                package com.example;
+                import org.springframework.cache.annotation.Cacheable;
+                public class ProductService {
+                    @Cacheable(cacheNames = {"a", "b"}, sync = true, unless = "#result == null")
+                    public String getById(Long id) { return ""; }
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_CACHEABLE_SYNC_INCOMPATIBLE");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("unless").contains("multiple cache names");
+    }
+
+    @Test
+    void doesNotFlagCacheableSyncTrueWithSingleCacheAndNoUnless() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ProductService.java",
+                """
+                package com.example;
+                import org.springframework.cache.annotation.Cacheable;
+                public class ProductService {
+                    @Cacheable(value = "products", sync = true)
+                    public String getById(Long id) { return ""; }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_CACHEABLE_SYNC_INCOMPATIBLE")).isNull();
+    }
+
+    @Test
+    void doesNotFlagCacheableSyncFalseWithMultipleCaches() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ProductService.java",
+                """
+                package com.example;
+                import org.springframework.cache.annotation.Cacheable;
+                public class ProductService {
+                    @Cacheable(value = {"products", "catalog"}, sync = false)
+                    public String getById(Long id) { return ""; }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_CACHEABLE_SYNC_INCOMPATIBLE")).isNull();
+    }
+
+    @Test
+    void doesNotFlagCacheableWithoutSyncAttribute() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ProductService.java",
+                """
+                package com.example;
+                import org.springframework.cache.annotation.Cacheable;
+                public class ProductService {
+                    @Cacheable(value = {"products", "catalog"}, unless = "#result == null")
+                    public String getById(Long id) { return ""; }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_CACHEABLE_SYNC_INCOMPATIBLE")).isNull();
+    }
 }

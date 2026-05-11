@@ -817,6 +817,19 @@ public final class FindingRules {
                     FindingCategory.CACHING,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
+    /** {@code @Cacheable(sync = true)} is combined with an {@code unless} expression or more than
+     *  one cache name. Both combinations are explicitly unsupported by Spring's caching
+     *  infrastructure and cause an {@code IllegalArgumentException} at runtime when the method
+     *  is first invoked. */
+    public static final FindingRule SPRING_CACHEABLE_SYNC_INCOMPATIBLE =
+            rule(
+                    "SPRING_CACHEABLE_SYNC_INCOMPATIBLE",
+                    "@Cacheable(sync = true) combined with incompatible attribute (unless or"
+                            + " multiple caches)",
+                    FindingSeverity.ERROR,
+                    FindingCategory.CACHING,
+                    FindingRuntimeDetection.RUNTIME_REQUIRED);
+
     // ── Observability gaps ────────────────────────────────────────────────────
 
     /** An {@code @Async} method has no {@code @Observed} or {@code @Timed} annotation.

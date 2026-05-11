@@ -41,6 +41,9 @@ import org.springframework.stereotype.Component;
  *       self-invocation, bypassing the proxy.
  *   <li>{@link FindingRules#SPRING_CACHE_EVICT_WITHOUT_ALL_ENTRIES} — {@code @CacheEvict} on a
  *       no-arg method without {@code allEntries = true}.
+ *   <li>{@link FindingRules#SPRING_CACHEABLE_SYNC_INCOMPATIBLE} — {@code @Cacheable(sync = true)}
+ *       combined with {@code unless} or multiple cache names, both of which are unsupported and
+ *       cause an {@code IllegalArgumentException} at runtime.
  * </ul>
  */
 @Component
@@ -143,6 +146,7 @@ public class CachingPracticeFindingAnalyzer {
             detectCacheOnPrivateMethod(cls, method, relativePath, findings);
             detectCacheEvictWithoutAllEntries(cls, method, relativePath, findings);
             detectCacheSelfInvocation(cls, method, cachedMethodNames, relativePath, findings);
+            detectCacheableSyncIncompatible(cls, method, relativePath, findings);
         }
     }
 
@@ -461,6 +465,135 @@ public class CachingPracticeFindingAnalyzer {
                         .source(relativePath, line)
                         .target(target)
                         .build());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_CACHEABLE_SYNC_INCOMPATIBLE
+    // ---------------------------------------------------------------------------
+
+    /**
+     * Flags {@code @Cacheable(sync = true)} when combined with an {@code unless} expression or
+     * more than one cache name. Spring's {@code CacheAspectSupport} validates these at the first
+     * method invocation and throws {@code IllegalArgumentException}; neither combination is
+     * supported.
+     *
+     * <p>Detection strategy:
+     *
+     * <ul>
+     *   <li>Locate {@code @Cacheable} annotations that contain {@code sync = true}.
+     *   <li>Check whether the same annotation also sets {@code unless} to a non-empty string.
+     *   <li>Check whether {@code value} / {@code cacheNames} resolves to more than one string
+     *       literal — array initialiser with ≥ 2 elements is the detectable form.
+     * </ul>
+     */
+    private void detectCacheableSyncIncompatible(
+            ClassOrInterfaceDeclaration cls,
+            MethodDeclaration method,
+            String relativePath,
+            List<Finding> findings) {
+        for (AnnotationExpr ann : method.getAnnotations()) {
+            if (!"Cacheable".equals(simpleName(ann.getNameAsString()))) {
+                continue;
+            }
+            if (!ann.isNormalAnnotationExpr()) {
+                continue;
+            }
+
+            var pairs = ann.asNormalAnnotationExpr().getPairs();
+
+            // Check sync = true
+            boolean syncTrue =
+                    pairs.stream()
+                            .filter(p -> "sync".equals(p.getNameAsString()))
+                            .anyMatch(p -> "true".equals(p.getValue().toString()));
+            if (!syncTrue) {
+                continue;
+            }
+
+            // Check for unless attribute (any non-empty value)
+            Optional<MemberValuePair> unlessPair =
+                    pairs.stream().filter(p -> "unless".equals(p.getNameAsString())).findFirst();
+
+            boolean hasUnless =
+                    unlessPair.isPresent()
+                            && !unlessPair
+                                    .get()
+                                    .getValue()
+                                    .toString()
+                                    .replaceAll("\"", "")
+                                    .isBlank();
+
+            // Check for multiple cache names (value or cacheNames as array with ≥ 2 entries)
+            boolean hasMultipleCaches =
+                    pairs.stream()
+                            .filter(
+                                    p ->
+                                            "value".equals(p.getNameAsString())
+                                                    || "cacheNames".equals(p.getNameAsString()))
+                            .anyMatch(
+                                    p ->
+                                            p.getValue().isArrayInitializerExpr()
+                                                    && p.getValue()
+                                                                    .asArrayInitializerExpr()
+                                                                    .getValues()
+                                                                    .size()
+                                                            >= 2);
+
+            if (!hasUnless && !hasMultipleCaches) {
+                continue;
+            }
+
+            Integer line = method.getBegin().map(p -> p.line).orElse(null);
+            String target = cls.getNameAsString() + "#" + method.getNameAsString();
+
+            List<String> problems = new ArrayList<>();
+            if (hasUnless) problems.add("'unless' attribute");
+            if (hasMultipleCaches) problems.add("multiple cache names");
+
+            String problemList = String.join(" and ", problems);
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_CACHEABLE_SYNC_INCOMPATIBLE,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "@Cacheable(sync = true) on "
+                                            + target
+                                            + " is combined with "
+                                            + problemList
+                                            + " — Spring will throw IllegalArgumentException at"
+                                            + " runtime.")
+                            .whyBadPractice(
+                                    "Spring's CacheAspectSupport explicitly rejects @Cacheable(sync"
+                                        + " = true) when paired with the 'unless' attribute or"
+                                        + " multiple cache names. Synchronized caching uses a"
+                                        + " single lock per cache entry; the 'unless' expression is"
+                                        + " evaluated after the method returns (making it"
+                                        + " incompatible with the lock semantics), and coordinating"
+                                        + " a lock across multiple caches is not supported.")
+                            .possibleImpact(
+                                    "IllegalArgumentException thrown on the first invocation of the"
+                                            + " method, causing a 500 error or application startup"
+                                            + " failure.")
+                            .recommendation(
+                                    hasUnless
+                                            ? "Remove the 'unless' attribute when using sync ="
+                                                    + " true. If conditional caching is required,"
+                                                    + " handle it inside the method body instead."
+                                            : "Use a single cache name when sync = true. Distribute"
+                                                    + " across multiple caches without sync if"
+                                                    + " necessary.")
+                            .evidence(
+                                    "@Cacheable(sync = true) on "
+                                            + method.getNameAsString()
+                                            + " also specifies "
+                                            + problemList
+                                            + " in "
+                                            + relativePath
+                                            + ".")
+                            .source(relativePath, line)
+                            .target(target)
+                            .build());
+        }
     }
 
     // ---------------------------------------------------------------------------
