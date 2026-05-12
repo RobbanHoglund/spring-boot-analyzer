@@ -45,155 +45,6 @@ class TransactionPracticeFindingAnalyzerTest {
         assertThat(findings()).isEmpty();
     }
 
-    // ── SPRING_TRANSACTIONAL_ON_PRIVATE_METHOD ────────────────────────────────
-
-    @Test
-    void flagsTransactionalOnPrivateMethod() throws IOException {
-        writeSourceFile(
-                "src/main/java/com/example/OrderService.java",
-                """
-                package com.example;
-                import org.springframework.transaction.annotation.Transactional;
-                public class OrderService {
-                    @Transactional
-                    private void saveOrder() {}
-                }
-                """);
-
-        Finding f = byRule(findings(), "SPRING_TRANSACTIONAL_ON_PRIVATE_METHOD");
-        assertThat(f).isNotNull();
-        assertThat(f.target()).isEqualTo("OrderService#saveOrder");
-        assertThat(f.message()).contains("private");
-    }
-
-    @Test
-    void flagsJavaxTransactionalOnPrivateMethod() throws IOException {
-        writeSourceFile(
-                "src/main/java/com/example/OrderService.java",
-                """
-                package com.example;
-                import javax.transaction.Transactional;
-                public class OrderService {
-                    @Transactional
-                    private void saveOrder() {}
-                }
-                """);
-
-        Finding f = byRule(findings(), "SPRING_TRANSACTIONAL_ON_PRIVATE_METHOD");
-        assertThat(f).isNotNull();
-        assertThat(f.target()).isEqualTo("OrderService#saveOrder");
-    }
-
-    @Test
-    void doesNotFlagTransactionalOnPublicMethod() throws IOException {
-        writeSourceFile(
-                "src/main/java/com/example/OrderService.java",
-                """
-                package com.example;
-                import org.springframework.transaction.annotation.Transactional;
-                public class OrderService {
-                    @Transactional
-                    public void saveOrder() {}
-                }
-                """);
-
-        assertThat(byRule(findings(), "SPRING_TRANSACTIONAL_ON_PRIVATE_METHOD")).isNull();
-    }
-
-    @Test
-    void doesNotFlagPrivateMethodWithoutTransactional() throws IOException {
-        writeSourceFile(
-                "src/main/java/com/example/OrderService.java",
-                """
-                package com.example;
-                public class OrderService {
-                    private void helper() {}
-                }
-                """);
-
-        assertThat(byRule(findings(), "SPRING_TRANSACTIONAL_ON_PRIVATE_METHOD")).isNull();
-    }
-
-    // ── SPRING_TRANSACTIONAL_SELF_INVOCATION ──────────────────────────────────
-
-    @Test
-    void flagsSelfInvocationOfTransactionalMethod() throws IOException {
-        writeSourceFile(
-                "src/main/java/com/example/OrderService.java",
-                """
-                package com.example;
-                import org.springframework.transaction.annotation.Transactional;
-                public class OrderService {
-                    @Transactional
-                    public void saveOrder() {}
-
-                    public void processOrder() {
-                        saveOrder();
-                    }
-                }
-                """);
-
-        Finding f = byRule(findings(), "SPRING_TRANSACTIONAL_SELF_INVOCATION");
-        assertThat(f).isNotNull();
-        assertThat(f.message()).contains("saveOrder");
-        assertThat(f.target()).isEqualTo("OrderService#processOrder");
-    }
-
-    @Test
-    void flagsExplicitThisSelfInvocationOfTransactionalMethod() throws IOException {
-        writeSourceFile(
-                "src/main/java/com/example/OrderService.java",
-                """
-                package com.example;
-                import org.springframework.transaction.annotation.Transactional;
-                public class OrderService {
-                    @Transactional
-                    public void saveOrder() {}
-
-                    public void processOrder() {
-                        this.saveOrder();
-                    }
-                }
-                """);
-
-        Finding f = byRule(findings(), "SPRING_TRANSACTIONAL_SELF_INVOCATION");
-        assertThat(f).isNotNull();
-        assertThat(f.message()).contains("saveOrder");
-    }
-
-    @Test
-    void doesNotFlagClassWithNoTransactionalMethods() throws IOException {
-        writeSourceFile(
-                "src/main/java/com/example/OrderService.java",
-                """
-                package com.example;
-                public class OrderService {
-                    public void saveOrder() {}
-                    public void processOrder() { saveOrder(); }
-                }
-                """);
-
-        assertThat(byRule(findings(), "SPRING_TRANSACTIONAL_SELF_INVOCATION")).isNull();
-    }
-
-    @Test
-    void doesNotFlagRecursiveSelfCall() throws IOException {
-        writeSourceFile(
-                "src/main/java/com/example/OrderService.java",
-                """
-                package com.example;
-                import org.springframework.transaction.annotation.Transactional;
-                public class OrderService {
-                    @Transactional
-                    public void saveOrder(int retries) {
-                        if (retries > 0) saveOrder(retries - 1);
-                    }
-                }
-                """);
-
-        assertThat(byRule(findings(), "SPRING_TRANSACTIONAL_SELF_INVOCATION")).isNull();
-    }
-
     // ── SPRING_ASYNC_TRANSACTIONAL ────────────────────────────────────────────
 
     @Test
@@ -215,6 +66,46 @@ class TransactionPracticeFindingAnalyzerTest {
         assertThat(f).isNotNull();
         assertThat(f.target()).isEqualTo("NotificationService#sendNotification");
         assertThat(f.message()).contains("@Async").contains("@Transactional");
+    }
+
+    @Test
+    void flagsTransactionalThenAsyncOrderDoesNotMatter() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ReportService.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.Async;
+                import org.springframework.transaction.annotation.Transactional;
+                public class ReportService {
+                    @Transactional
+                    @Async
+                    public void generateReport() {}
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_ASYNC_TRANSACTIONAL");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("ReportService#generateReport");
+    }
+
+    @Test
+    void flagsJakartaTransactionalWithAsync() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/AuditService.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.Async;
+                import jakarta.transaction.Transactional;
+                public class AuditService {
+                    @Async
+                    @Transactional
+                    public void logEvent() {}
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_ASYNC_TRANSACTIONAL");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("AuditService#logEvent");
     }
 
     @Test

@@ -101,19 +101,10 @@ spring.jpa.hibernate.ddl-auto=create-drop
 |---------|----------|-----------------|----------------|----------------|
 | `SPRING_TRANSACTIONAL_ON_SCHEDULED` | WARNING | `@Transactional` and `@Scheduled` on the same method | The scheduled thread has no outer transaction context; `@Transactional` may not behave as expected | Delegate to a `@Transactional` service method from the `@Scheduled` method |
 | `SPRING_TRANSACTION_ISOLATION_READ_UNCOMMITTED` | WARNING | `@Transactional` specifies `READ_UNCOMMITTED` isolation | Allows reading uncommitted data from concurrent transactions (dirty reads) | Use `READ_COMMITTED` or higher unless you have a specific, documented reason |
-| `SPRING_TRANSACTION_SELF_INVOCATION` | INFO | `@Transactional` method called via `this.method()` within the same bean | The call bypasses the Spring AOP proxy, so `@Transactional` is silently ignored | Inject a self-reference via `@Autowired` or refactor into a separate bean |
-| `SPRING_TRANSACTION_PRIVATE_METHOD` | INFO | `@Transactional` on a private method | Spring's proxy cannot intercept private methods; the annotation is silently ignored | Move the transactional logic to a package-private or public method |
-| `SPRING_TRANSACTION_MISSING_BOUNDARY` | INFO | Service method with save/delete/update calls has no visible `@Transactional` | Multiple writes may execute in separate transactions, leaving data partially applied on failure | Annotate the service method with `@Transactional` |
-
----
-
-## Transaction practices
-
-| Rule ID | Severity | What it detects | Why it matters | Recommendation |
-|---------|----------|-----------------|----------------|----------------|
 | `SPRING_TRANSACTIONAL_ON_PRIVATE_METHOD` | **ERROR** | `@Transactional` on a private method | Spring's proxy cannot intercept private methods; the transaction is silently never started | Make the method at least package-private, or use AspectJ weaving |
-| `SPRING_TRANSACTIONAL_SELF_INVOCATION` | WARNING | `@Transactional` method called directly from within the same class (no external receiver) | The call bypasses the Spring AOP proxy; transaction semantics declared on the target method are ignored | Inject a self-reference via `@Autowired` or extract to a separate bean |
+| `SPRING_TRANSACTIONAL_SELF_INVOCATION` | WARNING | `@Transactional` method called directly from within the same class | The call bypasses the Spring AOP proxy; transaction semantics declared on the target method are ignored | Inject a self-reference via `@Autowired` or extract to a separate bean |
 | `SPRING_ASYNC_TRANSACTIONAL` | **ERROR** | Method annotated with both `@Async` and `@Transactional` | The transaction context is bound to the calling thread via `ThreadLocal` and is not propagated to the async thread; DB operations run outside the transaction | Remove `@Transactional` from the `@Async` method; manage transactions inside the async body explicitly |
+| `SPRING_TRANSACTION_MISSING_BOUNDARY` | INFO | Service method with save/delete/update calls has no visible `@Transactional` | Multiple writes may execute in separate transactions, leaving data partially applied on failure | Annotate the service method with `@Transactional` |
 
 ---
 
@@ -192,9 +183,6 @@ spring.jpa.hibernate.ddl-auto=create-drop
 | `SPRING_REPEATED_FALLBACK_PARSING_PATTERN` | INFO | Try-parse-then-fallback repeated three or more times in the same class | Duplicated error-handling logic that should be extracted to a utility | Extract a reusable `parseOrDefault(value, fallback)` helper |
 | `SPRING_ASYNC_PROXY_BYPASS` | WARNING | `@Async` on a private method | Spring's proxy cannot intercept private methods; the method runs synchronously | Make the method at least package-private, or move it to a separate bean |
 | `SPRING_ASYNC_NON_FUTURE_RETURN` | WARNING | `@Async` method whose return type is not `void`, `Future`, `CompletableFuture`, `ListenableFuture`, `Mono`, or `Flux` | Spring's async proxy discards the actual return value; the caller always receives `null` | Change return type to `CompletableFuture<T>` and wrap the result, or change to `void` if the caller does not use the return value |
-| `SPRING_TRANSACTIONAL_ON_PRIVATE_METHOD` | **ERROR** | `@Transactional` on a private method (source code detection) | Spring AOP proxy cannot intercept private methods; transaction is silently never started | Make the method at least package-private |
-| `SPRING_TRANSACTIONAL_SELF_INVOCATION` | WARNING | `@Transactional` method called via self-invocation from within the same class (source code detection) | The proxy is bypassed; transaction semantics are ignored | Extract to a separate bean or inject self-reference |
-| `SPRING_ASYNC_TRANSACTIONAL` | **ERROR** | Method has both `@Async` and `@Transactional` (source code detection) | Transaction context is not propagated to the async thread | Remove `@Transactional` from the `@Async` method |
 
 ---
 

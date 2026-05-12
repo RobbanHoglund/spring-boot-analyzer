@@ -148,12 +148,12 @@ class StaticPracticeFindingAnalyzerTest {
                 FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
         assertRichFinding(
                 findings,
-                FindingRules.SPRING_TRANSACTION_SELF_INVOCATION.ruleId(),
+                FindingRules.SPRING_TRANSACTIONAL_SELF_INVOCATION.ruleId(),
                 FindingCategory.TRANSACTION,
                 FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
         assertRichFinding(
                 findings,
-                FindingRules.SPRING_TRANSACTION_PRIVATE_METHOD.ruleId(),
+                FindingRules.SPRING_TRANSACTIONAL_ON_PRIVATE_METHOD.ruleId(),
                 FindingCategory.TRANSACTION,
                 FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
         assertRichFinding(

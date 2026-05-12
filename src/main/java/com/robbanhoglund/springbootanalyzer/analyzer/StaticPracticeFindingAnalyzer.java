@@ -2227,8 +2227,8 @@ public class StaticPracticeFindingAnalyzer {
         if (hasAnnotation(method.getAnnotations(), "Transactional") && method.isPrivate()) {
             findings.add(
                     FindingFactory.builder(
-                                    FindingRules.SPRING_TRANSACTION_PRIVATE_METHOD,
-                                    FindingConfidence.MEDIUM)
+                                    FindingRules.SPRING_TRANSACTIONAL_ON_PRIVATE_METHOD,
+                                    FindingConfidence.HIGH)
                             .shortMessage(
                                     "@Transactional was found on a private method: "
                                             + declaration.getNameAsString()
@@ -2276,7 +2276,7 @@ public class StaticPracticeFindingAnalyzer {
                                 findings.add(
                                         FindingFactory.builder(
                                                         FindingRules
-                                                                .SPRING_TRANSACTION_SELF_INVOCATION,
+                                                                .SPRING_TRANSACTIONAL_SELF_INVOCATION,
                                                         FindingConfidence.MEDIUM)
                                                 .shortMessage(
                                                         "Transactional method appears to be called"

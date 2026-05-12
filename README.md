@@ -5,7 +5,7 @@
 [![Java](https://img.shields.io/badge/java-25-orange.svg)](build.gradle)
 [![Spring Boot](https://img.shields.io/badge/spring--boot-3.5-brightgreen.svg)](build.gradle)
 
-A static analysis tool for Spring Boot projects. Point it at any Git repository and get a structured report of findings, component inventory, HTTP surface, configuration risks, and anti-patterns — without running the analyzed application. 96 rules across 19 categories out of the box.
+A static analysis tool for Spring Boot projects. Point it at any Git repository and get a structured report of findings, component inventory, HTTP surface, configuration risks, and anti-patterns — without running the analyzed application. 93 rules across 18 categories out of the box.
 
 **Safe by default.** The default `STATIC_ONLY` mode clones the repository into a temporary workspace and performs static analysis only. It does not run Gradle tasks, Maven goals, tests, or the analyzed Spring Boot application. See [SECURITY.md](SECURITY.md) for the full security model.
 
@@ -66,22 +66,21 @@ Detects Spring stereotypes and maps the application's component structure:
 
 ## Findings
 
-The analyzer produces **96 rules** across 19 categories. Each finding includes severity, confidence, why it matters, recommended action, evidence, and — for Gradle-model-backed rules — the exact resolved library versions involved.
+The analyzer produces **93 rules** across 18 categories. Each finding includes severity, confidence, why it matters, recommended action, evidence, and — for Gradle-model-backed rules — the exact resolved library versions involved.
 
 | Category | Rules | Highest severity |
 |----------|------:|-----------------|
 | Security | 11 | WARNING |
-| Configuration | 7 | ERROR |
+| Configuration | 6 | ERROR |
 | Profile drift | 7 | WARNING |
 | Persistence | 8 | ERROR |
-| Transaction | 5 | WARNING |
-| Transaction practices | 3 | ERROR |
+| Transaction | 6 | ERROR |
 | Scheduling | 5 | WARNING |
 | HTTP clients | 5 | WARNING |
 | Exception handling | 9 | WARNING |
 | Validation | 3 | INFO |
-| Maintainability | 10 | ERROR |
-| Observability | 9 | WARNING |
+| Maintainability | 6 | ERROR |
+| Observability | 8 | WARNING |
 | Caching | 7 | ERROR |
 | Testing practice | 5 | WARNING |
 | Conditional beans | 2 | WARNING |

@@ -182,28 +182,6 @@ public final class FindingRules {
                     FindingCategory.PERSISTENCE,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** A {@code @Transactional} method is called via {@code this.method()} inside the same
-     *  class. Spring's proxy-based AOP intercepts the outer call but not internal
-     *  {@code this}-invocations, so the transaction annotation has no effect. */
-    public static final FindingRule SPRING_TRANSACTION_SELF_INVOCATION =
-            rule(
-                    "SPRING_TRANSACTION_SELF_INVOCATION",
-                    "@Transactional method is called through self-invocation",
-                    FindingSeverity.INFO,
-                    FindingCategory.TRANSACTION,
-                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
-
-    /** A {@code @Transactional} annotation appears on a {@code private} method.
-     *  Spring's proxy-based AOP cannot intercept non-overridable methods, so the
-     *  transaction will not be started or committed by the proxy. */
-    public static final FindingRule SPRING_TRANSACTION_PRIVATE_METHOD =
-            rule(
-                    "SPRING_TRANSACTION_PRIVATE_METHOD",
-                    "@Transactional method may not be proxied",
-                    FindingSeverity.INFO,
-                    FindingCategory.TRANSACTION,
-                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
-
     /** A service method performs write-like operations ({@code save}, {@code delete},
      *  {@code update}, …) but has no {@code @Transactional} annotation and does not
      *  appear to delegate to a transactional method. */
@@ -863,7 +841,7 @@ public final class FindingRules {
                     "SPRING_TRANSACTIONAL_ON_PRIVATE_METHOD",
                     "@Transactional on private method is silently ignored by Spring's proxy",
                     FindingSeverity.ERROR,
-                    FindingCategory.MAINTAINABILITY,
+                    FindingCategory.TRANSACTION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
     /** A {@code @Transactional}-annotated method is called directly (without an external
@@ -874,7 +852,7 @@ public final class FindingRules {
                     "SPRING_TRANSACTIONAL_SELF_INVOCATION",
                     "@Transactional method called via self-invocation — proxy is bypassed",
                     FindingSeverity.WARNING,
-                    FindingCategory.MAINTAINABILITY,
+                    FindingCategory.TRANSACTION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
     /** A method is annotated with both {@code @Async} and {@code @Transactional}.
@@ -885,7 +863,7 @@ public final class FindingRules {
                     "SPRING_ASYNC_TRANSACTIONAL",
                     "@Async and @Transactional on the same method — transaction is not propagated",
                     FindingSeverity.ERROR,
-                    FindingCategory.MAINTAINABILITY,
+                    FindingCategory.TRANSACTION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
     // ── Security practices ────────────────────────────────────────────────────
