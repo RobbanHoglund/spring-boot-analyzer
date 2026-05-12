@@ -87,6 +87,8 @@ class SpringBootProjectAnalyzerTest {
                     new TestingPracticeFindingAnalyzer(),
                     new CachingPracticeFindingAnalyzer(),
                     new ObservabilityGapFindingAnalyzer(),
+                    new TransactionPracticeFindingAnalyzer(),
+                    new SecurityPracticeFindingAnalyzer(),
                     new AnalyzerProperties(
                             Path.of("."),
                             true,

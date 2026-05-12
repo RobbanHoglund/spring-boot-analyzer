@@ -139,6 +139,7 @@ public class ConfigurationFindingAnalyzer {
                 repositoryRoot, buildInfo, configurationAnalysis, gradleModelAnalysis, findings);
         detectMissingSecurityStarter(buildInfo, findings);
         detectOpenInViewNotDisabled(configurationAnalysis, findings);
+        detectJpaDdlAutoDangerous(configurationAnalysis, findings);
         detectActuatorExposure(configurationAnalysis, findings);
         detectConnectionPoolMisconfiguration(configurationAnalysis, findings);
         return findings;
@@ -902,6 +903,72 @@ public class ConfigurationFindingAnalyzer {
                                             + " depends on lazy loading, disabling open-in-view"
                                             + " requires explicit fetch strategies to be added.")
                             .location("Configuration")
+                            .build());
+        }
+    }
+
+    private void detectJpaDdlAutoDangerous(
+            ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {
+        if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
+            return;
+        }
+        Set<String> dangerousValues = Set.of("create", "create-drop");
+        Set<String> targetProperties =
+                Set.of("spring.jpa.hibernate.ddl-auto", "spring.datasource.initialization-mode");
+        for (ApplicationProperty property : configurationAnalysis.properties()) {
+            if (property == null || property.name() == null || property.value() == null) {
+                continue;
+            }
+            if (!targetProperties.contains(property.name())) {
+                continue;
+            }
+            if (!dangerousValues.contains(property.value().toLowerCase(Locale.ROOT))) {
+                continue;
+            }
+            String profile = normalizedProfile(property.profile());
+            if (!isProdLikeProfile(profile)) {
+                continue;
+            }
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_JPA_DDL_AUTO_DANGEROUS,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    property.name()
+                                            + "="
+                                            + property.value()
+                                            + " drops and recreates the schema on every startup in"
+                                            + " a production-oriented profile.")
+                            .whyBadPractice(
+                                    "The values 'create' and 'create-drop' drop all tables and"
+                                        + " recreate them from scratch on every application"
+                                        + " startup. In a production or staging environment this"
+                                        + " destroys all existing data unconditionally.")
+                            .possibleImpact(
+                                    "Every deployment wipes the database. This is almost certainly"
+                                        + " unintentional in a production environment and the data"
+                                        + " loss cannot be undone.")
+                            .recommendation(
+                                    "Set "
+                                            + property.name()
+                                            + "=validate or none in production profiles. Manage"
+                                            + " schema changes through Flyway or Liquibase"
+                                            + " migrations.")
+                            .evidence(
+                                    property.name()
+                                            + "="
+                                            + property.value()
+                                            + " was found in "
+                                            + property.sourceFile()
+                                            + " (profile: "
+                                            + profile
+                                            + ").")
+                            .limitations(
+                                    "Static analysis cannot determine whether the target database"
+                                        + " is disposable or whether the profile is always active"
+                                        + " in deployment.")
+                            .source(property.sourceFile(), property.line())
+                            .target(property.name())
                             .build());
         }
     }

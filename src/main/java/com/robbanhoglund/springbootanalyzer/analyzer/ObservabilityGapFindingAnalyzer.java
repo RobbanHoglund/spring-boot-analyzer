@@ -6,6 +6,7 @@ import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.type.VoidType;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
@@ -50,6 +51,8 @@ public class ObservabilityGapFindingAnalyzer {
             Set.of("EventListener", "TransactionalEventListener");
     private static final Set<String> METRICS_TYPES =
             Set.of("MeterRegistry", "Counter", "Timer", "DistributionSummary", "Gauge");
+    private static final Set<String> ASYNC_ALLOWED_RETURN_TYPES =
+            Set.of("Future", "CompletableFuture", "ListenableFuture", "Mono", "Flux");
 
     private final JavaParser javaParser;
 
@@ -112,6 +115,7 @@ public class ObservabilityGapFindingAnalyzer {
                 detectAsyncNoObservability(cls, method, relativePath, findings);
                 detectEventListenerNoObservability(cls, method, relativePath, findings);
                 detectObservedOnPrivateMethod(cls, method, relativePath, findings);
+                detectAsyncNonFutureReturn(cls, method, relativePath, findings);
                 if (isControllerAdvice) {
                     detectExceptionHandlerNoMetrics(
                             cls, method, classHasMetrics, relativePath, findings);
@@ -425,6 +429,68 @@ public class ObservabilityGapFindingAnalyzer {
     }
 
     // ---------------------------------------------------------------------------
+    // Rule: SPRING_ASYNC_NON_FUTURE_RETURN
+    // ---------------------------------------------------------------------------
+
+    private void detectAsyncNonFutureReturn(
+            ClassOrInterfaceDeclaration cls,
+            MethodDeclaration method,
+            String relativePath,
+            List<Finding> findings) {
+        if (!hasAnnotation(method, "Async")) {
+            return;
+        }
+        if (method.getType() instanceof VoidType) {
+            return;
+        }
+        String rawType = rawTypeName(method.getType().asString());
+        if (ASYNC_ALLOWED_RETURN_TYPES.contains(rawType)) {
+            return;
+        }
+        Integer line = method.getBegin().map(p -> p.line).orElse(null);
+        String target = cls.getNameAsString() + "#" + method.getNameAsString();
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_ASYNC_NON_FUTURE_RETURN, FindingConfidence.HIGH)
+                        .shortMessage(
+                                "@Async method "
+                                        + target
+                                        + " returns "
+                                        + rawType
+                                        + " — the return value is discarded by the async proxy.")
+                        .whyBadPractice(
+                                "Spring's async proxy intercepts the method call, dispatches it to"
+                                    + " a thread pool, and immediately returns to the caller. The"
+                                    + " actual return value from the method body is discarded. Only"
+                                    + " void, Future, CompletableFuture, ListenableFuture, Mono,"
+                                    + " and Flux are supported return types for @Async methods.")
+                        .possibleImpact(
+                                "The caller always receives null (or an immediately-resolved empty"
+                                    + " value) instead of the computed result. This is a silent"
+                                    + " data loss bug that is hard to diagnose because the method"
+                                    + " body executes correctly — the result just never reaches the"
+                                    + " caller.")
+                        .recommendation(
+                                "Change the return type to CompletableFuture<"
+                                        + rawType
+                                        + "> and wrap the return value: return"
+                                        + " CompletableFuture.completedFuture(result)."
+                                        + " Alternatively, change the return type to void if the"
+                                        + " caller does not use the return value.")
+                        .evidence(
+                                "Method "
+                                        + target
+                                        + " is annotated with @Async and returns "
+                                        + method.getType().asString()
+                                        + " in "
+                                        + relativePath
+                                        + ".")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+    }
+
+    // ---------------------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------------------
 
@@ -462,6 +528,12 @@ public class ObservabilityGapFindingAnalyzer {
     private static String simpleName(String name) {
         int dot = name.lastIndexOf('.');
         return dot >= 0 ? name.substring(dot + 1) : name;
+    }
+
+    /** Strips generic type parameters: {@code CompletableFuture<String>} → {@code CompletableFuture}. */
+    private static String rawTypeName(String type) {
+        int lt = type.indexOf('<');
+        return lt >= 0 ? type.substring(0, lt).trim() : type.trim();
     }
 
     /** Converts a camelCase method name to a dot-separated metric name. */

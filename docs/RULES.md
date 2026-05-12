@@ -23,7 +23,9 @@ This catalog documents every static-analysis rule built into the Spring Boot Ana
 | `SPRING_SECRET_LITERAL` | WARNING | Sensitive property (password, secret, token) set to a plain-text literal | Secrets committed to version control or config files are a common breach vector | Use environment-variable references (`${MY_SECRET}`) or a secrets manager |
 | `SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT` | WARNING | `${…:defaultValue}` placeholder where the default looks like a real secret | A weak default ships to any environment where the variable is absent | Use a clearly invalid sentinel like `${DB_PASS:CHANGE_ME_OR_SET_ENV}` and fail fast |
 | `SPRING_RAW_EXCEPTION_MESSAGE_HTTP` | WARNING | Controller returns `exception.getMessage()` directly in the HTTP response body | Leaks stack paths, class names, and SQL fragments to clients | Map exceptions to a generic error DTO in an `@ExceptionHandler` or `@ControllerAdvice` |
-| `SPRING_CSRF_DISABLED` | WARNING | CSRF protection explicitly disabled via `.csrf().disable()` | Removes a built-in defense for state-changing browser requests | Only disable for stateless APIs that enforce token-based auth on every request |
+| `SPRING_CSRF_DISABLED` | WARNING | CSRF protection explicitly disabled via `.csrf().disable()` (detected in configuration properties) | Removes a built-in defense for state-changing browser requests | Only disable for stateless APIs that enforce token-based auth on every request |
+| `SPRING_CSRF_DISABLED_CODE` | WARNING | CSRF protection explicitly disabled in source code via `.csrf().disable()` or `csrf(AbstractHttpConfigurer::disable)` | Removes a built-in defense for state-changing browser requests | Only disable for stateless APIs that enforce token-based auth on every request |
+| `SPRING_PREAUTHORIZE_ON_PRIVATE_METHOD` | WARNING | `@PreAuthorize`, `@PostAuthorize`, `@Secured`, or `@RolesAllowed` on a private method | Spring Security's AOP proxy cannot intercept private methods; authorization check is silently skipped | Make the method at least package-private, or move it to a separate bean |
 | `SPRING_CORS_ALLOW_ALL` | WARNING | `allowedOrigins("*")` or `allowedOriginPatterns("*")` in CORS configuration | Permits cross-origin requests from any domain | Restrict to known origins; enumerate them explicitly in each profile |
 | `SPRING_REQUEST_PARAM_SENSITIVE_NAME` | WARNING | Password, token, or secret passed as a URL parameter or path variable | URLs are logged by proxies, load balancers, and browser history | Move secrets to request headers or the request body |
 | `SPRING_SQL_INJECTION_QUERY_CONCATENATION` | WARNING | Native SQL query built with Java string concatenation | String-built queries are vulnerable to SQL injection | Use named parameters (`:param`) or `JdbcTemplate` with `?` placeholders |
@@ -39,6 +41,8 @@ This catalog documents every static-analysis rule built into the Spring Boot Ana
 | `SPRING_RISKY_PROD_CONFIG` | WARNING | Property with known operational risk (`debug=true`, `show-sql`, etc.) in a production-oriented profile | Debug settings in production increase attack surface and performance overhead | Move debug properties to development profiles only |
 | `SPRING_VALUE_NO_DEFAULT` | WARNING | `@Value("${prop}")` without a `:default` fallback | Application fails to start if the property is absent in any environment | Add a safe default (`@Value("${prop:false}")`) or validate eagerly with `@ConfigurationProperties` |
 | `SPRING_JPA_SHOW_SQL_PROD` | WARNING | `spring.jpa.show-sql=true` in a production-oriented profile | SQL is written directly to stdout, bypassing log-level controls and structured logging | Use `logging.level.org.hibernate.SQL=DEBUG` instead, gated to non-production profiles |
+| `SPRING_JPA_OPEN_IN_VIEW` | WARNING | `spring.jpa.open-in-view=true` set explicitly in any profile | Keeps the Hibernate session open through the entire HTTP request, enabling lazy loading during serialization and masking N+1 queries | Set `spring.jpa.open-in-view=false` and load all required data explicitly in the service layer |
+| `SPRING_JPA_DDL_AUTO_DANGEROUS` | **ERROR** | `spring.jpa.hibernate.ddl-auto` or `spring.datasource.initialization-mode` set to `create` or `create-drop` in a production-oriented profile (`prod`, `production`, `staging`) | Drops and recreates all tables on every startup, destroying all production data | Set to `validate` or `none` in production; manage schema with Flyway or Liquibase |
 | `SPRING_CONNECTION_POOL_MISCONFIGURED` | WARNING | `spring.datasource.hikari.maximum-pool-size` set to 1 or less | Serializes all database access; causes severe throughput bottleneck under load | Set pool size to a value appropriate for your workload (commonly 5–20) |
 | `SPRING_VIRTUAL_THREADS_JAVA_TOO_OLD` | WARNING | `spring.threads.virtual.enabled=true` configured but detected Java version is below 21 | Virtual threads require Java 21 (Project Loom); on older JVMs Spring Boot may fail to start or silently fall back to platform threads | Upgrade to Java 21+ or remove the virtual-threads property |
 
@@ -100,6 +104,16 @@ spring.jpa.hibernate.ddl-auto=create-drop
 | `SPRING_TRANSACTION_SELF_INVOCATION` | INFO | `@Transactional` method called via `this.method()` within the same bean | The call bypasses the Spring AOP proxy, so `@Transactional` is silently ignored | Inject a self-reference via `@Autowired` or refactor into a separate bean |
 | `SPRING_TRANSACTION_PRIVATE_METHOD` | INFO | `@Transactional` on a private method | Spring's proxy cannot intercept private methods; the annotation is silently ignored | Move the transactional logic to a package-private or public method |
 | `SPRING_TRANSACTION_MISSING_BOUNDARY` | INFO | Service method with save/delete/update calls has no visible `@Transactional` | Multiple writes may execute in separate transactions, leaving data partially applied on failure | Annotate the service method with `@Transactional` |
+
+---
+
+## Transaction practices
+
+| Rule ID | Severity | What it detects | Why it matters | Recommendation |
+|---------|----------|-----------------|----------------|----------------|
+| `SPRING_TRANSACTIONAL_ON_PRIVATE_METHOD` | **ERROR** | `@Transactional` on a private method | Spring's proxy cannot intercept private methods; the transaction is silently never started | Make the method at least package-private, or use AspectJ weaving |
+| `SPRING_TRANSACTIONAL_SELF_INVOCATION` | WARNING | `@Transactional` method called directly from within the same class (no external receiver) | The call bypasses the Spring AOP proxy; transaction semantics declared on the target method are ignored | Inject a self-reference via `@Autowired` or extract to a separate bean |
+| `SPRING_ASYNC_TRANSACTIONAL` | **ERROR** | Method annotated with both `@Async` and `@Transactional` | The transaction context is bound to the calling thread via `ThreadLocal` and is not propagated to the async thread; DB operations run outside the transaction | Remove `@Transactional` from the `@Async` method; manage transactions inside the async body explicitly |
 
 ---
 
@@ -177,6 +191,10 @@ spring.jpa.hibernate.ddl-auto=create-drop
 | `SPRING_SIDE_EFFECT_ORCHESTRATION_NO_BOUNDARY` | INFO | Multiple external calls with no compensation or consistency boundary | A failure mid-sequence leaves the system in a partially applied state | Use the Saga pattern, outbox pattern, or an explicit rollback strategy |
 | `SPRING_REPEATED_FALLBACK_PARSING_PATTERN` | INFO | Try-parse-then-fallback repeated three or more times in the same class | Duplicated error-handling logic that should be extracted to a utility | Extract a reusable `parseOrDefault(value, fallback)` helper |
 | `SPRING_ASYNC_PROXY_BYPASS` | WARNING | `@Async` on a private method | Spring's proxy cannot intercept private methods; the method runs synchronously | Make the method at least package-private, or move it to a separate bean |
+| `SPRING_ASYNC_NON_FUTURE_RETURN` | WARNING | `@Async` method whose return type is not `void`, `Future`, `CompletableFuture`, `ListenableFuture`, `Mono`, or `Flux` | Spring's async proxy discards the actual return value; the caller always receives `null` | Change return type to `CompletableFuture<T>` and wrap the result, or change to `void` if the caller does not use the return value |
+| `SPRING_TRANSACTIONAL_ON_PRIVATE_METHOD` | **ERROR** | `@Transactional` on a private method (source code detection) | Spring AOP proxy cannot intercept private methods; transaction is silently never started | Make the method at least package-private |
+| `SPRING_TRANSACTIONAL_SELF_INVOCATION` | WARNING | `@Transactional` method called via self-invocation from within the same class (source code detection) | The proxy is bypassed; transaction semantics are ignored | Extract to a separate bean or inject self-reference |
+| `SPRING_ASYNC_TRANSACTIONAL` | **ERROR** | Method has both `@Async` and `@Transactional` (source code detection) | Transaction context is not propagated to the async thread | Remove `@Transactional` from the `@Async` method |
 
 ---
 
@@ -235,6 +253,7 @@ spring.jpa.hibernate.ddl-auto=create-drop
 | `SPRING_CACHE_SELF_INVOCATION` | WARNING | Cached method called directly from within the same class | Internal calls bypass the Spring proxy, so the cache annotation has no effect | Extract the cached method to a separate bean, or inject a self-reference with `@Autowired` |
 | `SPRING_CACHE_EVICT_WITHOUT_ALL_ENTRIES` | INFO | `@CacheEvict` on a no-arg method without `allEntries = true` | Without parameters, Spring uses `SimpleKey.EMPTY` as the eviction key, which only removes a single entry stored under that key — not the whole cache | Add `allEntries = true` if the intent is to clear all entries; add parameters if you need key-targeted eviction |
 | `SPRING_CACHEABLE_SYNC_INCOMPATIBLE` | **ERROR** | `@Cacheable(sync = true)` combined with `unless` attribute or multiple cache names | Spring's `CacheAspectSupport` explicitly rejects these combinations and throws `IllegalArgumentException` on the first method invocation | Remove `unless` when using `sync = true`; use a single cache name per synchronized `@Cacheable` |
+| `SPRING_CACHEPUT_AND_CACHEABLE_SAME_METHOD` | **ERROR** | Method annotated with both `@CachePut` and `@Cacheable` | The two annotations have conflicting semantics; Spring's `CacheAspectSupport` throws `IllegalStateException` on the first call | Use only one of `@Cacheable` or `@CachePut` on any given method |
 
 ---
 

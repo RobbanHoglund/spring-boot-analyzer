@@ -414,4 +414,59 @@ class CachingPracticeFindingAnalyzerTest {
 
         assertThat(byRule(findings(), "SPRING_CACHEABLE_SYNC_INCOMPATIBLE")).isNull();
     }
+
+    // ── SPRING_CACHEPUT_AND_CACHEABLE_SAME_METHOD ─────────────────────────────
+
+    @Test
+    void flagsCachePutAndCacheableOnSameMethod() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ProductService.java",
+                """
+                package com.example;
+                import org.springframework.cache.annotation.Cacheable;
+                import org.springframework.cache.annotation.CachePut;
+                public class ProductService {
+                    @Cacheable("products")
+                    @CachePut("products")
+                    public String getAndUpdate(Long id) { return ""; }
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_CACHEPUT_AND_CACHEABLE_SAME_METHOD");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("ProductService#getAndUpdate");
+        assertThat(f.message()).contains("CachePut").contains("Cacheable");
+    }
+
+    @Test
+    void doesNotFlagMethodWithOnlyCacheable() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ProductService.java",
+                """
+                package com.example;
+                import org.springframework.cache.annotation.Cacheable;
+                public class ProductService {
+                    @Cacheable("products")
+                    public String getById(Long id) { return ""; }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_CACHEPUT_AND_CACHEABLE_SAME_METHOD")).isNull();
+    }
+
+    @Test
+    void doesNotFlagMethodWithOnlyCachePut() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ProductService.java",
+                """
+                package com.example;
+                import org.springframework.cache.annotation.CachePut;
+                public class ProductService {
+                    @CachePut("products")
+                    public String update(Long id) { return ""; }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_CACHEPUT_AND_CACHEABLE_SAME_METHOD")).isNull();
+    }
 }

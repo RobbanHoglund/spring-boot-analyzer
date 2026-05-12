@@ -147,6 +147,7 @@ public class CachingPracticeFindingAnalyzer {
             detectCacheEvictWithoutAllEntries(cls, method, relativePath, findings);
             detectCacheSelfInvocation(cls, method, cachedMethodNames, relativePath, findings);
             detectCacheableSyncIncompatible(cls, method, relativePath, findings);
+            detectCachePutAndCacheableSameMethod(cls, method, relativePath, findings);
         }
     }
 
@@ -594,6 +595,57 @@ public class CachingPracticeFindingAnalyzer {
                             .target(target)
                             .build());
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_CACHEPUT_AND_CACHEABLE_SAME_METHOD
+    // ---------------------------------------------------------------------------
+
+    private void detectCachePutAndCacheableSameMethod(
+            ClassOrInterfaceDeclaration cls,
+            MethodDeclaration method,
+            String relativePath,
+            List<Finding> findings) {
+        boolean hasCacheable = hasCacheAnnotation(method, Set.of("Cacheable"));
+        boolean hasCachePut = hasCacheAnnotation(method, Set.of("CachePut"));
+        if (!hasCacheable || !hasCachePut) {
+            return;
+        }
+        Integer line = method.getBegin().map(p -> p.line).orElse(null);
+        String target = cls.getNameAsString() + "#" + method.getNameAsString();
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_CACHEPUT_AND_CACHEABLE_SAME_METHOD,
+                                FindingConfidence.HIGH)
+                        .shortMessage(
+                                "Method "
+                                        + target
+                                        + " has both @CachePut and @Cacheable — Spring throws"
+                                        + " IllegalStateException at runtime.")
+                        .whyBadPractice(
+                                "@Cacheable reads from the cache and only executes the method on a"
+                                    + " miss. @CachePut always executes the method and updates the"
+                                    + " cache. The two annotations have conflicting semantics:"
+                                    + " @Cacheable may skip the method body that @CachePut requires"
+                                    + " to run. Spring's CacheAspectSupport throws"
+                                    + " IllegalStateException when it encounters this conflict.")
+                        .possibleImpact(
+                                "IllegalStateException thrown on the first invocation of the"
+                                        + " method, causing a 500 error or application failure.")
+                        .recommendation(
+                                "Use only one of @Cacheable or @CachePut on a given method. If the"
+                                        + " intent is to always update the cache and also return a"
+                                        + " cached value, use @CachePut only. If the intent is to"
+                                        + " populate the cache on miss, use @Cacheable only.")
+                        .evidence(
+                                "Method "
+                                        + target
+                                        + " has both @Cacheable and @CachePut annotations in "
+                                        + relativePath
+                                        + ".")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
     }
 
     // ---------------------------------------------------------------------------

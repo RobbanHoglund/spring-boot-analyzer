@@ -75,6 +75,8 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
     private final TestingPracticeFindingAnalyzer testingPracticeFindingAnalyzer;
     private final CachingPracticeFindingAnalyzer cachingPracticeFindingAnalyzer;
     private final ObservabilityGapFindingAnalyzer observabilityGapFindingAnalyzer;
+    private final TransactionPracticeFindingAnalyzer transactionPracticeFindingAnalyzer;
+    private final SecurityPracticeFindingAnalyzer securityPracticeFindingAnalyzer;
     private final AnalyzerProperties analyzerProperties;
 
     public SpringBootProjectAnalyzer(
@@ -92,6 +94,8 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
             TestingPracticeFindingAnalyzer testingPracticeFindingAnalyzer,
             CachingPracticeFindingAnalyzer cachingPracticeFindingAnalyzer,
             ObservabilityGapFindingAnalyzer observabilityGapFindingAnalyzer,
+            TransactionPracticeFindingAnalyzer transactionPracticeFindingAnalyzer,
+            SecurityPracticeFindingAnalyzer securityPracticeFindingAnalyzer,
             AnalyzerProperties analyzerProperties) {
         this.buildFileAnalyzer = buildFileAnalyzer;
         this.javaSourceAnalyzer = javaSourceAnalyzer;
@@ -107,6 +111,8 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
         this.testingPracticeFindingAnalyzer = testingPracticeFindingAnalyzer;
         this.cachingPracticeFindingAnalyzer = cachingPracticeFindingAnalyzer;
         this.observabilityGapFindingAnalyzer = observabilityGapFindingAnalyzer;
+        this.transactionPracticeFindingAnalyzer = transactionPracticeFindingAnalyzer;
+        this.securityPracticeFindingAnalyzer = securityPracticeFindingAnalyzer;
         this.analyzerProperties = analyzerProperties;
     }
 
@@ -187,6 +193,8 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
         findings.addAll(testingPracticeFindingAnalyzer.analyze(repositoryRoot));
         findings.addAll(cachingPracticeFindingAnalyzer.analyze(repositoryRoot));
         findings.addAll(observabilityGapFindingAnalyzer.analyze(repositoryRoot));
+        findings.addAll(transactionPracticeFindingAnalyzer.analyze(repositoryRoot));
+        findings.addAll(securityPracticeFindingAnalyzer.analyze(repositoryRoot));
 
         return new AnalysisResult(
                 repositoryReference.repositoryUrl(),

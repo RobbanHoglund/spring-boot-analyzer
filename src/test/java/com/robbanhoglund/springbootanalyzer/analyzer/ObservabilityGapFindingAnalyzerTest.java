@@ -316,4 +316,108 @@ class ObservabilityGapFindingAnalyzerTest {
 
         assertThat(byRule(findings(), "SPRING_WEBCLIENT_MANUALLY_CONSTRUCTED")).isNull();
     }
+
+    // ── SPRING_ASYNC_NON_FUTURE_RETURN ────────────────────────────────────────
+
+    @Test
+    void flagsAsyncMethodReturningString() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ReportService.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.Async;
+                public class ReportService {
+                    @Async
+                    public String generateReport() { return "report"; }
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_ASYNC_NON_FUTURE_RETURN");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("ReportService#generateReport");
+        assertThat(f.message()).contains("String");
+    }
+
+    @Test
+    void flagsAsyncMethodReturningCustomObject() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ReportService.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.Async;
+                public class ReportService {
+                    @Async
+                    public Object process() { return new Object(); }
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_ASYNC_NON_FUTURE_RETURN");
+        assertThat(f).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagAsyncMethodReturningVoid() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/NotificationService.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.Async;
+                public class NotificationService {
+                    @Async
+                    public void sendEmail(String to) {}
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_ASYNC_NON_FUTURE_RETURN")).isNull();
+    }
+
+    @Test
+    void doesNotFlagAsyncMethodReturningCompletableFuture() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ReportService.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.Async;
+                import java.util.concurrent.CompletableFuture;
+                public class ReportService {
+                    @Async
+                    public CompletableFuture<String> generateReport() {
+                        return CompletableFuture.completedFuture("report");
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_ASYNC_NON_FUTURE_RETURN")).isNull();
+    }
+
+    @Test
+    void doesNotFlagAsyncMethodReturningFuture() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ReportService.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.Async;
+                import java.util.concurrent.Future;
+                public class ReportService {
+                    @Async
+                    public Future<String> generateReport() { return null; }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_ASYNC_NON_FUTURE_RETURN")).isNull();
+    }
+
+    @Test
+    void doesNotFlagNonAsyncMethodReturningString() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ReportService.java",
+                """
+                package com.example;
+                public class ReportService {
+                    public String generateReport() { return "report"; }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_ASYNC_NON_FUTURE_RETURN")).isNull();
+    }
 }

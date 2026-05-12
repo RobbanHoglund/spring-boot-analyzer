@@ -830,6 +830,102 @@ public final class FindingRules {
                     FindingCategory.CACHING,
                     FindingRuntimeDetection.RUNTIME_REQUIRED);
 
+    /** A method is annotated with both {@code @CachePut} and {@code @Cacheable}.
+     *  Spring's {@code CacheAspectSupport} throws {@code IllegalStateException} on the first call
+     *  because the two annotations have conflicting cache population semantics. */
+    public static final FindingRule SPRING_CACHEPUT_AND_CACHEABLE_SAME_METHOD =
+            rule(
+                    "SPRING_CACHEPUT_AND_CACHEABLE_SAME_METHOD",
+                    "@CachePut and @Cacheable on the same method cause a runtime conflict",
+                    FindingSeverity.ERROR,
+                    FindingCategory.CACHING,
+                    FindingRuntimeDetection.RUNTIME_REQUIRED);
+
+    /** {@code spring.jpa.hibernate.ddl-auto} or {@code spring.datasource.initialization-mode}
+     *  is set to {@code create} or {@code create-drop} in a production-oriented profile
+     *  ({@code prod}, {@code production}, {@code staging}). This drops and recreates all tables
+     *  on every startup, destroying all existing data. */
+    public static final FindingRule SPRING_JPA_DDL_AUTO_DANGEROUS =
+            rule(
+                    "SPRING_JPA_DDL_AUTO_DANGEROUS",
+                    "Destructive JPA DDL setting in production-oriented profile",
+                    FindingSeverity.ERROR,
+                    FindingCategory.CONFIGURATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    // ── Transaction practices ─────────────────────────────────────────────────
+
+    /** {@code @Transactional} (or {@code javax.transaction.Transactional}) appears on a
+     *  {@code private} method. Spring's proxy-based AOP cannot intercept private methods;
+     *  the annotation is silently ignored and no transaction is started. */
+    public static final FindingRule SPRING_TRANSACTIONAL_ON_PRIVATE_METHOD =
+            rule(
+                    "SPRING_TRANSACTIONAL_ON_PRIVATE_METHOD",
+                    "@Transactional on private method is silently ignored by Spring's proxy",
+                    FindingSeverity.ERROR,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @Transactional}-annotated method is called directly (without an external
+     *  receiver) from within the same class. The call bypasses Spring's AOP proxy, so the
+     *  transaction semantics declared on the target method are ignored. */
+    public static final FindingRule SPRING_TRANSACTIONAL_SELF_INVOCATION =
+            rule(
+                    "SPRING_TRANSACTIONAL_SELF_INVOCATION",
+                    "@Transactional method called via self-invocation — proxy is bypassed",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A method is annotated with both {@code @Async} and {@code @Transactional}.
+     *  The transaction context is not propagated to the new thread; database operations
+     *  inside the async method run outside the transaction regardless of the annotation. */
+    public static final FindingRule SPRING_ASYNC_TRANSACTIONAL =
+            rule(
+                    "SPRING_ASYNC_TRANSACTIONAL",
+                    "@Async and @Transactional on the same method — transaction is not propagated",
+                    FindingSeverity.ERROR,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    // ── Security practices ────────────────────────────────────────────────────
+
+    /** CSRF protection is explicitly disabled in a Spring Security {@code SecurityFilterChain}
+     *  configuration method. Detected as {@code .csrf().disable()} or
+     *  {@code csrf(AbstractHttpConfigurer::disable)}. */
+    public static final FindingRule SPRING_CSRF_DISABLED_CODE =
+            rule(
+                    "SPRING_CSRF_DISABLED_CODE",
+                    "CSRF protection disabled in Spring Security configuration",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A private method is annotated with {@code @PreAuthorize}, {@code @PostAuthorize},
+     *  {@code @Secured}, or {@code @RolesAllowed}. Spring Security's AOP proxy cannot
+     *  intercept private methods; the authorization check is silently skipped. */
+    public static final FindingRule SPRING_PREAUTHORIZE_ON_PRIVATE_METHOD =
+            rule(
+                    "SPRING_PREAUTHORIZE_ON_PRIVATE_METHOD",
+                    "Security annotation on private method is silently ignored by Spring's proxy",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    // ── Observability gaps ────────────────────────────────────────────────────
+
+    /** An {@code @Async} method's return type is not {@code void}, {@code Future},
+     *  {@code CompletableFuture}, {@code ListenableFuture}, {@code Mono}, or {@code Flux}.
+     *  Spring's async proxy discards the actual return value; the caller always receives
+     *  {@code null} or a failed future. */
+    public static final FindingRule SPRING_ASYNC_NON_FUTURE_RETURN =
+            rule(
+                    "SPRING_ASYNC_NON_FUTURE_RETURN",
+                    "@Async method has a non-Future return type — caller always receives null",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
     // ── Observability gaps ────────────────────────────────────────────────────
 
     /** An {@code @Async} method has no {@code @Observed} or {@code @Timed} annotation.

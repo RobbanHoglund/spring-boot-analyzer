@@ -8,9 +8,11 @@ import com.robbanhoglund.springbootanalyzer.analyzer.ConfigurationFindingAnalyze
 import com.robbanhoglund.springbootanalyzer.analyzer.JavaSourceAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.ObservabilityFindingAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.ObservabilityGapFindingAnalyzer;
+import com.robbanhoglund.springbootanalyzer.analyzer.SecurityPracticeFindingAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.SpringBootProjectAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.StaticPracticeFindingAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.TestingPracticeFindingAnalyzer;
+import com.robbanhoglund.springbootanalyzer.analyzer.TransactionPracticeFindingAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.configuration.ConfigurationAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.configuration.ConfigurationFileScanner;
 import com.robbanhoglund.springbootanalyzer.analyzer.configuration.ConfigurationPropertiesClassAnalyzer;
@@ -117,6 +119,8 @@ class AnalysisReportContractTest {
                     new TestingPracticeFindingAnalyzer(),
                     new CachingPracticeFindingAnalyzer(),
                     new ObservabilityGapFindingAnalyzer(),
+                    new TransactionPracticeFindingAnalyzer(),
+                    new SecurityPracticeFindingAnalyzer(),
                     new AnalyzerProperties(
                             Path.of("."),
                             true,
