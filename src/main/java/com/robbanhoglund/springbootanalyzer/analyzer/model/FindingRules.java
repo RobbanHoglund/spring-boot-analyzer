@@ -1050,6 +1050,18 @@ public final class FindingRules {
                     FindingCategory.CONFIGURATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
+    /** A raw {@code new Thread(...).start()} is created inside a Spring-managed component
+     *  ({@code @Service}, {@code @Component}, {@code @Controller}, {@code @Repository}).
+     *  Manual threads run outside Spring's lifecycle: they lack transaction context, security
+     *  context, MDC logging, and unified error handling. */
+    public static final FindingRule SPRING_UNMANAGED_THREAD =
+            rule(
+                    "SPRING_UNMANAGED_THREAD",
+                    "Unmanaged thread created manually inside Spring component",
+                    FindingSeverity.WARNING,
+                    FindingCategory.OBSERVABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
     /** A {@code @Transactional} method contains a catch block that catches {@code RuntimeException}
      *  or {@code Exception} without rethrowing, which silently prevents Spring from triggering
      *  an automatic rollback, leaving the database in a potentially inconsistent state. */

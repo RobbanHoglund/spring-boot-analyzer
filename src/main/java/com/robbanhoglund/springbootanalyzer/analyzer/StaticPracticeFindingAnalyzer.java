@@ -23,6 +23,7 @@ import com.github.javaparser.ast.expr.MemberValuePair;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.NullLiteralExpr;
+import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.ThisExpr;
 import com.github.javaparser.ast.stmt.BlockStmt;
 import com.github.javaparser.ast.stmt.BreakStmt;
@@ -535,6 +536,9 @@ public class StaticPracticeFindingAnalyzer {
         detectSqlInjectionInQueries(relativePath, declaration, findings);
         detectLoggingPiiExposure(relativePath, declaration, findings);
         detectSystemOutPrintln(relativePath, declaration, findings);
+        if (controllerLike || serviceLike || repositoryLike) {
+            detectUnmanagedThread(relativePath, declaration, findings);
+        }
         if (controllerLike) {
             detectEntityExposedInApi(relativePath, declaration, findings);
         }
@@ -3666,6 +3670,64 @@ public class StaticPracticeFindingAnalyzer {
                                 .source(relativePath, line)
                                 .target(target)
                                 .build());
+            }
+        }
+    }
+
+    private void detectUnmanagedThread(
+            String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
+        for (MethodDeclaration method : declaration.getMethods()) {
+            if (method.getBody().isEmpty()) {
+                continue;
+            }
+            for (ObjectCreationExpr creation :
+                    method.getBody().get().findAll(ObjectCreationExpr.class)) {
+                if (!"Thread".equals(creation.getTypeAsString())) {
+                    continue;
+                }
+                // Check the parent chain for .start() — common pattern: new Thread(...).start()
+                // or thread variable later called with .start(). Flag on construction.
+                Integer line = creation.getBegin().map(p -> p.line).orElse(null);
+                String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+                findings.add(
+                        FindingFactory.builder(
+                                        FindingRules.SPRING_UNMANAGED_THREAD,
+                                        FindingConfidence.HIGH)
+                                .shortMessage(
+                                        "Raw Thread created inside a Spring component instead of"
+                                                + " using a managed executor.")
+                                .whyBadPractice(
+                                        "Manually created threads run outside Spring's container."
+                                            + " They have no access to the current transaction"
+                                            + " context, security context, or MDC logging"
+                                            + " correlation IDs, and exceptions thrown on them are"
+                                            + " not handled by Spring's unified error handling.")
+                                .possibleImpact(
+                                        "Silent data loss if a thread throws and the exception is"
+                                            + " never observed. Security context not propagated to"
+                                            + " the spawned thread. Unbounded thread creation can"
+                                            + " exhaust server memory under load.")
+                                .recommendation(
+                                        "Use @Async with a configured ThreadPoolTaskExecutor, or"
+                                            + " inject a TaskExecutor / ExecutorService bean and"
+                                            + " submit Callables or Runnables to it. This keeps"
+                                            + " threads managed, bounded, and observable.")
+                                .evidence(
+                                        "new Thread(...) detected in "
+                                                + target
+                                                + " at "
+                                                + relativePath
+                                                + ".")
+                                .limitations(
+                                        "The check triggers on any Thread construction inside"
+                                                + " Spring stereotype components. Intentional"
+                                                + " low-level thread management (e.g. a custom"
+                                                + " lifecycle bean) may be a false positive.")
+                                .source(relativePath, line)
+                                .target(target)
+                                .build());
+                // One finding per method
+                break;
             }
         }
     }
