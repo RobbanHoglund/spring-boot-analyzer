@@ -562,3 +562,17 @@ export interface GradleJavaToolchainModel {
   vendor?: string | null;
   implementation?: string | null;
 }
+
+
+export interface RuleInfo {
+  ruleId: string;
+  title: string;
+  severity: string;
+  category: string;
+  runtimeDetection: string;
+  enabled: boolean;
+}
+
+export interface RulesConfig {
+  rules: RuleInfo[];
+}

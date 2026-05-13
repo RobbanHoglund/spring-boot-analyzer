@@ -15,6 +15,7 @@ import com.robbanhoglund.springbootanalyzer.workspace.WorkspaceService;
 import com.robbanhoglund.springbootanalyzer.workspace.WorkspaceService.Workspace;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -32,6 +33,7 @@ public class RepositoryAnalysisService {
     private final AnalysisSessionRegistry analysisSessionRegistry;
     private final FindingNormalizer findingNormalizer;
     private final SuppressionService suppressionService;
+    private final UserRuleConfigService userRuleConfigService;
 
     public RepositoryAnalysisService(
             WorkspaceService workspaceService,
@@ -41,7 +43,8 @@ public class RepositoryAnalysisService {
             GitHubLinkBuilder gitHubLinkBuilder,
             AnalysisSessionRegistry analysisSessionRegistry,
             FindingNormalizer findingNormalizer,
-            SuppressionService suppressionService) {
+            SuppressionService suppressionService,
+            UserRuleConfigService userRuleConfigService) {
         this.workspaceService = workspaceService;
         this.gitCloneService = gitCloneService;
         this.staticAnalyzer = staticAnalyzer;
@@ -50,6 +53,7 @@ public class RepositoryAnalysisService {
         this.analysisSessionRegistry = analysisSessionRegistry;
         this.findingNormalizer = findingNormalizer;
         this.suppressionService = suppressionService;
+        this.userRuleConfigService = userRuleConfigService;
     }
 
     public AnalysisResult analyze(GitRepositoryReference repositoryReference) {
@@ -137,8 +141,13 @@ public class RepositoryAnalysisService {
         List<Finding> normalizedFindings = findingNormalizer.normalize(result.findings());
         List<Finding> suppressedFindings =
                 suppressionService.apply(normalizedFindings, repositoryRoot);
+        Set<String> disabledRuleIds = userRuleConfigService.getDisabledRuleIds();
         List<Finding> findings =
                 suppressedFindings.stream()
+                        .filter(
+                                finding ->
+                                        finding.ruleId() == null
+                                                || !disabledRuleIds.contains(finding.ruleId()))
                         .map(finding -> enrichFinding(finding, result.repositoryUrl(), commitSha))
                         .toList();
         return new AnalysisResult(

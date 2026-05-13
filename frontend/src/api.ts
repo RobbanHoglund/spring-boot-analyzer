@@ -1,6 +1,7 @@
 import type {
   AnalyzeRepositoryRequest,
   AnalyzeRepositoryResponse,
+  RulesConfig,
   SourceSnippetResponse
 } from './types';
 
@@ -59,6 +60,30 @@ export async function fetchSourceSnippet(
   }
 
   return isObject(payload) ? (payload as SourceSnippetResponse) : {};
+}
+
+export async function fetchRuleSettings(): Promise<RulesConfig> {
+  const response = await fetch('/api/settings/rules');
+  const payload = await parsePayload(response);
+
+  if (!response.ok) {
+    throw new ApiError(buildErrorMessage(response.status, payload), response.status, payload);
+  }
+
+  return isObject(payload) ? (payload as RulesConfig) : { rules: [] };
+}
+
+export async function saveRuleSettings(disabledRuleIds: string[]): Promise<void> {
+  const response = await fetch('/api/settings/rules', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ disabledRuleIds })
+  });
+
+  if (!response.ok) {
+    const payload = await parsePayload(response);
+    throw new ApiError(buildErrorMessage(response.status, payload), response.status, payload);
+  }
 }
 
 async function parsePayload(response: Response): Promise<unknown> {

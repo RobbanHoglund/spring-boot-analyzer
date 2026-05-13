@@ -1,6 +1,6 @@
 import { element } from '../dom';
 import { findMatchingTokenProfile, maskToken } from '../tokenStore';
-import type { RepositoryProfile, TokenProfile, TokenProvider } from '../types';
+import type { RepositoryProfile, RuleInfo, TokenProfile, TokenProvider } from '../types';
 
 export interface TokenFormModel {
   id: string;
@@ -29,6 +29,9 @@ export interface SettingsViewModel {
   tokenProfiles: TokenProfile[];
   repositoryForm: RepositoryFormModel;
   tokenForm: TokenFormModel;
+  ruleSettings: RuleInfo[] | null;
+  ruleSettingsLoading: boolean;
+  ruleSettingsError: string;
 }
 
 export interface SettingsViewActions {
@@ -45,6 +48,8 @@ export interface SettingsViewActions {
   onClearTokenForm: () => void;
   onEditToken: (tokenProfileId: string) => void;
   onDeleteToken: (tokenProfileId: string) => void;
+  onToggleRule: (ruleId: string, enabled: boolean) => void;
+  onEnableAllRules: () => void;
 }
 
 export function renderSettingsView(
@@ -54,6 +59,7 @@ export function renderSettingsView(
   const page = element('div', { className: 'settings-grid' });
   page.appendChild(renderRepositorySection(model, actions));
   page.appendChild(renderTokenSection(model, actions));
+  page.appendChild(renderRulesSection(model, actions));
   return page;
 }
 
@@ -447,4 +453,148 @@ function formatDate(value: string): string {
     return value;
   }
   return date.toLocaleString();
+}
+
+function renderRulesSection(model: SettingsViewModel, actions: SettingsViewActions): HTMLElement {
+  const panel = element('section', { className: 'panel panel-compact rules-section' });
+  panel.appendChild(element('h2', { text: 'Rule management' }));
+  panel.appendChild(
+    element('p', {
+      className: 'helper-text',
+      text: 'Disable rules you have reviewed and accepted for this installation. Disabled rules are saved in ~/.spring-boot-analyzer/rule-config.json and take effect for all future analyses.'
+    })
+  );
+
+  if (model.ruleSettingsLoading) {
+    panel.appendChild(element('p', { className: 'muted-text', text: 'Loading rules…' }));
+    return panel;
+  }
+
+  if (model.ruleSettingsError) {
+    panel.appendChild(element('p', { className: 'error-text', text: model.ruleSettingsError }));
+    return panel;
+  }
+
+  if (!model.ruleSettings || model.ruleSettings.length === 0) {
+    panel.appendChild(element('p', { className: 'muted-text', text: 'No rules available.' }));
+    return panel;
+  }
+
+  const disabledCount = model.ruleSettings.filter((r) => !r.enabled).length;
+  if (disabledCount > 0) {
+    const bar = element('div', { className: 'actions' });
+    const enableAll = element('button', {
+      className: 'secondary-button',
+      text: `Re-enable all rules (${disabledCount} disabled)`,
+      attributes: { type: 'button' }
+    });
+    enableAll.addEventListener('click', actions.onEnableAllRules);
+    bar.appendChild(enableAll);
+    panel.appendChild(bar);
+  }
+
+  // Group rules by category
+  const byCategory = new Map<string, RuleInfo[]>();
+  for (const rule of model.ruleSettings) {
+    const list = byCategory.get(rule.category) ?? [];
+    list.push(rule);
+    byCategory.set(rule.category, list);
+  }
+
+  const sortedCategories = [...byCategory.keys()].sort();
+
+  for (const category of sortedCategories) {
+    const rules = byCategory.get(category)!;
+    const disabledInCategory = rules.filter((r) => !r.enabled).length;
+
+    const details = document.createElement('details');
+    details.className = 'rule-category-details';
+    if (disabledInCategory > 0) {
+      details.open = true;
+    }
+
+    const summary = document.createElement('summary');
+    summary.className = 'rule-category-summary';
+    const categoryLabel = element('span', { text: categoryDisplayName(category) });
+    const badge = element('span', {
+      className: 'rule-category-badge',
+      text: String(rules.length)
+    });
+    summary.appendChild(categoryLabel);
+    summary.appendChild(badge);
+    if (disabledInCategory > 0) {
+      summary.appendChild(
+        element('span', {
+          className: 'rule-disabled-badge',
+          text: `${disabledInCategory} disabled`
+        })
+      );
+    }
+    details.appendChild(summary);
+
+    const ruleList = element('div', { className: 'rule-list' });
+    for (const rule of rules) {
+      const row = element('div', { className: rule.enabled ? 'rule-row' : 'rule-row rule-row--disabled' });
+
+      const toggle = document.createElement('input');
+      toggle.type = 'checkbox';
+      toggle.className = 'rule-toggle';
+      toggle.id = `rule-toggle-${rule.ruleId}`;
+      toggle.checked = rule.enabled;
+      toggle.addEventListener('change', () => actions.onToggleRule(rule.ruleId, toggle.checked));
+
+      const labelEl = document.createElement('label');
+      labelEl.htmlFor = `rule-toggle-${rule.ruleId}`;
+      labelEl.className = 'rule-label';
+
+      const titleRow = element('div', { className: 'rule-title-row' });
+      titleRow.appendChild(
+        element('span', { className: 'rule-title', text: rule.title })
+      );
+      titleRow.appendChild(
+        element('span', {
+          className: `rule-severity rule-severity--${rule.severity.toLowerCase()}`,
+          text: rule.severity
+        })
+      );
+
+      const idRow = element('div', { className: 'rule-id', text: rule.ruleId });
+
+      labelEl.appendChild(titleRow);
+      labelEl.appendChild(idRow);
+
+      row.appendChild(toggle);
+      row.appendChild(labelEl);
+      ruleList.appendChild(row);
+    }
+
+    details.appendChild(ruleList);
+    panel.appendChild(details);
+  }
+
+  return panel;
+}
+
+function categoryDisplayName(category: string): string {
+  const names: Record<string, string> = {
+    SECURITY: 'Security',
+    CONFIGURATION: 'Configuration',
+    PROFILE_DRIFT: 'Profile drift',
+    PERSISTENCE: 'Persistence',
+    TRANSACTION: 'Transaction',
+    SCHEDULING: 'Scheduling',
+    HTTP: 'HTTP clients',
+    EXCEPTION_HANDLING: 'Exception handling',
+    VALIDATION: 'Validation',
+    MAINTAINABILITY: 'Maintainability',
+    OBSERVABILITY: 'Observability',
+    CACHING: 'Caching',
+    TESTING: 'Testing practice',
+    CONDITIONAL_BEAN: 'Conditional beans',
+    STARTUP: 'Startup',
+    ACTUATOR: 'Actuator',
+    API_SURFACE: 'API surface',
+    DEPENDENCY: 'Dependency compatibility'
+  };
+  return names[category] ?? category;
 }

@@ -1,6 +1,6 @@
 import './styles.css';
 
-import { analyzeRepository, ApiError, fetchSourceSnippet } from './api';
+import { analyzeRepository, ApiError, fetchRuleSettings, fetchSourceSnippet, saveRuleSettings } from './api';
 import { loadAnalysisSession, saveAnalysisSession } from './analysisSessionStore';
 import { buildGitHubBlobUrl } from './code/githubLink';
 import { clear, element } from './dom';
@@ -32,6 +32,7 @@ import type {
   FindingOccurrence,
   HighlightRange,
   RepositoryProfile,
+  RuleInfo,
   SourceLocation,
   SourceSnippetResponse,
   TokenProfile
@@ -67,6 +68,9 @@ interface AppState {
   repositoryForm: RepositoryFormModel;
   tokenForm: TokenFormModel;
   resultsViewState: ResultsViewState;
+  ruleSettings: RuleInfo[] | null;
+  ruleSettingsLoading: boolean;
+  ruleSettingsError: string;
 }
 
 interface FocusSnapshot {
@@ -128,7 +132,10 @@ function createInitialState(): AppState {
     sidebarCollapsed: Boolean(persistedSession?.sidebarCollapsed),
     repositoryForm: createEmptyRepositoryForm(),
     tokenForm: createEmptyTokenForm(),
-    resultsViewState: mergeResultsViewState(defaultResultsViewState, persistedSession?.resultsViewState)
+    resultsViewState: mergeResultsViewState(defaultResultsViewState, persistedSession?.resultsViewState),
+    ruleSettings: null,
+    ruleSettingsLoading: false,
+    ruleSettingsError: ''
   };
 }
 
@@ -497,13 +504,19 @@ function render(): void {
       )
     );
   } else {
+    if (!state.ruleSettings && !state.ruleSettingsLoading) {
+      void loadRuleSettings();
+    }
     shell.appendChild(
       renderSettingsView(
         {
           repositoryProfiles: state.repositoryProfiles,
           tokenProfiles: state.tokenProfiles,
           repositoryForm: state.repositoryForm,
-          tokenForm: state.tokenForm
+          tokenForm: state.tokenForm,
+          ruleSettings: state.ruleSettings,
+          ruleSettingsLoading: state.ruleSettingsLoading,
+          ruleSettingsError: state.ruleSettingsError
         },
         {
           onRepositoryFormChange: (field, value) => {
@@ -551,6 +564,12 @@ function render(): void {
           },
           onDeleteToken: (tokenProfileId) => {
             deleteTokenById(tokenProfileId);
+          },
+          onToggleRule: (ruleId, enabled) => {
+            void toggleRule(ruleId, enabled);
+          },
+          onEnableAllRules: () => {
+            void enableAllRules();
           }
         }
       )
@@ -1514,6 +1533,61 @@ function focusWithoutScrolling(element: HTMLElement): void {
     element.focus({ preventScroll: true });
   } catch {
     element.focus();
+  }
+}
+
+async function loadRuleSettings(): Promise<void> {
+  state.ruleSettingsLoading = true;
+  state.ruleSettingsError = '';
+  render();
+  try {
+    const config = await fetchRuleSettings();
+    state.ruleSettings = config.rules ?? [];
+  } catch (error) {
+    state.ruleSettingsError =
+      error instanceof ApiError ? error.message : 'Failed to load rule settings.';
+  } finally {
+    state.ruleSettingsLoading = false;
+    render();
+  }
+}
+
+async function toggleRule(ruleId: string, enabled: boolean): Promise<void> {
+  if (!state.ruleSettings) {
+    return;
+  }
+  // Optimistically update the UI
+  state.ruleSettings = state.ruleSettings.map((r) =>
+    r.ruleId === ruleId ? { ...r, enabled } : r
+  );
+  render();
+
+  const disabledRuleIds = state.ruleSettings.filter((r) => !r.enabled).map((r) => r.ruleId);
+  try {
+    await saveRuleSettings(disabledRuleIds);
+  } catch (error) {
+    // Rollback on failure
+    state.ruleSettings = state.ruleSettings.map((r) =>
+      r.ruleId === ruleId ? { ...r, enabled: !enabled } : r
+    );
+    state.ruleSettingsError =
+      error instanceof ApiError ? error.message : 'Failed to save rule settings.';
+    render();
+  }
+}
+
+async function enableAllRules(): Promise<void> {
+  if (!state.ruleSettings) {
+    return;
+  }
+  state.ruleSettings = state.ruleSettings.map((r) => ({ ...r, enabled: true }));
+  render();
+  try {
+    await saveRuleSettings([]);
+  } catch (error) {
+    state.ruleSettingsError =
+      error instanceof ApiError ? error.message : 'Failed to save rule settings.';
+    render();
   }
 }
 
