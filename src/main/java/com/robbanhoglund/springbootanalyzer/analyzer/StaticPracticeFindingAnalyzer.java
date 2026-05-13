@@ -67,7 +67,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.springframework.stereotype.Component;
@@ -149,7 +148,39 @@ public class StaticPracticeFindingAnalyzer {
                     "jwt",
                     "jwt_secret",
                     "jwt-secret");
-    private static final Pattern VALUE_NO_DEFAULT_PATTERN = Pattern.compile("\\$\\{[^}:]+\\}");
+
+    private static boolean hasTopLevelPlaceholderWithoutDefault(String expr) {
+        int i = 0;
+        while (i < expr.length()) {
+            if (i + 1 < expr.length() && expr.charAt(i) == '$' && expr.charAt(i + 1) == '{') {
+                int depth = 1;
+                int j = i + 2;
+                boolean hasDefault = false;
+                while (j < expr.length() && depth > 0) {
+                    if (j + 1 < expr.length()
+                            && expr.charAt(j) == '$'
+                            && expr.charAt(j + 1) == '{') {
+                        depth++;
+                        j += 2;
+                        continue;
+                    }
+                    char c = expr.charAt(j);
+                    if (c == '}') {
+                        depth--;
+                    } else if (c == ':' && depth == 1) {
+                        hasDefault = true;
+                    }
+                    j++;
+                }
+                if (depth == 0 && !hasDefault) return true;
+                i = j;
+            } else {
+                i++;
+            }
+        }
+        return false;
+    }
+
     private final JavaParser javaParser;
 
     public StaticPracticeFindingAnalyzer() {
@@ -1544,8 +1575,7 @@ public class StaticPracticeFindingAnalyzer {
                                                             .findFirst()
                                                             .orElse("")
                                                     : "";
-                            if (expr.contains("${")
-                                    && VALUE_NO_DEFAULT_PATTERN.matcher(expr).find()) {
+                            if (expr.contains("${") && hasTopLevelPlaceholderWithoutDefault(expr)) {
                                 String fieldName =
                                         field.getVariables().isEmpty()
                                                 ? "?"
