@@ -142,12 +142,13 @@ public class RepositoryAnalysisService {
         List<Finding> suppressedFindings =
                 suppressionService.apply(normalizedFindings, repositoryRoot);
         Set<String> disabledRuleIds = userRuleConfigService.getDisabledRuleIds();
+        Set<String> disabledSeverities =
+                userRuleConfigService.fullyDisabledSeverities(disabledRuleIds);
         List<Finding> findings =
                 suppressedFindings.stream()
                         .filter(
                                 finding ->
-                                        finding.ruleId() == null
-                                                || !disabledRuleIds.contains(finding.ruleId()))
+                                        isNotDisabled(finding, disabledRuleIds, disabledSeverities))
                         .map(finding -> enrichFinding(finding, result.repositoryUrl(), commitSha))
                         .toList();
         return new AnalysisResult(
@@ -166,6 +167,20 @@ public class RepositoryAnalysisService {
                 result.gradleModelAnalysis(),
                 result.schedulingAnalysis(),
                 result.messagingAnalysis());
+    }
+
+    private static boolean isNotDisabled(
+            Finding finding, Set<String> disabledRuleIds, Set<String> disabledSeverities) {
+        // Explicit rule-level disable
+        if (finding.ruleId() != null && disabledRuleIds.contains(finding.ruleId())) {
+            return false;
+        }
+        // Severity-level fallback: if all known rules of this severity are disabled,
+        // suppress even findings with unknown or null ruleIds of the same severity
+        if (finding.severity() != null && disabledSeverities.contains(finding.severity().name())) {
+            return false;
+        }
+        return true;
     }
 
     private Finding enrichFinding(Finding finding, String repositoryUrl, String commitSha) {

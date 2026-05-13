@@ -12,10 +12,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -93,6 +96,34 @@ public class UserRuleConfigService {
                                         rule.runtimeDetection().name(),
                                         !disabled.contains(rule.ruleId())))
                 .toList();
+    }
+
+    /**
+     * Returns severity names (e.g. {@code "INFO"}) for which every rule in the catalog is
+     * present in {@code disabledRuleIds}. Used as a fallback filter for findings whose
+     * {@code ruleId} is null or not yet registered in the catalog.
+     */
+    public Set<String> fullyDisabledSeverities(Set<String> disabledRuleIds) {
+        List<FindingRule> rules = allRules();
+        Map<String, Long> totalBySeverity =
+                rules.stream()
+                        .collect(
+                                Collectors.groupingBy(
+                                        r -> r.defaultSeverity().name(), Collectors.counting()));
+        Map<String, Long> disabledBySeverity =
+                rules.stream()
+                        .filter(r -> disabledRuleIds.contains(r.ruleId()))
+                        .collect(
+                                Collectors.groupingBy(
+                                        r -> r.defaultSeverity().name(), Collectors.counting()));
+        Set<String> fullyDisabled = new HashSet<>();
+        for (Map.Entry<String, Long> entry : totalBySeverity.entrySet()) {
+            Long disabled = disabledBySeverity.getOrDefault(entry.getKey(), 0L);
+            if (disabled.equals(entry.getValue())) {
+                fullyDisabled.add(entry.getKey());
+            }
+        }
+        return fullyDisabled;
     }
 
     private static List<FindingRule> allRules() {
