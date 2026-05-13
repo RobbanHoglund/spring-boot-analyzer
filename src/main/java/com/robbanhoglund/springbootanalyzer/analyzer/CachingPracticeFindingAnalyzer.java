@@ -99,16 +99,36 @@ public class CachingPracticeFindingAnalyzer {
         if (Files.notExists(sourceRoot)) {
             return findings;
         }
+        boolean[] cacheableFound = {false};
         try (Stream<Path> files = Files.walk(sourceRoot)) {
             for (Path sourceFile :
                     files.filter(Files::isRegularFile)
                             .filter(p -> p.toString().endsWith(".java"))
                             .sorted(Comparator.naturalOrder())
                             .toList()) {
+                int before = findings.size();
                 analyzeSourceFile(repositoryRoot, sourceFile, findings);
+                // Track whether any @Cacheable was found (by checking if new findings appeared
+                // from SPRING_CACHEABLE_* rules, or by scanning the file content for the
+                // annotation)
+                if (!cacheableFound[0]) {
+                    try {
+                        String content =
+                                java.nio.file.Files.readString(
+                                        sourceFile, java.nio.charset.StandardCharsets.UTF_8);
+                        if (content.contains("@Cacheable")) {
+                            cacheableFound[0] = true;
+                        }
+                    } catch (IOException ignored) {
+                        // skip
+                    }
+                }
             }
         } catch (IOException e) {
             // Best-effort — skip unreadable files
+        }
+        if (cacheableFound[0]) {
+            detectCacheableNoTtlProvider(repositoryRoot, findings);
         }
         return findings;
     }
@@ -149,6 +169,8 @@ public class CachingPracticeFindingAnalyzer {
             detectCacheableSyncIncompatible(cls, method, relativePath, findings);
             detectCachePutAndCacheableSameMethod(cls, method, relativePath, findings);
         }
+
+        detectCacheableNoEviction(cls, relativePath, findings);
     }
 
     // ---------------------------------------------------------------------------
@@ -646,6 +668,212 @@ public class CachingPracticeFindingAnalyzer {
                         .source(relativePath, line)
                         .target(target)
                         .build());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_CACHEABLE_NO_EVICTION
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> WRITE_METHOD_PREFIXES =
+            Set.of(
+                    "save", "update", "delete", "remove", "create", "add", "insert", "put", "set",
+                    "persist", "modify", "patch", "merge", "clear", "reset", "evict");
+
+    private void detectCacheableNoEviction(
+            ClassOrInterfaceDeclaration cls, String relativePath, List<Finding> findings) {
+        boolean hasCacheable =
+                cls.getMethods().stream().anyMatch(m -> hasCacheAnnotation(m, Set.of("Cacheable")));
+        if (!hasCacheable) {
+            return;
+        }
+        boolean hasEviction =
+                cls.getMethods().stream()
+                        .anyMatch(
+                                m ->
+                                        hasCacheAnnotation(
+                                                m, Set.of("CacheEvict", "CachePut", "Caching")));
+        if (hasEviction) {
+            return;
+        }
+        // Only flag if the class also contains methods with write-like names,
+        // indicating it manages both reads and writes without eviction.
+        boolean hasWriteMethods =
+                cls.getMethods().stream()
+                        .map(m -> m.getNameAsString().toLowerCase(java.util.Locale.ROOT))
+                        .anyMatch(
+                                name -> WRITE_METHOD_PREFIXES.stream().anyMatch(name::startsWith));
+        if (!hasWriteMethods) {
+            return;
+        }
+        Integer line = cls.getBegin().map(p -> p.line).orElse(null);
+        String target = cls.getNameAsString();
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_CACHEABLE_NO_EVICTION, FindingConfidence.LOW)
+                        .shortMessage(
+                                cls.getNameAsString()
+                                        + " has @Cacheable read methods but no @CacheEvict or"
+                                        + " @CachePut — cache entries may become stale.")
+                        .whyBadPractice(
+                                "@Cacheable caches the result of a read method. If the same class"
+                                    + " also contains write methods (save, update, delete, …) that"
+                                    + " modify the underlying data, those changes will not"
+                                    + " automatically invalidate the cached entries. Clients will"
+                                    + " see stale data until the cache expires or the application"
+                                    + " restarts.")
+                        .possibleImpact(
+                                "Stale data served to clients after updates. The window of"
+                                        + " inconsistency grows larger the longer the TTL or the"
+                                        + " absence of an eviction policy.")
+                        .recommendation(
+                                "Add @CacheEvict (or @CachePut) to all write methods that modify"
+                                    + " the data returned by @Cacheable reads. Use"
+                                    + " @CacheEvict(allEntries = true) for bulk operations where"
+                                    + " individual key eviction is impractical.")
+                        .evidence(
+                                "Class "
+                                        + cls.getNameAsString()
+                                        + " in "
+                                        + relativePath
+                                        + " has @Cacheable but no cache eviction annotations.")
+                        .limitations(
+                                "Eviction may happen in a separate class (e.g. a service delegates"
+                                    + " to this repository and handles eviction there). Review the"
+                                    + " full call graph before acting on this finding.")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_CACHEABLE_NO_TTL_PROVIDER
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> TTL_PROVIDER_INDICATORS =
+            Set.of(
+                    "spring.cache.type=caffeine",
+                    "spring.cache.type=redis",
+                    "spring.cache.type=jcache",
+                    "spring.cache.type=hazelcast",
+                    "spring.cache.caffeine",
+                    "spring.cache.redis",
+                    "spring.cache.jcache",
+                    "spring.jcache",
+                    "CaffeineCacheManager",
+                    "RedisCacheManager",
+                    "JCacheCacheManager",
+                    "HazelcastCacheManager",
+                    "caffeine",
+                    "com.github.ben-manes.caffeine");
+
+    private void detectCacheableNoTtlProvider(Path repositoryRoot, List<Finding> findings) {
+        // Scan config files for TTL-capable provider indicators
+        boolean providerConfigured = false;
+        Path resourceRoot = repositoryRoot.resolve("src/main/resources");
+        if (Files.exists(resourceRoot)) {
+            try (Stream<java.nio.file.Path> files = Files.walk(resourceRoot)) {
+                for (java.nio.file.Path file :
+                        files.filter(Files::isRegularFile)
+                                .filter(
+                                        p -> {
+                                            String name = p.getFileName().toString();
+                                            return name.endsWith(".properties")
+                                                    || name.endsWith(".yml")
+                                                    || name.endsWith(".yaml");
+                                        })
+                                .toList()) {
+                    try {
+                        String content =
+                                java.nio.file.Files.readString(
+                                        file, java.nio.charset.StandardCharsets.UTF_8);
+                        for (String indicator : TTL_PROVIDER_INDICATORS) {
+                            if (content.contains(indicator)) {
+                                providerConfigured = true;
+                                break;
+                            }
+                        }
+                    } catch (IOException ignored) {
+                        // skip unreadable files
+                    }
+                    if (providerConfigured) {
+                        break;
+                    }
+                }
+            } catch (IOException ignored) {
+                // best-effort
+            }
+        }
+        // Also scan Java source for CacheManager bean declarations
+        if (!providerConfigured) {
+            Path sourceRoot = repositoryRoot.resolve("src/main/java");
+            if (Files.exists(sourceRoot)) {
+                try (Stream<java.nio.file.Path> files = Files.walk(sourceRoot)) {
+                    for (java.nio.file.Path file :
+                            files.filter(Files::isRegularFile)
+                                    .filter(p -> p.toString().endsWith(".java"))
+                                    .toList()) {
+                        try {
+                            String content =
+                                    java.nio.file.Files.readString(
+                                            file, java.nio.charset.StandardCharsets.UTF_8);
+                            for (String indicator : TTL_PROVIDER_INDICATORS) {
+                                if (content.contains(indicator)) {
+                                    providerConfigured = true;
+                                    break;
+                                }
+                            }
+                        } catch (IOException ignored) {
+                            // skip
+                        }
+                        if (providerConfigured) {
+                            break;
+                        }
+                    }
+                } catch (IOException ignored) {
+                    // best-effort
+                }
+            }
+        }
+        if (!providerConfigured) {
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_CACHEABLE_NO_TTL_PROVIDER,
+                                    FindingConfidence.LOW)
+                            .shortMessage(
+                                    "@Cacheable is used but no TTL-capable cache provider"
+                                        + " (Caffeine, Redis, JCache) appears to be configured.")
+                            .whyBadPractice(
+                                    "Without a configured cache provider, Spring Boot falls back to"
+                                        + " a simple ConcurrentHashMap-backed cache. This"
+                                        + " implementation has no time-to-live (TTL) or"
+                                        + " time-to-idle (TTI) policy, so cached entries never"
+                                        + " expire automatically. Memory usage grows without bound"
+                                        + " as the cache fills up, and stale data is served"
+                                        + " indefinitely.")
+                            .possibleImpact(
+                                    "Unbounded heap growth leading to OutOfMemoryError under"
+                                            + " sustained load. Stale data served to users with no"
+                                            + " automatic refresh until the application restarts.")
+                            .recommendation(
+                                    "Add a TTL-capable cache provider. For local in-process"
+                                        + " caching, add the Caffeine dependency and set"
+                                        + " spring.cache.type=caffeine and"
+                                        + " spring.cache.caffeine.spec=maximumSize=500,expireAfterWrite=10m."
+                                        + " For distributed caching, use Redis with"
+                                        + " spring.cache.type=redis and configure TTL via"
+                                        + " spring.cache.redis.time-to-live.")
+                            .evidence(
+                                    "@Cacheable annotation found in project sources but no"
+                                            + " Caffeine, Redis, or JCache provider configuration"
+                                            + " detected in src/main/resources or src/main/java.")
+                            .limitations(
+                                    "Cache provider configuration might be in an external config"
+                                            + " server, environment variables, or a non-standard"
+                                            + " location not visible to static analysis.")
+                            .source(null, null)
+                            .target(null)
+                            .build());
+        }
     }
 
     // ---------------------------------------------------------------------------

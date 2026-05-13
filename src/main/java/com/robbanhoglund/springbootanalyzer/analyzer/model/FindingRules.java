@@ -1140,6 +1140,56 @@ public final class FindingRules {
                     FindingCategory.API_SURFACE,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
+    /** A Spring-managed component ({@code @Service}, {@code @Controller}, {@code @Repository},
+     *  etc.) injects {@code ApplicationContext} as a field. This is the service-locator
+     *  anti-pattern: it bypasses compile-time dependency checking, hides real dependencies
+     *  from the class signature, and tightly couples the code to the Spring framework API. */
+    public static final FindingRule SPRING_APPLICATION_CONTEXT_INJECTED =
+            rule(
+                    "SPRING_APPLICATION_CONTEXT_INJECTED",
+                    "ApplicationContext injected as service locator",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** An {@code @EventListener} (or {@code @TransactionalEventListener}) method does not have
+     *  {@code @Async}. By default, Spring dispatches events synchronously on the publisher's
+     *  thread. A slow listener (sending an email, calling a remote API, performing a heavy
+     *  computation) will block the HTTP request thread that published the event, increasing
+     *  latency for the original caller. */
+    public static final FindingRule SPRING_EVENT_LISTENER_BLOCKING =
+            rule(
+                    "SPRING_EVENT_LISTENER_BLOCKING",
+                    "@EventListener runs synchronously on the publisher thread",
+                    FindingSeverity.INFO,
+                    FindingCategory.SCHEDULING,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code @Cacheable} is used in the project but no explicit cache provider with TTL support
+     *  (Caffeine, Redis, JCache) is configured via {@code spring.cache.type},
+     *  {@code spring.cache.caffeine.spec}, or {@code spring.cache.redis.*}. The default
+     *  Spring Boot cache implementation ({@code ConcurrentHashMap}) has no eviction or TTL
+     *  policy; cached values accumulate indefinitely, leading to memory growth and stale data. */
+    public static final FindingRule SPRING_CACHEABLE_NO_TTL_PROVIDER =
+            rule(
+                    "SPRING_CACHEABLE_NO_TTL_PROVIDER",
+                    "@Cacheable used without a cache provider that supports TTL",
+                    FindingSeverity.WARNING,
+                    FindingCategory.CACHING,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A class has methods annotated with {@code @Cacheable} for read operations but no method
+     *  in the same class has {@code @CacheEvict} or {@code @CachePut}. Update or delete
+     *  operations that modify the underlying data will not automatically invalidate cached
+     *  results, causing clients to receive stale data. */
+    public static final FindingRule SPRING_CACHEABLE_NO_EVICTION =
+            rule(
+                    "SPRING_CACHEABLE_NO_EVICTION",
+                    "@Cacheable reads without matching @CacheEvict or @CachePut in class",
+                    FindingSeverity.WARNING,
+                    FindingCategory.CACHING,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
     private FindingRules() {}
 
     private static FindingRule rule(

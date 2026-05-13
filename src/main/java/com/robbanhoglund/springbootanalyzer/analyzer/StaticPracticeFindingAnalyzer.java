@@ -348,6 +348,11 @@ public class StaticPracticeFindingAnalyzer {
             if (hasAnnotation(field.getAnnotations(), "Value")) {
                 detectValueWithoutDefault(relativePath, declaration, field, findings);
             }
+            if ((controllerLike || serviceLike || repositoryLike)
+                    && !configurationLike
+                    && isApplicationContextField(field)) {
+                detectApplicationContextInjected(relativePath, declaration, field, findings);
+            }
         }
 
         for (ConstructorDeclaration constructor : declaration.getConstructors()) {
@@ -488,6 +493,13 @@ public class StaticPracticeFindingAnalyzer {
 
             if (hasAnnotation(method.getAnnotations(), "Async")) {
                 detectAsyncMethodRisks(relativePath, declaration, method, findings);
+            }
+
+            if (hasAnyAnnotation(
+                            method.getAnnotations(),
+                            Set.of("EventListener", "TransactionalEventListener"))
+                    && !hasAnnotation(method.getAnnotations(), "Async")) {
+                detectEventListenerBlocking(relativePath, declaration, method, findings);
             }
 
             if (hasAnyAnnotation(method.getAnnotations(), MESSAGING_LISTENER_ANNOTATIONS)) {
@@ -3672,6 +3684,132 @@ public class StaticPracticeFindingAnalyzer {
                                 .build());
             }
         }
+    }
+
+    private static final Set<String> APPLICATION_CONTEXT_TYPES =
+            Set.of(
+                    "ApplicationContext",
+                    "ConfigurableApplicationContext",
+                    "WebApplicationContext",
+                    "ConfigurableWebApplicationContext");
+
+    private static boolean isApplicationContextField(FieldDeclaration field) {
+        return field.getVariables().stream()
+                .anyMatch(
+                        v -> APPLICATION_CONTEXT_TYPES.contains(rawTypeName(v.getTypeAsString())));
+    }
+
+    private void detectApplicationContextInjected(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            FieldDeclaration field,
+            List<Finding> findings) {
+        String fieldName =
+                field.getVariables().isEmpty()
+                        ? "?"
+                        : field.getVariables().get(0).getNameAsString();
+        String typeName =
+                field.getVariables().isEmpty()
+                        ? "ApplicationContext"
+                        : rawTypeName(field.getVariables().get(0).getTypeAsString());
+        String target = declaration.getNameAsString() + "." + fieldName;
+        Integer line = field.getBegin().map(p -> p.line).orElse(null);
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_APPLICATION_CONTEXT_INJECTED,
+                                FindingConfidence.HIGH)
+                        .shortMessage(
+                                typeName
+                                        + " injected as a field in "
+                                        + declaration.getNameAsString()
+                                        + " — service-locator anti-pattern.")
+                        .whyBadPractice(
+                                "Injecting the ApplicationContext to look up beans at runtime"
+                                    + " bypasses Spring's compile-time dependency graph. The class"
+                                    + " can secretly depend on any bean in the context, making"
+                                    + " dependencies invisible, tests harder to write, and"
+                                    + " refactoring risky.")
+                        .possibleImpact(
+                                "Hidden coupling to arbitrary beans makes the class difficult to"
+                                    + " test in isolation and obscures the real dependency surface."
+                                    + " Bean lookup failures surface at runtime rather than at"
+                                    + " startup.")
+                        .recommendation(
+                                "Declare each dependency explicitly via constructor injection. If"
+                                        + " the dependency is truly optional or dynamic, consider"
+                                        + " injecting a Provider<T> or ObjectProvider<T> instead.")
+                        .evidence(
+                                typeName
+                                        + " field '"
+                                        + fieldName
+                                        + "' found in "
+                                        + relativePath
+                                        + ".")
+                        .limitations(
+                                "Some legitimate use cases require ApplicationContext access,"
+                                        + " such as custom lifecycle hooks or framework extension"
+                                        + " points in @Configuration classes (not flagged).")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+    }
+
+    private void detectEventListenerBlocking(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            MethodDeclaration method,
+            List<Finding> findings) {
+        Integer line = method.getBegin().map(p -> p.line).orElse(null);
+        String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+        String annName =
+                hasAnnotation(method.getAnnotations(), "TransactionalEventListener")
+                        ? "TransactionalEventListener"
+                        : "EventListener";
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_EVENT_LISTENER_BLOCKING, FindingConfidence.LOW)
+                        .shortMessage(
+                                "@"
+                                        + annName
+                                        + " method "
+                                        + target
+                                        + " runs synchronously on the publisher thread.")
+                        .whyBadPractice(
+                                "By default, Spring dispatches application events synchronously."
+                                    + " The listener runs on the same thread as the code that"
+                                    + " called ApplicationEventPublisher.publishEvent(). If the"
+                                    + " listener performs slow work (email sending, remote calls,"
+                                    + " heavy computation), it blocks the original thread for the"
+                                    + " full duration.")
+                        .possibleImpact(
+                                "HTTP request threads can be blocked until the listener finishes,"
+                                        + " increasing latency and reducing server throughput under"
+                                        + " concurrent load.")
+                        .recommendation(
+                                "Add @Async to the listener method if the work is non-trivial"
+                                        + " and does not need to run in the same thread. Ensure"
+                                        + " @EnableAsync is present on a @Configuration class and"
+                                        + " a custom ThreadPoolTaskExecutor is configured.")
+                        .evidence(
+                                "@"
+                                        + annName
+                                        + " without @Async found on "
+                                        + target
+                                        + " in "
+                                        + relativePath
+                                        + ".")
+                        .limitations(
+                                "Fast listeners that perform only lightweight, in-memory work"
+                                        + " are fine without @Async. This finding is advisory and"
+                                        + " requires human judgement.")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+    }
+
+    private static String rawTypeName(String type) {
+        int lt = type.indexOf('<');
+        return lt >= 0 ? type.substring(0, lt).trim() : type.trim();
     }
 
     private void detectUnmanagedThread(
