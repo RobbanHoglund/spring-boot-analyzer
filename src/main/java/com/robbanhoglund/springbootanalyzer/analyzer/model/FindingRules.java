@@ -1050,6 +1050,29 @@ public final class FindingRules {
                     FindingCategory.CONFIGURATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
+    /** A {@code @Transactional} method contains a catch block that catches {@code RuntimeException}
+     *  or {@code Exception} without rethrowing, which silently prevents Spring from triggering
+     *  an automatic rollback, leaving the database in a potentially inconsistent state. */
+    public static final FindingRule SPRING_TRANSACTIONAL_EXCEPTION_SWALLOWED =
+            rule(
+                    "SPRING_TRANSACTIONAL_EXCEPTION_SWALLOWED",
+                    "@Transactional method swallows exception, preventing rollback",
+                    FindingSeverity.ERROR,
+                    FindingCategory.TRANSACTION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** An outbound HTTP call ({@code RestTemplate}, {@code WebClient}, {@code HttpClient},
+     *  {@code @FeignClient}) is made inside a {@code @Transactional} method. This holds an
+     *  open database connection for the duration of the network round-trip, which can exhaust
+     *  the connection pool under load. */
+    public static final FindingRule SPRING_TRANSACTIONAL_HTTP_CALL =
+            rule(
+                    "SPRING_TRANSACTIONAL_HTTP_CALL",
+                    "Outbound HTTP call inside @Transactional method",
+                    FindingSeverity.WARNING,
+                    FindingCategory.TRANSACTION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
     /** A {@code @RestController} method returns a JPA {@code @Entity} type directly (or wrapped
      *  in {@code ResponseEntity<Entity>} / {@code List<Entity>}) instead of a dedicated DTO.
      *  This exposes internal persistence structure, lazy-loading proxies, and potentially

@@ -33,6 +33,7 @@ import com.github.javaparser.ast.stmt.ExpressionStmt;
 import com.github.javaparser.ast.stmt.ReturnStmt;
 import com.github.javaparser.ast.stmt.Statement;
 import com.github.javaparser.ast.stmt.ThrowStmt;
+import com.github.javaparser.ast.stmt.TryStmt;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.github.javaparser.ast.type.UnionType;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
@@ -502,9 +503,11 @@ public class StaticPracticeFindingAnalyzer {
                 detectTransactionalOnScheduled(relativePath, declaration, method, findings);
             }
 
-            if (hasAnnotation(method.getAnnotations(), "Transactional")) {
+            if (hasAnnotation(method.getAnnotations(), "Transactional") || classTransactional) {
                 detectTransactionIsolationReadUncommitted(
                         relativePath, declaration, method, findings);
+                detectTransactionalExceptionSwallowed(relativePath, declaration, method, findings);
+                detectTransactionalHttpCall(relativePath, declaration, method, findings);
             }
 
             if (controllerLike) {
@@ -3758,6 +3761,185 @@ public class StaticPracticeFindingAnalyzer {
             }
         }
         return false;
+    }
+
+    private static final Set<String> BROAD_EXCEPTION_TYPES =
+            Set.of("Exception", "RuntimeException", "Throwable");
+
+    private void detectTransactionalExceptionSwallowed(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            MethodDeclaration method,
+            List<Finding> findings) {
+        if (method.getBody().isEmpty()) {
+            return;
+        }
+        for (TryStmt tryStmt : method.getBody().get().findAll(TryStmt.class)) {
+            for (CatchClause catchClause : tryStmt.getCatchClauses()) {
+                Set<String> caughtTypes = caughtTypeNames(catchClause);
+                boolean catchesBroad =
+                        caughtTypes.stream().anyMatch(BROAD_EXCEPTION_TYPES::contains);
+                if (!catchesBroad) {
+                    continue;
+                }
+                CatchAnalysis analysis =
+                        analyzeCatchBody(
+                                catchClause.getBody(),
+                                catchClause.getParameter().getNameAsString());
+                if (analysis.rethrows()) {
+                    continue;
+                }
+                Integer line = catchClause.getBegin().map(p -> p.line).orElse(null);
+                String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+                findings.add(
+                        FindingFactory.builder(
+                                        FindingRules.SPRING_TRANSACTIONAL_EXCEPTION_SWALLOWED,
+                                        FindingConfidence.HIGH)
+                                .shortMessage(
+                                        "@Transactional method catches and swallows a broad"
+                                                + " exception, preventing rollback.")
+                                .whyBadPractice(
+                                        "Spring's transaction management only rolls back when an"
+                                                + " exception propagates out of the @Transactional"
+                                                + " method. Catching RuntimeException or Exception"
+                                                + " without rethrowing silently commits a partial"
+                                                + " database write.")
+                                .possibleImpact(
+                                        "The database may be left in an inconsistent state. Callers"
+                                            + " receive no signal that the operation failed, and"
+                                            + " the committed partial state may cause data"
+                                            + " corruption that is hard to detect later.")
+                                .recommendation(
+                                        "Either let the exception propagate (remove the catch block"
+                                            + " or rethrow), annotate with"
+                                            + " @Transactional(rollbackFor = Exception.class) and"
+                                            + " rethrow, or explicitly call"
+                                            + " TransactionAspectSupport.currentTransactionStatus().setRollbackOnly()"
+                                            + " before handling.")
+                                .evidence(
+                                        "Method "
+                                                + target
+                                                + " in "
+                                                + relativePath
+                                                + " is @Transactional and catches "
+                                                + String.join(" | ", caughtTypes)
+                                                + " without rethrowing.")
+                                .limitations(
+                                        "Static analysis cannot determine if rollback is handled"
+                                                + " via TransactionAspectSupport or equivalent"
+                                                + " programmatic rollback within the catch block.")
+                                .source(relativePath, line)
+                                .target(target)
+                                .build());
+            }
+        }
+    }
+
+    private static final Set<String> HTTP_CLIENT_TYPE_NAMES =
+            Set.of(
+                    "RestTemplate",
+                    "WebClient",
+                    "RestClient",
+                    "HttpClient",
+                    "OkHttpClient",
+                    "CloseableHttpClient");
+    private static final Set<String> HTTP_CLIENT_METHOD_NAMES =
+            Set.of(
+                    "getForObject",
+                    "getForEntity",
+                    "postForObject",
+                    "postForEntity",
+                    "exchange",
+                    "execute",
+                    "get",
+                    "post",
+                    "put",
+                    "patch",
+                    "delete",
+                    "retrieve",
+                    "exchangeToMono",
+                    "exchangeToFlux",
+                    "send");
+
+    private void detectTransactionalHttpCall(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            MethodDeclaration method,
+            List<Finding> findings) {
+        if (method.getBody().isEmpty()) {
+            return;
+        }
+        for (MethodCallExpr call : method.getBody().get().findAll(MethodCallExpr.class)) {
+            if (!HTTP_CLIENT_METHOD_NAMES.contains(call.getNameAsString())) {
+                continue;
+            }
+            boolean scopeIsHttpClient =
+                    call.getScope()
+                            .map(
+                                    scope -> {
+                                        String s = scope.toString();
+                                        String simple =
+                                                s.contains(".")
+                                                        ? s.substring(s.lastIndexOf('.') + 1)
+                                                        : s;
+                                        return HTTP_CLIENT_TYPE_NAMES.stream()
+                                                .anyMatch(
+                                                        t ->
+                                                                simple.toLowerCase(Locale.ROOT)
+                                                                        .contains(
+                                                                                t.toLowerCase(
+                                                                                        Locale
+                                                                                                .ROOT)));
+                                    })
+                            .orElse(false);
+            if (!scopeIsHttpClient) {
+                continue;
+            }
+            Integer line = call.getBegin().map(p -> p.line).orElse(null);
+            String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_TRANSACTIONAL_HTTP_CALL,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage("Outbound HTTP call made inside a @Transactional method.")
+                            .whyBadPractice(
+                                    "A database connection is held open for the full duration of"
+                                        + " the @Transactional method. Outbound HTTP calls inside"
+                                        + " the transaction add network round-trip latency (often"
+                                        + " 50–5000 ms) to connection hold time, rapidly exhausting"
+                                        + " the connection pool under concurrent load.")
+                            .possibleImpact(
+                                    "Connection pool exhaustion under moderate traffic, cascading"
+                                            + " timeouts across the application, and database"
+                                            + " starvation caused by slow or unavailable external"
+                                            + " services.")
+                            .recommendation(
+                                    "Restructure so the HTTP call happens outside the transaction:"
+                                        + " call the external service first, then open a"
+                                        + " transaction to persist the result. If atomicity is"
+                                        + " needed, use an outbox pattern or message broker instead"
+                                        + " of a synchronous HTTP call.")
+                            .evidence(
+                                    "Method "
+                                            + target
+                                            + " in "
+                                            + relativePath
+                                            + " is @Transactional and calls "
+                                            + call.getScope().map(Object::toString).orElse("?")
+                                            + "."
+                                            + call.getNameAsString()
+                                            + "().")
+                            .limitations(
+                                    "Detection is based on variable name matching against known"
+                                            + " HTTP client type names. If the client is accessed"
+                                            + " through a helper or wrapper method the call may not"
+                                            + " be detected.")
+                            .source(relativePath, line)
+                            .target(target)
+                            .build());
+            // One finding per method is enough
+            return;
+        }
     }
 
     private void detectJpaLazyLoadingOutsideTransaction(
