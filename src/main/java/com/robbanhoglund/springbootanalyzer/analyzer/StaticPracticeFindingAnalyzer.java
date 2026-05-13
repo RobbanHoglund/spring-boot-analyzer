@@ -531,6 +531,10 @@ public class StaticPracticeFindingAnalyzer {
         detectRestTemplateNoStatusHandler(relativePath, declaration, findings);
         detectSqlInjectionInQueries(relativePath, declaration, findings);
         detectLoggingPiiExposure(relativePath, declaration, findings);
+        detectSystemOutPrintln(relativePath, declaration, findings);
+        if (controllerLike) {
+            detectEntityExposedInApi(relativePath, declaration, findings);
+        }
         detectJpaLazyLoadingOutsideTransaction(relativePath, declaration, findings);
     }
 
@@ -3592,6 +3596,168 @@ public class StaticPracticeFindingAnalyzer {
                 }
             }
         }
+    }
+
+    private static final Set<String> PRINT_STREAM_TARGETS = Set.of("out", "err");
+    private static final Set<String> PRINT_METHOD_NAMES =
+            Set.of("print", "println", "printf", "format");
+
+    private void detectSystemOutPrintln(
+            String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
+        for (MethodDeclaration method : declaration.getMethods()) {
+            for (MethodCallExpr call : method.findAll(MethodCallExpr.class)) {
+                if (!PRINT_METHOD_NAMES.contains(call.getNameAsString())) {
+                    continue;
+                }
+                boolean isSystemStream =
+                        call.getScope()
+                                .filter(
+                                        scope ->
+                                                scope
+                                                                instanceof
+                                                                com.github.javaparser.ast.expr
+                                                                                .FieldAccessExpr
+                                                                        fa
+                                                        && PRINT_STREAM_TARGETS.contains(
+                                                                fa.getNameAsString())
+                                                        && fa.getScope()
+                                                                .toString()
+                                                                .equals("System"))
+                                .isPresent();
+                if (!isSystemStream) {
+                    continue;
+                }
+                Integer line = call.getBegin().map(p -> p.line).orElse(null);
+                String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+                findings.add(
+                        FindingFactory.builder(
+                                        FindingRules.SPRING_SYSTEM_OUT_PRINTLN,
+                                        FindingConfidence.HIGH)
+                                .shortMessage(
+                                        "System.out/err used for output instead of the application"
+                                                + " logger.")
+                                .whyBadPractice(
+                                        "System.out and System.err bypass the configured logging"
+                                            + " framework. Output goes to the raw JVM stdout/stderr"
+                                            + " stream, which misses log levels, correlation IDs,"
+                                            + " structured fields, and shipping to log"
+                                            + " aggregators.")
+                                .possibleImpact(
+                                        "Operational information is lost or mixed with container"
+                                            + " stdout noise. Log-based monitoring, alerting, and"
+                                            + " audit trails will miss these lines.")
+                                .recommendation(
+                                        "Replace with a SLF4J logger: private static final Logger"
+                                            + " log = LoggerFactory.getLogger(Foo.class); and use"
+                                            + " log.info/warn/error/debug.")
+                                .evidence(
+                                        "System.out.println (or similar) detected in "
+                                                + target
+                                                + " at "
+                                                + relativePath
+                                                + ".")
+                                .limitations(
+                                        "Test classes are not analysed. System.out usage in"
+                                                + " intentional diagnostic utilities may be a"
+                                                + " false positive.")
+                                .source(relativePath, line)
+                                .target(target)
+                                .build());
+            }
+        }
+    }
+
+    private static final Set<String> HTTP_MAPPING_ANNOTATIONS =
+            Set.of(
+                    "GetMapping",
+                    "PostMapping",
+                    "PutMapping",
+                    "PatchMapping",
+                    "DeleteMapping",
+                    "RequestMapping");
+
+    private void detectEntityExposedInApi(
+            String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
+        // Collect @Entity simple names within this compilation unit and from imports
+        Set<String> entityNames = new java.util.HashSet<>();
+        declaration
+                .findCompilationUnit()
+                .ifPresent(
+                        cu ->
+                                cu.findAll(ClassOrInterfaceDeclaration.class).stream()
+                                        .filter(
+                                                cls ->
+                                                        hasAnnotation(
+                                                                cls.getAnnotations(), "Entity"))
+                                        .map(ClassOrInterfaceDeclaration::getNameAsString)
+                                        .forEach(entityNames::add));
+
+        for (MethodDeclaration method : declaration.getMethods()) {
+            if (!hasAnyAnnotation(method.getAnnotations(), HTTP_MAPPING_ANNOTATIONS)) {
+                continue;
+            }
+            com.github.javaparser.ast.type.Type returnType = method.getType();
+            if (containsEntityType(returnType, entityNames)) {
+                Integer line = method.getBegin().map(p -> p.line).orElse(null);
+                String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+                findings.add(
+                        FindingFactory.builder(
+                                        FindingRules.SPRING_ENTITY_EXPOSED_IN_API,
+                                        FindingConfidence.HIGH)
+                                .shortMessage(
+                                        "REST endpoint returns a JPA entity directly instead of a"
+                                                + " DTO.")
+                                .whyBadPractice(
+                                        "Returning @Entity types from REST controllers couples the"
+                                            + " HTTP API to the persistence model. Jackson may"
+                                            + " serialize lazy-loading proxies and trigger N+1"
+                                            + " queries, and internal fields (soft-delete flags,"
+                                            + " audit columns, credentials) may be accidentally"
+                                            + " exposed.")
+                                .possibleImpact(
+                                        "Over-fetched or sensitive data sent to clients."
+                                            + " LazyInitializationException at serialization time."
+                                            + " Inability to evolve the schema without breaking the"
+                                            + " API contract.")
+                                .recommendation(
+                                        "Introduce a dedicated DTO or record that only includes the"
+                                            + " fields needed by the client. Map the entity to the"
+                                            + " DTO in the service layer using a mapper or manual"
+                                            + " mapping.")
+                                .evidence(
+                                        "Method "
+                                                + target
+                                                + " in "
+                                                + relativePath
+                                                + " has an HTTP mapping annotation and a return"
+                                                + " type that contains an @Entity class.")
+                                .limitations(
+                                        "Detection is based on simple-name matching against @Entity"
+                                            + " classes in the same compilation unit. Cross-file"
+                                            + " entity detection is not performed, so entities"
+                                            + " defined in other packages may be missed.")
+                                .source(relativePath, line)
+                                .target(target)
+                                .build());
+            }
+        }
+    }
+
+    /** Recursively checks if a return type (including generic arguments) contains an entity name. */
+    private static boolean containsEntityType(
+            com.github.javaparser.ast.type.Type type, Set<String> entityNames) {
+        if (type instanceof com.github.javaparser.ast.type.ClassOrInterfaceType ct) {
+            if (entityNames.contains(ct.getNameAsString())) {
+                return true;
+            }
+            for (com.github.javaparser.ast.type.Type arg :
+                    ct.getTypeArguments().orElse(new com.github.javaparser.ast.NodeList<>())) {
+                if (containsEntityType(arg, entityNames)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private void detectJpaLazyLoadingOutsideTransaction(

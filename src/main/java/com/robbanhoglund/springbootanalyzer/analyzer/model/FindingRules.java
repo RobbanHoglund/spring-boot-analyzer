@@ -1050,6 +1050,29 @@ public final class FindingRules {
                     FindingCategory.CONFIGURATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
+    /** A {@code @RestController} method returns a JPA {@code @Entity} type directly (or wrapped
+     *  in {@code ResponseEntity<Entity>} / {@code List<Entity>}) instead of a dedicated DTO.
+     *  This exposes internal persistence structure, lazy-loading proxies, and potentially
+     *  sensitive columns, and breaks API evolution. */
+    public static final FindingRule SPRING_ENTITY_EXPOSED_IN_API =
+            rule(
+                    "SPRING_ENTITY_EXPOSED_IN_API",
+                    "JPA entity returned directly from REST controller",
+                    FindingSeverity.WARNING,
+                    FindingCategory.API_SURFACE,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code System.out.println()} or {@code System.err.println()} is used in production
+     *  source code. These calls bypass the application's logging framework and its configuration
+     *  for log levels, correlation IDs, log shipping, and structured output. */
+    public static final FindingRule SPRING_SYSTEM_OUT_PRINTLN =
+            rule(
+                    "SPRING_SYSTEM_OUT_PRINTLN",
+                    "System.out.println used instead of logger",
+                    FindingSeverity.WARNING,
+                    FindingCategory.OBSERVABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
     /** Profile-specific configuration files ({@code application-prod.properties}, etc.) were
      *  detected. Static analysis cannot determine which runtime profiles will be active, so
      *  analysis of profile-specific values is advisory only. */
