@@ -459,12 +459,20 @@ function formatDate(value: string): string {
 function renderRulesSection(model: SettingsViewModel, actions: SettingsViewActions): HTMLElement {
   const panel = element('section', { className: 'panel panel-compact rules-section' });
   panel.appendChild(element('h2', { text: 'Rule management' }));
-  panel.appendChild(
-    element('p', {
-      className: 'helper-text',
-      text: 'Disable rules you have reviewed and accepted for this installation. Disabled rules are saved in ~/.spring-boot-analyzer/rule-config.json and take effect for all future analyses.'
-    })
+  const helperText = element('p', { className: 'helper-text' });
+  helperText.appendChild(
+    document.createTextNode(
+      'Disable rules you have reviewed and accepted for this installation. Disabled rules are saved in ~/.spring-boot-analyzer/rule-config.json and take effect for all future analyses. '
+    )
   );
+  const rulesLink = document.createElement('a');
+  rulesLink.href =
+    'https://github.com/RobbanHoglund/spring-boot-analyzer/blob/main/docs/RULES.md';
+  rulesLink.target = '_blank';
+  rulesLink.rel = 'noopener noreferrer';
+  rulesLink.textContent = 'Full rule catalog →';
+  helperText.appendChild(rulesLink);
+  panel.appendChild(helperText);
 
   if (model.ruleSettingsLoading) {
     panel.appendChild(element('p', { className: 'muted-text', text: 'Loading rules…' }));
