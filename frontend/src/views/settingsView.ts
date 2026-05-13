@@ -50,6 +50,7 @@ export interface SettingsViewActions {
   onDeleteToken: (tokenProfileId: string) => void;
   onToggleRule: (ruleId: string, enabled: boolean) => void;
   onEnableAllRules: () => void;
+  onSetAllBySeverity: (severity: string, enabled: boolean) => void;
 }
 
 export function renderSettingsView(
@@ -481,17 +482,33 @@ function renderRulesSection(model: SettingsViewModel, actions: SettingsViewActio
   }
 
   const disabledCount = model.ruleSettings.filter((r) => !r.enabled).length;
+
+  // Severity bulk-action bar
+  const severityBar = element('div', { className: 'rule-severity-bar' });
+  severityBar.appendChild(element('span', { className: 'rule-severity-bar-label', text: 'By severity:' }));
+  for (const severity of ['ERROR', 'WARNING', 'INFO'] as const) {
+    const rulesForSeverity = model.ruleSettings.filter((r) => r.severity === severity);
+    const allDisabled = rulesForSeverity.every((r) => !r.enabled);
+    const btn = element('button', {
+      className: `severity-toggle-button severity-toggle-button--${severity.toLowerCase()}${allDisabled ? ' severity-toggle-button--off' : ''}`,
+      text: allDisabled
+        ? `Enable all ${severity} (${rulesForSeverity.length})`
+        : `Disable all ${severity} (${rulesForSeverity.length})`,
+      attributes: { type: 'button' }
+    });
+    btn.addEventListener('click', () => actions.onSetAllBySeverity(severity, allDisabled));
+    severityBar.appendChild(btn);
+  }
   if (disabledCount > 0) {
-    const bar = element('div', { className: 'actions' });
     const enableAll = element('button', {
-      className: 'secondary-button',
-      text: `Re-enable all rules (${disabledCount} disabled)`,
+      className: 'secondary-button rule-enable-all-button',
+      text: `Re-enable all (${disabledCount} disabled)`,
       attributes: { type: 'button' }
     });
     enableAll.addEventListener('click', actions.onEnableAllRules);
-    bar.appendChild(enableAll);
-    panel.appendChild(bar);
+    severityBar.appendChild(enableAll);
   }
+  panel.appendChild(severityBar);
 
   // Group rules by category
   const byCategory = new Map<string, RuleInfo[]>();

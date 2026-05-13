@@ -570,6 +570,9 @@ function render(): void {
           },
           onEnableAllRules: () => {
             void enableAllRules();
+          },
+          onSetAllBySeverity: (severity, enabled) => {
+            void setAllBySeverity(severity, enabled);
           }
         }
       )
@@ -1569,6 +1572,28 @@ async function toggleRule(ruleId: string, enabled: boolean): Promise<void> {
     // Rollback on failure
     state.ruleSettings = state.ruleSettings.map((r) =>
       r.ruleId === ruleId ? { ...r, enabled: !enabled } : r
+    );
+    state.ruleSettingsError =
+      error instanceof ApiError ? error.message : 'Failed to save rule settings.';
+    render();
+  }
+}
+
+async function setAllBySeverity(severity: string, enabled: boolean): Promise<void> {
+  if (!state.ruleSettings) {
+    return;
+  }
+  state.ruleSettings = state.ruleSettings.map((r) =>
+    r.severity === severity ? { ...r, enabled } : r
+  );
+  render();
+  const disabledRuleIds = state.ruleSettings.filter((r) => !r.enabled).map((r) => r.ruleId);
+  try {
+    await saveRuleSettings(disabledRuleIds);
+  } catch (error) {
+    // Rollback
+    state.ruleSettings = state.ruleSettings.map((r) =>
+      r.severity === severity ? { ...r, enabled: !enabled } : r
     );
     state.ruleSettingsError =
       error instanceof ApiError ? error.message : 'Failed to save rule settings.';
