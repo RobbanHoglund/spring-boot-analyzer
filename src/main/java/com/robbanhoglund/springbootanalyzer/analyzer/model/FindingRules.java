@@ -1050,6 +1050,38 @@ public final class FindingRules {
                     FindingCategory.CONFIGURATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
+    /** Profile-specific configuration files ({@code application-prod.properties}, etc.) were
+     *  detected. Static analysis cannot determine which runtime profiles will be active, so
+     *  analysis of profile-specific values is advisory only. */
+    public static final FindingRule SPRING_PROFILE_SPECIFIC_CONFIG =
+            rule(
+                    "SPRING_PROFILE_SPECIFIC_CONFIG",
+                    "Profile-specific configuration files detected",
+                    FindingSeverity.INFO,
+                    FindingCategory.PROFILE_DRIFT,
+                    FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT);
+
+    /** Two or more Flyway migration scripts share the same version number. Flyway will fail
+     *  at startup because version numbers must be unique across all configured locations. */
+    public static final FindingRule SPRING_FLYWAY_DUPLICATE_VERSION =
+            rule(
+                    "SPRING_FLYWAY_DUPLICATE_VERSION",
+                    "Duplicate Flyway migration version detected",
+                    FindingSeverity.WARNING,
+                    FindingCategory.PERSISTENCE,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** Reactive API types ({@code Mono}, {@code Flux}, or WebFlux imports) were found in the
+     *  source but the build appears to be a Servlet/MVC application without the WebFlux
+     *  starter. Mixing reactive and blocking code paths can cause subtle threading issues. */
+    public static final FindingRule SPRING_REACTIVE_API_IN_SERVLET_APP =
+            rule(
+                    "SPRING_REACTIVE_API_IN_SERVLET_APP",
+                    "Reactive API usage in Servlet application",
+                    FindingSeverity.INFO,
+                    FindingCategory.API_SURFACE,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
     private FindingRules() {}
 
     private static FindingRule rule(
