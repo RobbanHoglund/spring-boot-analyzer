@@ -9,6 +9,7 @@ import com.robbanhoglund.springbootanalyzer.analyzer.JavaSourceAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.ObservabilityFindingAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.ObservabilityGapFindingAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.SecurityPracticeFindingAnalyzer;
+import com.robbanhoglund.springbootanalyzer.analyzer.ScalabilityPracticeFindingAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.SpringBootProjectAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.StaticPracticeFindingAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.TestingPracticeFindingAnalyzer;
@@ -121,6 +122,7 @@ class AnalysisReportContractTest {
                     new ObservabilityGapFindingAnalyzer(),
                     new TransactionPracticeFindingAnalyzer(),
                     new SecurityPracticeFindingAnalyzer(),
+                    new ScalabilityPracticeFindingAnalyzer(),
                     new AnalyzerProperties(
                             Path.of("."),
                             true,

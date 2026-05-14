@@ -27,6 +27,7 @@ import com.robbanhoglund.springbootanalyzer.analyzer.gradle.plugin.GradlePluginD
 import com.robbanhoglund.springbootanalyzer.analyzer.gradle.plugin.GradlePluginResolutionBridge;
 import com.robbanhoglund.springbootanalyzer.analyzer.gradle.plugin.GradleVersionCatalogPluginScanner;
 import com.robbanhoglund.springbootanalyzer.analyzer.http.HttpSurfaceAnalyzer;
+import com.robbanhoglund.springbootanalyzer.analyzer.ScalabilityPracticeFindingAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleExecutionMode;
 import com.robbanhoglund.springbootanalyzer.analyzer.runtime.RuntimeStackAnalyzer;
@@ -89,6 +90,7 @@ class SpringBootProjectAnalyzerTest {
                     new ObservabilityGapFindingAnalyzer(),
                     new TransactionPracticeFindingAnalyzer(),
                     new SecurityPracticeFindingAnalyzer(),
+                    new ScalabilityPracticeFindingAnalyzer(),
                     new AnalyzerProperties(
                             Path.of("."),
                             true,
