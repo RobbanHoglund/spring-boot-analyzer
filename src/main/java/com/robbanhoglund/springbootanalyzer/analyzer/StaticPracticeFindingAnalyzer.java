@@ -341,6 +341,10 @@ public class StaticPracticeFindingAnalyzer {
             detectHttpClientGaps(relativePath, fileContent, outboundEndpoints, findings);
         }
 
+        if (controllerLike && classTransactional) {
+            detectTransactionalOnController(relativePath, declaration, null, findings);
+        }
+
         for (FieldDeclaration field : declaration.getFields()) {
             if (hasAnnotation(field.getAnnotations(), "Autowired") && !field.isStatic()) {
                 detectFieldInjection(relativePath, declaration, field, findings);
@@ -352,6 +356,11 @@ public class StaticPracticeFindingAnalyzer {
                     && !configurationLike
                     && isApplicationContextField(field)) {
                 detectApplicationContextInjected(relativePath, declaration, field, findings);
+            }
+            if ((controllerLike || serviceLike || repositoryLike || configurationLike)
+                    && field.isStatic()
+                    && !field.isFinal()) {
+                detectStaticMutableField(relativePath, declaration, field, findings);
             }
         }
 
@@ -523,6 +532,10 @@ public class StaticPracticeFindingAnalyzer {
                 detectTransactionalHttpCall(relativePath, declaration, method, findings);
             }
 
+            if (controllerLike && hasAnnotation(method.getAnnotations(), "Transactional")) {
+                detectTransactionalOnController(relativePath, declaration, method, findings);
+            }
+
             if (controllerLike) {
                 detectRequestMappingNoMethod(relativePath, declaration, method, findings);
                 detectSensitiveRequestParams(relativePath, declaration, method, findings);
@@ -553,6 +566,7 @@ public class StaticPracticeFindingAnalyzer {
         }
         if (controllerLike) {
             detectEntityExposedInApi(relativePath, declaration, findings);
+            detectRepositoryInController(relativePath, declaration, findings);
         }
         detectJpaLazyLoadingOutsideTransaction(relativePath, declaration, findings);
     }
@@ -3868,6 +3882,222 @@ public class StaticPracticeFindingAnalyzer {
                 break;
             }
         }
+    }
+
+    private static final Set<String> MUTABLE_COLLECTION_TYPES =
+            Set.of(
+                    "List", "ArrayList", "LinkedList",
+                    "Map", "HashMap", "LinkedHashMap", "TreeMap",
+                    "Set", "HashSet", "LinkedHashSet", "TreeSet",
+                    "Deque", "ArrayDeque", "Queue", "PriorityQueue",
+                    "Vector", "Stack");
+
+    private void detectStaticMutableField(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            FieldDeclaration field,
+            List<Finding> findings) {
+        String typeName = shortTypeName(field.getElementType().asString());
+        if (!MUTABLE_COLLECTION_TYPES.contains(typeName)) {
+            return;
+        }
+        Integer line = field.getBegin().map(p -> p.line).orElse(null);
+        String fieldName = field.getVariable(0).getNameAsString();
+        String target = declaration.getNameAsString() + "#" + fieldName;
+        findings.add(
+                FindingFactory.builder(FindingRules.SPRING_STATIC_MUTABLE_FIELD, FindingConfidence.HIGH)
+                        .shortMessage(
+                                "Static mutable "
+                                        + typeName
+                                        + " field "
+                                        + fieldName
+                                        + " in Spring bean "
+                                        + declaration.getNameAsString()
+                                        + " — shared across all threads and requests.")
+                        .whyBadPractice(
+                                "A static non-final mutable collection in a Spring-managed class is"
+                                    + " shared by every thread in the JVM. Any concurrent write"
+                                    + " (add, remove, put) without explicit synchronization is a"
+                                    + " data race. Even with synchronization, the cache accumulates"
+                                    + " entries indefinitely and becomes inconsistent across"
+                                    + " horizontally-scaled instances because each pod maintains its"
+                                    + " own copy with no coordination.")
+                        .possibleImpact(
+                                "ConcurrentModificationException or silent data corruption under"
+                                    + " concurrent load. Stale data returned after updates in a"
+                                    + " multi-instance deployment. OutOfMemoryError if the collection"
+                                    + " grows without bound. Bugs that are invisible in single-user"
+                                    + " testing but manifest under load.")
+                        .recommendation(
+                                "If you need a per-request store, use a method-local variable or"
+                                    + " inject a request-scoped bean. If you need a shared cache,"
+                                    + " use Spring's @Cacheable with a proper cache provider"
+                                    + " (Caffeine, Redis) that has TTL and eviction policies."
+                                    + " If you need a thread-safe counter, use AtomicLong or"
+                                    + " Micrometer's Counter. Remove the static modifier and inject"
+                                    + " the dependency through Spring's DI mechanism.")
+                        .limitations(
+                                "Detects static non-final fields whose declared type is a common"
+                                    + " mutable collection. Thread-safe variants (ConcurrentHashMap,"
+                                    + " CopyOnWriteArrayList) are not flagged but still represent"
+                                    + " shared unbounded state. Constants (static final) are not"
+                                    + " flagged.")
+                        .evidence(
+                                "static "
+                                        + typeName
+                                        + " "
+                                        + fieldName
+                                        + " in "
+                                        + declaration.getNameAsString()
+                                        + " ("
+                                        + relativePath
+                                        + ").")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+    }
+
+    private void detectTransactionalOnController(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            MethodDeclaration method,
+            List<Finding> findings) {
+        boolean classLevel = method == null;
+        Integer line =
+                classLevel
+                        ? declaration.getBegin().map(p -> p.line).orElse(null)
+                        : method.getBegin().map(p -> p.line).orElse(null);
+        String target =
+                classLevel
+                        ? declaration.getNameAsString()
+                        : declaration.getNameAsString() + "#" + method.getNameAsString();
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_TRANSACTIONAL_ON_CONTROLLER,
+                                FindingConfidence.HIGH)
+                        .shortMessage(
+                                "@Transactional on "
+                                        + (classLevel ? "controller class " : "controller method ")
+                                        + target
+                                        + " — database connection held open during HTTP processing.")
+                        .whyBadPractice(
+                                "Placing @Transactional on a controller means the database"
+                                    + " transaction is open for the entire duration of request"
+                                    + " handling, including request body parsing, business logic,"
+                                    + " and — critically — response serialisation by Jackson."
+                                    + " Jackson serialisation can trigger lazy-loading of JPA"
+                                    + " associations, creating unintended queries inside the"
+                                    + " HTTP layer. This violates the layered architecture:"
+                                    + " transaction boundaries belong in the service layer.")
+                        .possibleImpact(
+                                "Database connections held for longer than necessary, increasing"
+                                    + " connection pool pressure under load. Lazy-loading queries"
+                                    + " triggered by Jackson during serialisation produce N+1"
+                                    + " query patterns. Deadlock risk if multiple controller"
+                                    + " methods acquire locks in different orders.")
+                        .recommendation(
+                                "Move the @Transactional annotation to the service-layer method"
+                                    + " that actually performs the database work. The controller"
+                                    + " should call the service and serialize only the returned"
+                                    + " DTO, which must not contain JPA proxy references.")
+                        .limitations(
+                                "High confidence when @Transactional appears directly on a class"
+                                    + " or method that is also annotated with @RestController or"
+                                    + " @Controller. Meta-annotated aliases are not detected.")
+                        .evidence(
+                                "@Transactional found on "
+                                        + (classLevel ? "controller class " : "controller method ")
+                                        + target
+                                        + " in "
+                                        + relativePath
+                                        + ".")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+    }
+
+    private void detectRepositoryInController(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            List<Finding> findings) {
+        // Check fields
+        for (FieldDeclaration field : declaration.getFields()) {
+            String typeName = shortTypeName(field.getElementType().asString());
+            if (!isRepositoryType(typeName)) {
+                continue;
+            }
+            Integer line = field.getBegin().map(p -> p.line).orElse(null);
+            String fieldName = field.getVariable(0).getNameAsString();
+            String target = declaration.getNameAsString() + "#" + fieldName;
+            findings.add(buildRepositoryInControllerFinding(relativePath, target, typeName, line));
+        }
+        // Check constructor parameters
+        for (ConstructorDeclaration ctor : declaration.getConstructors()) {
+            for (Parameter param : ctor.getParameters()) {
+                String typeName = shortTypeName(param.getTypeAsString());
+                if (!isRepositoryType(typeName)) {
+                    continue;
+                }
+                Integer line = param.getBegin().map(p -> p.line).orElse(null);
+                String target = declaration.getNameAsString() + "(" + typeName + ")";
+                findings.add(
+                        buildRepositoryInControllerFinding(relativePath, target, typeName, line));
+            }
+        }
+    }
+
+    private static String shortTypeName(String typeName) {
+        int dot = typeName.lastIndexOf('.');
+        return dot >= 0 ? typeName.substring(dot + 1) : typeName;
+    }
+
+    private static boolean isRepositoryType(String simpleTypeName) {
+        return simpleTypeName.endsWith("Repository")
+                || simpleTypeName.endsWith("Dao")
+                || simpleTypeName.endsWith("DAO");
+    }
+
+    private static Finding buildRepositoryInControllerFinding(
+            String relativePath, String target, String typeName, Integer line) {
+        return FindingFactory.builder(
+                        FindingRules.SPRING_REPOSITORY_IN_CONTROLLER, FindingConfidence.HIGH)
+                .shortMessage(
+                        typeName
+                                + " injected directly into a controller — service layer is"
+                                + " bypassed.")
+                .whyBadPractice(
+                        "Controllers should be responsible only for HTTP concerns:"
+                            + " routing, request parsing, and response serialization. When a"
+                            + " repository is injected directly into a controller, persistence"
+                            + " logic leaks into the web layer. Business rules, transactions,"
+                            + " caching, and authorization decisions have no natural home and"
+                            + " tend to accumulate in the controller, making the code hard to"
+                            + " test, reuse, or reason about.")
+                .possibleImpact(
+                        "Business logic duplicated across controllers. No single place to add"
+                            + " cross-cutting concerns (transactions, audit logging, caching)."
+                            + " Controller tests require a full persistence stack instead of a"
+                            + " simple service mock.")
+                .recommendation(
+                        "Introduce a @Service class that owns the business logic and calls the"
+                            + " repository. The controller should call the service. This keeps"
+                            + " each layer focused: web layer handles HTTP, service layer owns"
+                            + " the domain, repository layer handles persistence.")
+                .limitations(
+                        "Detects injection of types whose name ends in Repository, Dao, or DAO."
+                            + " A legitimately named class that is not actually a repository"
+                            + " would produce a false positive.")
+                .evidence(
+                        "Controller "
+                                + target
+                                + " in "
+                                + relativePath
+                                + " directly injects "
+                                + typeName
+                                + ".")
+                .source(relativePath, line)
+                .target(target)
+                .build();
     }
 
     private static final Set<String> HTTP_MAPPING_ANNOTATIONS =

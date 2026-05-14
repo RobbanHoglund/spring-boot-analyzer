@@ -33,6 +33,9 @@ import org.springframework.stereotype.Component;
  *   <li>{@link FindingRules#SPRING_PREAUTHORIZE_ON_PRIVATE_METHOD} — {@code @PreAuthorize},
  *       {@code @PostAuthorize}, {@code @Secured}, or {@code @RolesAllowed} on a private method
  *       that Spring Security's AOP proxy cannot intercept.
+ *   <li>{@link FindingRules#SPRING_WEAK_PASSWORD_HASH} — {@code MessageDigest.getInstance()} called
+ *       with {@code "MD5"}, {@code "SHA-1"}, or {@code "SHA-256"} — algorithms that are too fast
+ *       for safe password hashing.
  * </ul>
  */
 @Component
@@ -91,6 +94,7 @@ public class SecurityPracticeFindingAnalyzer {
         String relativePath = repositoryRoot.relativize(sourceFile).toString().replace('\\', '/');
 
         detectCsrfDisabled(cu, relativePath, findings);
+        detectWeakPasswordHash(cu, relativePath, findings);
 
         for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
             for (MethodDeclaration method : cls.getMethods()) {
@@ -283,6 +287,90 @@ public class SecurityPracticeFindingAnalyzer {
                         .source(relativePath, line)
                         .target(target)
                         .build());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_WEAK_PASSWORD_HASH
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> WEAK_HASH_ALGORITHMS = Set.of("MD5", "SHA-1", "SHA-256");
+
+    private void detectWeakPasswordHash(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            if (!"getInstance".equals(call.getNameAsString())) {
+                continue;
+            }
+            boolean scopeIsMessageDigest =
+                    call.getScope()
+                            .map(s -> simpleName(s.toString()).equals("MessageDigest"))
+                            .orElse(false);
+            if (!scopeIsMessageDigest) {
+                continue;
+            }
+            call.getArguments().stream()
+                    .filter(arg -> arg instanceof com.github.javaparser.ast.expr.StringLiteralExpr)
+                    .map(arg -> ((com.github.javaparser.ast.expr.StringLiteralExpr) arg).asString())
+                    .filter(WEAK_HASH_ALGORITHMS::contains)
+                    .findFirst()
+                    .ifPresent(
+                            algo -> {
+                                Integer line = call.getBegin().map(p -> p.line).orElse(null);
+                                findings.add(
+                                        FindingFactory.builder(
+                                                        FindingRules.SPRING_WEAK_PASSWORD_HASH,
+                                                        FindingConfidence.MEDIUM)
+                                                .shortMessage(
+                                                        "MessageDigest.getInstance(\""
+                                                                + algo
+                                                                + "\") used in "
+                                                                + relativePath
+                                                                + " — too fast for password"
+                                                                + " hashing.")
+                                                .whyBadPractice(
+                                                        algo
+                                                            + " is a general-purpose cryptographic"
+                                                            + " hash function optimised for speed."
+                                                            + " Speed is exactly what you do not"
+                                                            + " want for password hashing: a modern"
+                                                            + " GPU can compute billions of MD5 or"
+                                                            + " SHA-256 hashes per second, making"
+                                                            + " brute-force and rainbow-table attacks"
+                                                            + " trivial against any leaked hash"
+                                                            + " database.")
+                                                .possibleImpact(
+                                                        "In a credential breach, all stored"
+                                                            + " passwords can be recovered within"
+                                                            + " hours or days using commodity"
+                                                            + " hardware. Credential stuffing attacks"
+                                                            + " then compromise user accounts on"
+                                                            + " other services.")
+                                                .recommendation(
+                                                        "Use BCryptPasswordEncoder,"
+                                                            + " Argon2PasswordEncoder, or"
+                                                            + " SCryptPasswordEncoder from Spring"
+                                                            + " Security. These are slow by design"
+                                                            + " (tunable work factor) and include a"
+                                                            + " per-password salt automatically."
+                                                            + " Never implement password hashing"
+                                                            + " manually.")
+                                                .limitations(
+                                                        "Medium confidence — MessageDigest may be"
+                                                            + " used for non-password purposes such"
+                                                            + " as checksums, ETags, or content"
+                                                            + " addressing. Review the context to"
+                                                            + " confirm the hash result is used for"
+                                                            + " credential storage.")
+                                                .evidence(
+                                                        "MessageDigest.getInstance(\""
+                                                                + algo
+                                                                + "\") found in "
+                                                                + relativePath
+                                                                + ".")
+                                                .source(relativePath, line)
+                                                .build());
+                            });
+        }
     }
 
     // ---------------------------------------------------------------------------

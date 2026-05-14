@@ -77,6 +77,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
     private final ObservabilityGapFindingAnalyzer observabilityGapFindingAnalyzer;
     private final TransactionPracticeFindingAnalyzer transactionPracticeFindingAnalyzer;
     private final SecurityPracticeFindingAnalyzer securityPracticeFindingAnalyzer;
+    private final ScalabilityPracticeFindingAnalyzer scalabilityPracticeFindingAnalyzer;
     private final AnalyzerProperties analyzerProperties;
 
     public SpringBootProjectAnalyzer(
@@ -96,6 +97,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
             ObservabilityGapFindingAnalyzer observabilityGapFindingAnalyzer,
             TransactionPracticeFindingAnalyzer transactionPracticeFindingAnalyzer,
             SecurityPracticeFindingAnalyzer securityPracticeFindingAnalyzer,
+            ScalabilityPracticeFindingAnalyzer scalabilityPracticeFindingAnalyzer,
             AnalyzerProperties analyzerProperties) {
         this.buildFileAnalyzer = buildFileAnalyzer;
         this.javaSourceAnalyzer = javaSourceAnalyzer;
@@ -113,6 +115,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
         this.observabilityGapFindingAnalyzer = observabilityGapFindingAnalyzer;
         this.transactionPracticeFindingAnalyzer = transactionPracticeFindingAnalyzer;
         this.securityPracticeFindingAnalyzer = securityPracticeFindingAnalyzer;
+        this.scalabilityPracticeFindingAnalyzer = scalabilityPracticeFindingAnalyzer;
         this.analyzerProperties = analyzerProperties;
     }
 
@@ -195,6 +198,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
         findings.addAll(observabilityGapFindingAnalyzer.analyze(repositoryRoot));
         findings.addAll(transactionPracticeFindingAnalyzer.analyze(repositoryRoot));
         findings.addAll(securityPracticeFindingAnalyzer.analyze(repositoryRoot));
+        findings.addAll(scalabilityPracticeFindingAnalyzer.analyze(repositoryRoot));
 
         return new AnalysisResult(
                 repositoryReference.repositoryUrl(),

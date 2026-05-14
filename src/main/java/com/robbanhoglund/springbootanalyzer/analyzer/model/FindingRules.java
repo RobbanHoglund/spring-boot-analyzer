@@ -1190,6 +1190,161 @@ public final class FindingRules {
                     FindingCategory.CACHING,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
+    /** A string literal that looks like a hardcoded absolute file system path ({@code /var/…},
+     *  {@code /tmp/…}, {@code C:\…}, etc.) is passed to {@code new File(…)} or
+     *  {@code Paths.get(…)}. In containerised or horizontally-scaled deployments the path may
+     *  not exist or data written there is lost when the container restarts. */
+    public static final FindingRule SPRING_HARDCODED_FILE_PATH =
+            rule(
+                    "SPRING_HARDCODED_FILE_PATH",
+                    "Hardcoded absolute file system path used in application code",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A class annotated with {@code @Entity} is also annotated with Lombok's {@code @Data}.
+     *  {@code @Data} auto-generates {@code equals()}, {@code hashCode()}, and {@code toString()}
+     *  over all fields. On lazy-loaded associations this eagerly initialises the entire object
+     *  graph and can cause infinite recursion ({@code StackOverflowError}) when two entities
+     *  reference each other. */
+    public static final FindingRule SPRING_LOMBOK_DATA_ON_ENTITY =
+            rule(
+                    "SPRING_LOMBOK_DATA_ON_ENTITY",
+                    "Lombok @Data on JPA entity — equals/hashCode/toString risk",
+                    FindingSeverity.WARNING,
+                    FindingCategory.PERSISTENCE,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code RestTemplate} is constructed via the no-arg constructor {@code new RestTemplate()}.
+     *  The default constructor uses {@code SimpleClientHttpRequestFactory} which has no connect or
+     *  read timeout, allowing threads to block indefinitely when a downstream service hangs and
+     *  eventually starving the thread pool. */
+    public static final FindingRule SPRING_REST_TEMPLATE_NO_TIMEOUT =
+            rule(
+                    "SPRING_REST_TEMPLATE_NO_TIMEOUT",
+                    "RestTemplate constructed without explicit timeout configuration",
+                    FindingSeverity.WARNING,
+                    FindingCategory.HTTP,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @Scope("prototype")} bean is injected directly as a field or constructor
+     *  parameter into a singleton bean ({@code @Service}, {@code @Component}, etc.).
+     *  Spring instantiates the prototype once at startup and reuses the same instance for
+     *  the lifetime of the singleton, defeating the per-use semantics and causing
+     *  shared-state bugs under concurrent load. */
+    public static final FindingRule SPRING_PROTOTYPE_BEAN_IN_SINGLETON =
+            rule(
+                    "SPRING_PROTOTYPE_BEAN_IN_SINGLETON",
+                    "Prototype-scoped bean injected directly into singleton — loses prototype semantics",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A class that implements {@code javax.servlet.Filter} or {@code jakarta.servlet.Filter}
+     *  is annotated with {@code @Component}. Spring Boot auto-registers every {@code @Component}
+     *  filter into the main servlet filter chain regardless of any
+     *  {@code SecurityFilterChain} restrictions, causing the filter to execute for every
+     *  request instead of only the intended subset. */
+    public static final FindingRule SPRING_FILTER_COMPONENT_REGISTRATION_LEAK =
+            rule(
+                    "SPRING_FILTER_COMPONENT_REGISTRATION_LEAK",
+                    "@Component on Servlet Filter causes unintended global registration",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code @Async} methods are present and Spring Security is on the classpath, but no
+     *  {@code DelegatingSecurityContextAsyncTaskExecutor} or
+     *  {@code DelegatingSecurityContextExecutor} is configured. Spring Security stores the
+     *  authenticated principal in a {@code ThreadLocal}; the new thread spawned by
+     *  {@code @Async} has no access to it, causing silent {@code AccessDeniedException}
+     *  or an empty {@code SecurityContextHolder} inside the async method. */
+    public static final FindingRule SPRING_ASYNC_SECURITY_CONTEXT_LOST =
+            rule(
+                    "SPRING_ASYNC_SECURITY_CONTEXT_LOST",
+                    "@Async method loses SecurityContext — authenticated user not propagated",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code spring-boot-devtools} appears on the runtime classpath. DevTools enables
+     *  remote restart endpoints, file-system watchers, and live-reload servers that add
+     *  CPU overhead and expose restart/reload attack surfaces in production containers. */
+    public static final FindingRule SPRING_DEVTOOLS_IN_PRODUCTION =
+            rule(
+                    "SPRING_DEVTOOLS_IN_PRODUCTION",
+                    "spring-boot-devtools is on the runtime classpath",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code MessageDigest.getInstance()} is called with a weak algorithm ({@code "MD5"},
+     *  {@code "SHA-1"}, or {@code "SHA-256"}) in production source code. These algorithms are
+     *  fast by design and are therefore unsuitable for password hashing: an attacker with a
+     *  modern GPU can try billions of candidates per second against a leaked hash. */
+    public static final FindingRule SPRING_WEAK_PASSWORD_HASH =
+            rule(
+                    "SPRING_WEAK_PASSWORD_HASH",
+                    "Weak hashing algorithm used — unsuitable for password storage",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A Spring-managed component ({@code @Service}, {@code @Component}, {@code @Repository},
+     *  {@code @Controller}) declares a {@code static} non-{@code final} field of a mutable
+     *  collection type ({@code List}, {@code Map}, {@code Set}, etc.). The field is shared
+     *  across all threads and all requests. Without explicit synchronization every concurrent
+     *  write is a data race; horizontal scaling makes the problem worse because each JVM
+     *  instance has its own copy with no coordination. */
+    public static final FindingRule SPRING_STATIC_MUTABLE_FIELD =
+            rule(
+                    "SPRING_STATIC_MUTABLE_FIELD",
+                    "Static mutable collection field in Spring-managed component",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @Transactional} annotation is placed directly on a {@code @RestController}
+     *  or {@code @Controller} class or one of its handler methods. Controllers are
+     *  responsible for HTTP concerns (parsing, routing, serialisation); managing database
+     *  transactions in the same layer holds a connection open for the entire HTTP processing
+     *  time, including Jackson serialisation, which is outside the intended transaction scope. */
+    public static final FindingRule SPRING_TRANSACTIONAL_ON_CONTROLLER =
+            rule(
+                    "SPRING_TRANSACTIONAL_ON_CONTROLLER",
+                    "@Transactional placed on a controller class or handler method",
+                    FindingSeverity.WARNING,
+                    FindingCategory.TRANSACTION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @RestController} or {@code @Controller} class directly injects a
+     *  {@code Repository} (field or constructor parameter), bypassing the service layer.
+     *  This couples the HTTP layer to persistence, prevents reuse of business logic, and
+     *  makes it impossible to add cross-cutting concerns (transactions, caching, auditing)
+     *  in a single place. */
+    public static final FindingRule SPRING_REPOSITORY_IN_CONTROLLER =
+            rule(
+                    "SPRING_REPOSITORY_IN_CONTROLLER",
+                    "Repository injected directly into controller — service layer bypassed",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A Spring-managed component calls {@code .block()}, {@code .blockFirst()}, or
+     *  {@code .blockLast()} on a reactive stream, or calls {@code Thread.sleep()} directly.
+     *  In a WebFlux application these calls block the Netty event-loop thread, preventing it
+     *  from processing other requests and causing cascading latency under any concurrency.
+     *  Even in a Servlet/MVC application, calling {@code .block()} on a reactive type
+     *  indicates a reactive-to-blocking impedance mismatch that should be resolved by
+     *  switching to a non-reactive client or using the reactive stack throughout. */
+    public static final FindingRule SPRING_WEBFLUX_BLOCKING_CALL =
+            rule(
+                    "SPRING_WEBFLUX_BLOCKING_CALL",
+                    "Blocking call inside Spring-managed component — event-loop thread hazard",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
     private FindingRules() {}
 
     private static FindingRule rule(
