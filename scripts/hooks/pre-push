@@ -1,0 +1,8 @@
+#!/bin/sh
+echo "Running Spotless check before push..."
+./gradlew spotlessCheck --quiet
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "Spotless check failed. Run './gradlew spotlessApply' to fix formatting, then commit and push again."
+  exit 1
+fi

@@ -46,6 +46,13 @@ test {
     useJUnitPlatform()
 }
 
+tasks.register('installGitHooks', Copy) {
+    from 'scripts/hooks'
+    into '.git/hooks'
+}
+
+compileJava.dependsOn installGitHooks
+
 spotless {
     java {
         googleJavaFormat('1.27.0').aosp().reflowLongStrings().skipJavadocFormatting()
