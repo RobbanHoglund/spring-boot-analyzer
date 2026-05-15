@@ -1695,33 +1695,36 @@ public class ConfigurationFindingAnalyzer {
         }
         findings.add(
                 FindingFactory.builder(
-                                FindingRules.SPRING_DEVTOOLS_IN_PRODUCTION, FindingConfidence.MEDIUM)
+                                FindingRules.SPRING_DEVTOOLS_IN_PRODUCTION,
+                                FindingConfidence.MEDIUM)
                         .shortMessage(
                                 "spring-boot-devtools is declared as a runtime dependency —"
                                         + " it should not be present in production builds.")
                         .whyBadPractice(
                                 "DevTools activates live-reload servers, remote restart endpoints,"
-                                    + " and file-system watchers that have no purpose in production."
-                                    + " The remote-restart endpoint allows an authenticated"
-                                    + " attacker to reload arbitrary application state. File-system"
-                                    + " watchers waste CPU cycles monitoring a read-only container"
-                                    + " image and add latency to the startup sequence.")
+                                    + " and file-system watchers that have no purpose in"
+                                    + " production. The remote-restart endpoint allows an"
+                                    + " authenticated attacker to reload arbitrary application"
+                                    + " state. File-system watchers waste CPU cycles monitoring a"
+                                    + " read-only container image and add latency to the startup"
+                                    + " sequence.")
                         .possibleImpact(
                                 "Exposure of remote-restart and live-reload endpoints if network"
-                                    + " controls are absent. Unnecessary CPU and memory overhead"
-                                    + " in production pods. Potential class-loading conflicts"
-                                    + " because DevTools uses a custom classloader hierarchy.")
+                                    + " controls are absent. Unnecessary CPU and memory overhead in"
+                                    + " production pods. Potential class-loading conflicts because"
+                                    + " DevTools uses a custom classloader hierarchy.")
                         .recommendation(
-                                "In Gradle, declare DevTools in the devOnly configuration so it"
-                                    + " is excluded from the production bootJar:"
+                                "In Gradle, declare DevTools in the devOnly configuration so it is"
+                                    + " excluded from the production bootJar:"
                                     + " devOnly(\"org.springframework.boot:spring-boot-devtools\")."
                                     + " In Maven, set <optional>true</optional> on the dependency."
-                                    + " Verify the final JAR with"
-                                    + " jar tf build/libs/*.jar | grep devtools.")
+                                    + " Verify the final JAR with jar tf build/libs/*.jar | grep"
+                                    + " devtools.")
                         .limitations(
                                 "Medium confidence — the build tool may already exclude DevTools"
-                                    + " from the final artifact via devOnly or optional scope, which"
-                                    + " static dependency-list analysis cannot always distinguish.")
+                                        + " from the final artifact via devOnly or optional scope,"
+                                        + " which static dependency-list analysis cannot always"
+                                        + " distinguish.")
                         .location("Build file")
                         .build());
     }
@@ -1761,30 +1764,30 @@ public class ConfigurationFindingAnalyzer {
                                 FindingConfidence.MEDIUM)
                         .shortMessage(
                                 "@Async methods are present alongside Spring Security, but no"
-                                        + " DelegatingSecurityContextAsyncTaskExecutor is configured"
-                                        + " — the SecurityContext will not be propagated to async"
-                                        + " threads.")
+                                    + " DelegatingSecurityContextAsyncTaskExecutor is configured —"
+                                    + " the SecurityContext will not be propagated to async"
+                                    + " threads.")
                         .whyBadPractice(
                                 "Spring Security stores the authenticated principal in a"
-                                    + " ThreadLocal (ThreadLocalSecurityContextHolderStrategy). When"
-                                    + " an @Async method runs on a separate thread from the"
+                                    + " ThreadLocal (ThreadLocalSecurityContextHolderStrategy)."
+                                    + " When an @Async method runs on a separate thread from the"
                                     + " executor pool, that thread has an empty SecurityContext."
                                     + " Any security check inside the async method — including"
                                     + " @PreAuthorize, SecurityContextHolder.getContext(), or"
-                                    + " repository-level method security — will see no authentication"
-                                    + " and either throw AccessDeniedException or behave as if the"
-                                    + " caller is anonymous.")
+                                    + " repository-level method security — will see no"
+                                    + " authentication and either throw AccessDeniedException or"
+                                    + " behave as if the caller is anonymous.")
                         .possibleImpact(
                                 "Silent authorization failures inside async methods. Background"
                                     + " tasks that audit or record the acting user will record a"
                                     + " null or anonymous principal. @PreAuthorize checks in"
-                                    + " async-called services will throw AccessDeniedException"
-                                    + " even for legitimately authenticated users.")
+                                    + " async-called services will throw AccessDeniedException even"
+                                    + " for legitimately authenticated users.")
                         .recommendation(
                                 "Configure a DelegatingSecurityContextAsyncTaskExecutor that wraps"
                                     + " the underlying TaskExecutor and copies the SecurityContext"
-                                    + " to the new thread before each task runs. Alternatively,"
-                                    + " set the SecurityContextHolder strategy to"
+                                    + " to the new thread before each task runs. Alternatively, set"
+                                    + " the SecurityContextHolder strategy to"
                                     + " MODE_INHERITABLETHREADLOCAL via"
                                     + " SecurityContextHolder.setStrategyName(). Note that"
                                     + " InheritableThreadLocal does not work with thread pools"
@@ -1794,7 +1797,8 @@ public class ConfigurationFindingAnalyzer {
                                 "Medium confidence — async methods may not perform any"
                                     + " security-sensitive operations, in which case the missing"
                                     + " propagation is harmless. Review which @Async methods access"
-                                    + " the security context or call @PreAuthorize-annotated methods.")
+                                    + " the security context or call @PreAuthorize-annotated"
+                                    + " methods.")
                         .location("Build file + src/main/java")
                         .build());
     }

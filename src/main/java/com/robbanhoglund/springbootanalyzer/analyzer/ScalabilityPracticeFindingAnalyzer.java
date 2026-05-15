@@ -65,7 +65,12 @@ public class ScalabilityPracticeFindingAnalyzer {
     }
 
     private static final Set<String> SINGLETON_ANNOTATIONS =
-            Set.of("Service", "Component", "Controller", "RestController", "Repository",
+            Set.of(
+                    "Service",
+                    "Component",
+                    "Controller",
+                    "RestController",
+                    "Repository",
                     "Configuration");
 
     /**
@@ -204,28 +209,29 @@ public class ScalabilityPracticeFindingAnalyzer {
                                                         "Hardcoded absolute file system paths break"
                                                             + " in containerised or cloud-native"
                                                             + " deployments where the path may not"
-                                                            + " exist. Data written to a container's"
-                                                            + " local file system is also lost on"
-                                                            + " restart or horizontal scaling.")
+                                                            + " exist. Data written to a"
+                                                            + " container's local file system is"
+                                                            + " also lost on restart or horizontal"
+                                                            + " scaling.")
                                                 .possibleImpact(
                                                         "Application fails on startup or at runtime"
-                                                            + " in cloud environments. Files written"
-                                                            + " to a container's local disk are lost"
-                                                            + " on pod restart, causing silent data"
-                                                            + " loss.")
+                                                            + " in cloud environments. Files"
+                                                            + " written to a container's local disk"
+                                                            + " are lost on pod restart, causing"
+                                                            + " silent data loss.")
                                                 .recommendation(
                                                         "Abstract file storage behind an interface"
-                                                            + " and use cloud-agnostic object storage"
-                                                            + " (Amazon S3, Azure Blob, GCS) for"
-                                                            + " uploaded files and persistent data."
-                                                            + " Read paths from configuration"
-                                                            + " properties rather than hardcoding"
-                                                            + " them.")
+                                                            + " and use cloud-agnostic object"
+                                                            + " storage (Amazon S3, Azure Blob,"
+                                                            + " GCS) for uploaded files and"
+                                                            + " persistent data. Read paths from"
+                                                            + " configuration properties rather"
+                                                            + " than hardcoding them.")
                                                 .limitations(
-                                                        "Only detects string literals passed directly"
-                                                            + " to new File(). Paths assembled via"
-                                                            + " concatenation or variables are not"
-                                                            + " detected.")
+                                                        "Only detects string literals passed"
+                                                                + " directly to new File(). Paths"
+                                                                + " assembled via concatenation or"
+                                                                + " variables are not detected.")
                                                 .evidence(
                                                         "new File(\""
                                                                 + val
@@ -242,9 +248,7 @@ public class ScalabilityPracticeFindingAnalyzer {
                 continue;
             }
             boolean scopeIsPaths =
-                    call.getScope()
-                            .map(s -> s.toString().endsWith("Paths"))
-                            .orElse(false);
+                    call.getScope().map(s -> s.toString().endsWith("Paths")).orElse(false);
             if (!scopeIsPaths) {
                 continue;
             }
@@ -270,28 +274,29 @@ public class ScalabilityPracticeFindingAnalyzer {
                                                         "Hardcoded absolute file system paths break"
                                                             + " in containerised or cloud-native"
                                                             + " deployments where the path may not"
-                                                            + " exist. Data written to a container's"
-                                                            + " local file system is also lost on"
-                                                            + " restart or horizontal scaling.")
+                                                            + " exist. Data written to a"
+                                                            + " container's local file system is"
+                                                            + " also lost on restart or horizontal"
+                                                            + " scaling.")
                                                 .possibleImpact(
                                                         "Application fails on startup or at runtime"
-                                                            + " in cloud environments. Files written"
-                                                            + " to a container's local disk are lost"
-                                                            + " on pod restart, causing silent data"
-                                                            + " loss.")
+                                                            + " in cloud environments. Files"
+                                                            + " written to a container's local disk"
+                                                            + " are lost on pod restart, causing"
+                                                            + " silent data loss.")
                                                 .recommendation(
                                                         "Abstract file storage behind an interface"
-                                                            + " and use cloud-agnostic object storage"
-                                                            + " (Amazon S3, Azure Blob, GCS) for"
-                                                            + " uploaded files and persistent data."
-                                                            + " Read paths from configuration"
-                                                            + " properties rather than hardcoding"
-                                                            + " them.")
+                                                            + " and use cloud-agnostic object"
+                                                            + " storage (Amazon S3, Azure Blob,"
+                                                            + " GCS) for uploaded files and"
+                                                            + " persistent data. Read paths from"
+                                                            + " configuration properties rather"
+                                                            + " than hardcoding them.")
                                                 .limitations(
-                                                        "Only detects string literals passed directly"
-                                                            + " to Paths.get(). Paths assembled via"
-                                                            + " concatenation or variables are not"
-                                                            + " detected.")
+                                                        "Only detects string literals passed"
+                                                                + " directly to Paths.get(). Paths"
+                                                                + " assembled via concatenation or"
+                                                                + " variables are not detected.")
                                                 .evidence(
                                                         "Paths.get(\""
                                                                 + val
@@ -339,18 +344,19 @@ public class ScalabilityPracticeFindingAnalyzer {
                         .possibleImpact(
                                 "StackOverflowError in production when entities with bidirectional"
                                     + " associations are serialised to JSON, put in a Set/Map, or"
-                                    + " logged. LazyInitializationException if lazy associations are"
-                                    + " accessed outside a transaction via the generated methods.")
+                                    + " logged. LazyInitializationException if lazy associations"
+                                    + " are accessed outside a transaction via the generated"
+                                    + " methods.")
                         .recommendation(
                                 "Replace @Data with @Getter and @Setter. Implement equals() and"
-                                    + " hashCode() manually based on the entity's primary key,"
-                                    + " or use @EqualsAndHashCode(onlyExplicitlyIncluded = true)"
-                                    + " with @EqualsAndHashCode.Include on the ID field. Exclude"
+                                    + " hashCode() manually based on the entity's primary key, or"
+                                    + " use @EqualsAndHashCode(onlyExplicitlyIncluded = true) with"
+                                    + " @EqualsAndHashCode.Include on the ID field. Exclude"
                                     + " bidirectional association fields from toString() using"
                                     + " @ToString.Exclude.")
                         .limitations(
                                 "High confidence. Risk is always present when @Data is used on an"
-                                    + " entity with any association fields.")
+                                        + " entity with any association fields.")
                         .evidence(
                                 cls.getNameAsString()
                                         + " in "
@@ -389,27 +395,27 @@ public class ScalabilityPracticeFindingAnalyzer {
                                     "The no-arg RestTemplate constructor uses"
                                         + " SimpleClientHttpRequestFactory with connect and read"
                                         + " timeouts of zero, which means the connection can block"
-                                        + " indefinitely. If a downstream service hangs, the calling"
-                                        + " thread is held until the OS or JVM forcibly closes the"
-                                        + " socket, which can take minutes.")
+                                        + " indefinitely. If a downstream service hangs, the"
+                                        + " calling thread is held until the OS or JVM forcibly"
+                                        + " closes the socket, which can take minutes.")
                             .possibleImpact(
                                     "Thread pool exhaustion and application-wide outage when a"
                                         + " downstream service slows down or becomes unresponsive."
-                                        + " Under load, all available threads can be consumed waiting"
-                                        + " for a response that never arrives.")
+                                        + " Under load, all available threads can be consumed"
+                                        + " waiting for a response that never arrives.")
                             .recommendation(
                                     "Configure a timeout-aware request factory:"
                                         + " HttpComponentsClientHttpRequestFactory or"
-                                        + " SimpleClientHttpRequestFactory with explicit connect and"
-                                        + " read timeouts. Alternatively, inject and use the"
-                                        + " auto-configured RestTemplateBuilder which applies global"
-                                        + " timeout settings from spring.mvc.async.request-timeout.")
+                                        + " SimpleClientHttpRequestFactory with explicit connect"
+                                        + " and read timeouts. Alternatively, inject and use the"
+                                        + " auto-configured RestTemplateBuilder which applies"
+                                        + " global timeout settings from"
+                                        + " spring.mvc.async.request-timeout.")
                             .limitations(
                                     "Medium confidence — a timeout may be configured later by"
                                         + " calling setRequestFactory() on the returned instance."
                                         + " Only direct no-arg constructor calls are detected.")
-                            .evidence(
-                                    "new RestTemplate() (no-arg) found in " + relativePath + ".")
+                            .evidence("new RestTemplate() (no-arg) found in " + relativePath + ".")
                             .source(relativePath, line)
                             .build());
         }
@@ -427,7 +433,9 @@ public class ScalabilityPracticeFindingAnalyzer {
         boolean isSingleton =
                 cls.getAnnotations().stream()
                         .anyMatch(
-                                a -> SINGLETON_ANNOTATIONS.contains(simpleName(a.getNameAsString())));
+                                a ->
+                                        SINGLETON_ANNOTATIONS.contains(
+                                                simpleName(a.getNameAsString())));
         if (!isSingleton) {
             return;
         }
@@ -461,21 +469,21 @@ public class ScalabilityPracticeFindingAnalyzer {
                             .possibleImpact(
                                     "Race conditions and shared-state bugs if the prototype bean"
                                         + " holds per-request or per-use state. The application"
-                                        + " appears to work correctly in low-concurrency testing but"
-                                        + " fails unpredictably under production load.")
+                                        + " appears to work correctly in low-concurrency testing"
+                                        + " but fails unpredictably under production load.")
                             .recommendation(
                                     "Inject an ObjectFactory<"
                                             + simpleFieldType
                                             + "> or Provider<"
                                             + simpleFieldType
                                             + "> instead of the bean directly, and call"
-                                            + " objectFactory.getObject() each time a fresh instance"
-                                            + " is needed. Alternatively, annotate the injection"
-                                            + " method with @Lookup to delegate instance creation to"
-                                            + " the Spring container on every call.")
+                                            + " objectFactory.getObject() each time a fresh"
+                                            + " instance is needed. Alternatively, annotate the"
+                                            + " injection method with @Lookup to delegate instance"
+                                            + " creation to the Spring container on every call.")
                             .limitations(
                                     "High confidence. Detects direct field injection. Constructor"
-                                        + " injection of prototype types is also flagged.")
+                                            + " injection of prototype types is also flagged.")
                             .evidence(
                                     "Field "
                                             + field.getVariable(0).getNameAsString()
@@ -512,9 +520,10 @@ public class ScalabilityPracticeFindingAnalyzer {
                                                 + " — it will only be instantiated once.")
                                 .whyBadPractice(
                                         "When a @Scope(\"prototype\") bean is injected into a"
-                                            + " singleton's constructor, Spring creates one instance"
-                                            + " at context startup and keeps it for the singleton's"
-                                            + " lifetime. The prototype loses its per-use semantics.")
+                                            + " singleton's constructor, Spring creates one"
+                                            + " instance at context startup and keeps it for the"
+                                            + " singleton's lifetime. The prototype loses its"
+                                            + " per-use semantics.")
                                 .possibleImpact(
                                         "Race conditions and shared-state bugs under concurrent"
                                             + " load if the prototype bean holds per-use state.")
@@ -523,11 +532,13 @@ public class ScalabilityPracticeFindingAnalyzer {
                                                 + paramType
                                                 + "> or Provider<"
                                                 + paramType
-                                                + "> and call getObject() each time a fresh instance"
-                                                + " is required, or use @Lookup method injection.")
+                                                + "> and call getObject() each time a fresh"
+                                                + " instance is required, or use @Lookup method"
+                                                + " injection.")
                                 .limitations(
                                         "Constructor injection may be intentional if the class is"
-                                            + " itself prototype-scoped — verify the caller's scope.")
+                                                + " itself prototype-scoped — verify the caller's"
+                                                + " scope.")
                                 .evidence(
                                         "Constructor parameter of type "
                                                 + paramType
@@ -578,15 +589,15 @@ public class ScalabilityPracticeFindingAnalyzer {
                                     + " main Servlet filter chain. This happens independently of"
                                     + " any Spring Security configuration. If the filter is also"
                                     + " added to a SecurityFilterChain via addFilterBefore() /"
-                                    + " addFilterAfter(), it will execute twice per request."
-                                    + " URL pattern restrictions configured in SecurityFilterChain"
-                                    + " do not apply to the auto-registered instance.")
+                                    + " addFilterAfter(), it will execute twice per request. URL"
+                                    + " pattern restrictions configured in SecurityFilterChain do"
+                                    + " not apply to the auto-registered instance.")
                         .possibleImpact(
-                                "Security filters execute for every request including unauthenticated"
-                                    + " or public endpoints where they should not apply. Filters"
-                                    + " added to a SecurityFilterChain may execute twice, causing"
-                                    + " double logging, double token consumption, or incorrect"
-                                    + " authentication state.")
+                                "Security filters execute for every request including"
+                                    + " unauthenticated or public endpoints where they should not"
+                                    + " apply. Filters added to a SecurityFilterChain may execute"
+                                    + " twice, causing double logging, double token consumption, or"
+                                    + " incorrect authentication state.")
                         .recommendation(
                                 "Remove @Component from the filter class. Register it exclusively"
                                     + " through Spring Security's SecurityFilterChain using"
@@ -640,7 +651,8 @@ public class ScalabilityPracticeFindingAnalyzer {
                             && call.getScope()
                                     .map(s -> "Thread".equals(s.toString()))
                                     .orElse(false);
-            boolean isReactiveBlock = BLOCKING_METHOD_NAMES.contains(name) && call.getArguments().isEmpty();
+            boolean isReactiveBlock =
+                    BLOCKING_METHOD_NAMES.contains(name) && call.getArguments().isEmpty();
 
             if (!isReactiveBlock && !isThreadSleep) {
                 continue;
@@ -659,44 +671,48 @@ public class ScalabilityPracticeFindingAnalyzer {
                                             + " — blocks the calling thread.")
                             .whyBadPractice(
                                     isReactiveBlock
-                                            ? "Calling .block() on a Mono or Flux blocks the calling"
-                                                + " thread until the reactive pipeline completes. In"
-                                                + " a WebFlux application this blocks a Netty"
-                                                + " event-loop thread, preventing it from handling"
-                                                + " any other requests and causing cascading latency"
-                                                + " under load. In a Servlet/MVC application it"
-                                                + " signals a reactive-to-blocking impedance mismatch."
+                                            ? "Calling .block() on a Mono or Flux blocks the"
+                                                  + " calling thread until the reactive pipeline"
+                                                  + " completes. In a WebFlux application this"
+                                                  + " blocks a Netty event-loop thread, preventing"
+                                                  + " it from handling any other requests and"
+                                                  + " causing cascading latency under load. In a"
+                                                  + " Servlet/MVC application it signals a"
+                                                  + " reactive-to-blocking impedance mismatch."
                                             : "Thread.sleep() blocks the current thread for an"
-                                                + " arbitrary duration. In WebFlux this starves the"
-                                                + " event-loop; in servlet applications it ties up"
-                                                + " a container thread and reduces throughput."
-                                                + " Scheduled delays should use reactive operators"
-                                                + " (Mono.delay) or @Scheduled.")
+                                                    + " arbitrary duration. In WebFlux this starves"
+                                                    + " the event-loop; in servlet applications it"
+                                                    + " ties up a container thread and reduces"
+                                                    + " throughput. Scheduled delays should use"
+                                                    + " reactive operators (Mono.delay) or"
+                                                    + " @Scheduled.")
                             .possibleImpact(
                                     "Event-loop thread starvation in WebFlux, cascading latency"
-                                        + " under concurrent load, and thread pool exhaustion."
-                                        + " In the worst case the application becomes unresponsive"
-                                        + " under traffic while appearing healthy at low concurrency.")
+                                        + " under concurrent load, and thread pool exhaustion. In"
+                                        + " the worst case the application becomes unresponsive"
+                                        + " under traffic while appearing healthy at low"
+                                        + " concurrency.")
                             .recommendation(
                                     isReactiveBlock
                                             ? "Remove .block() and propagate the Mono/Flux to the"
-                                                + " caller. If this class must remain blocking, switch"
-                                                + " to a non-reactive HTTP client (RestTemplate,"
-                                                + " HttpClient) configured with an explicit timeout,"
-                                                + " or offload to a bounded Scheduler"
-                                                + " (Schedulers.boundedElastic()) if blocking I/O"
-                                                + " cannot be avoided."
-                                            : "Replace Thread.sleep() with Mono.delay(Duration.ofMillis(…))"
-                                                + " in reactive pipelines, or use @Scheduled for"
-                                                + " periodic background work.")
+                                                  + " caller. If this class must remain blocking,"
+                                                  + " switch to a non-reactive HTTP client"
+                                                  + " (RestTemplate, HttpClient) configured with an"
+                                                  + " explicit timeout, or offload to a bounded"
+                                                  + " Scheduler (Schedulers.boundedElastic()) if"
+                                                  + " blocking I/O cannot be avoided."
+                                            : "Replace Thread.sleep() with"
+                                                  + " Mono.delay(Duration.ofMillis(…)) in reactive"
+                                                  + " pipelines, or use @Scheduled for periodic"
+                                                  + " background work.")
                             .limitations(
                                     isReactiveBlock
-                                            ? "Detects no-arg .block(), .blockFirst(), and .blockLast()"
-                                                + " calls. .block(Duration) with a timeout is also"
-                                                + " blocking but slightly less dangerous; consider"
-                                                + " reviewing those too."
-                                            : "Detects Thread.sleep() calls in Spring-managed classes."
-                                                + " Test classes are not scanned.")
+                                            ? "Detects no-arg .block(), .blockFirst(), and"
+                                                    + " .blockLast() calls. .block(Duration) with a"
+                                                    + " timeout is also blocking but slightly less"
+                                                    + " dangerous; consider reviewing those too."
+                                            : "Detects Thread.sleep() calls in Spring-managed"
+                                                    + " classes. Test classes are not scanned.")
                             .evidence(callDescription + " found in " + relativePath + ".")
                             .source(relativePath, line)
                             .build());

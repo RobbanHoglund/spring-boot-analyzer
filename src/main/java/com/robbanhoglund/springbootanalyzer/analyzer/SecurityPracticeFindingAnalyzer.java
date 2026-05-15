@@ -329,22 +329,24 @@ public class SecurityPracticeFindingAnalyzer {
                                                                 + " hashing.")
                                                 .whyBadPractice(
                                                         algo
-                                                            + " is a general-purpose cryptographic"
-                                                            + " hash function optimised for speed."
-                                                            + " Speed is exactly what you do not"
-                                                            + " want for password hashing: a modern"
-                                                            + " GPU can compute billions of MD5 or"
-                                                            + " SHA-256 hashes per second, making"
-                                                            + " brute-force and rainbow-table attacks"
-                                                            + " trivial against any leaked hash"
-                                                            + " database.")
+                                                                + " is a general-purpose"
+                                                                + " cryptographic hash function"
+                                                                + " optimised for speed. Speed is"
+                                                                + " exactly what you do not want"
+                                                                + " for password hashing: a modern"
+                                                                + " GPU can compute billions of MD5"
+                                                                + " or SHA-256 hashes per second,"
+                                                                + " making brute-force and"
+                                                                + " rainbow-table attacks trivial"
+                                                                + " against any leaked hash"
+                                                                + " database.")
                                                 .possibleImpact(
                                                         "In a credential breach, all stored"
                                                             + " passwords can be recovered within"
                                                             + " hours or days using commodity"
-                                                            + " hardware. Credential stuffing attacks"
-                                                            + " then compromise user accounts on"
-                                                            + " other services.")
+                                                            + " hardware. Credential stuffing"
+                                                            + " attacks then compromise user"
+                                                            + " accounts on other services.")
                                                 .recommendation(
                                                         "Use BCryptPasswordEncoder,"
                                                             + " Argon2PasswordEncoder, or"

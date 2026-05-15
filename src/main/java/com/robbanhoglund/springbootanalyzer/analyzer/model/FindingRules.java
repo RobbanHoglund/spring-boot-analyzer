@@ -1235,7 +1235,8 @@ public final class FindingRules {
     public static final FindingRule SPRING_PROTOTYPE_BEAN_IN_SINGLETON =
             rule(
                     "SPRING_PROTOTYPE_BEAN_IN_SINGLETON",
-                    "Prototype-scoped bean injected directly into singleton — loses prototype semantics",
+                    "Prototype-scoped bean injected directly into singleton — loses prototype"
+                            + " semantics",
                     FindingSeverity.WARNING,
                     FindingCategory.MAINTAINABILITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);

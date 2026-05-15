@@ -3886,11 +3886,23 @@ public class StaticPracticeFindingAnalyzer {
 
     private static final Set<String> MUTABLE_COLLECTION_TYPES =
             Set.of(
-                    "List", "ArrayList", "LinkedList",
-                    "Map", "HashMap", "LinkedHashMap", "TreeMap",
-                    "Set", "HashSet", "LinkedHashSet", "TreeSet",
-                    "Deque", "ArrayDeque", "Queue", "PriorityQueue",
-                    "Vector", "Stack");
+                    "List",
+                    "ArrayList",
+                    "LinkedList",
+                    "Map",
+                    "HashMap",
+                    "LinkedHashMap",
+                    "TreeMap",
+                    "Set",
+                    "HashSet",
+                    "LinkedHashSet",
+                    "TreeSet",
+                    "Deque",
+                    "ArrayDeque",
+                    "Queue",
+                    "PriorityQueue",
+                    "Vector",
+                    "Stack");
 
     private void detectStaticMutableField(
             String relativePath,
@@ -3905,7 +3917,8 @@ public class StaticPracticeFindingAnalyzer {
         String fieldName = field.getVariable(0).getNameAsString();
         String target = declaration.getNameAsString() + "#" + fieldName;
         findings.add(
-                FindingFactory.builder(FindingRules.SPRING_STATIC_MUTABLE_FIELD, FindingConfidence.HIGH)
+                FindingFactory.builder(
+                                FindingRules.SPRING_STATIC_MUTABLE_FIELD, FindingConfidence.HIGH)
                         .shortMessage(
                                 "Static mutable "
                                         + typeName
@@ -3920,28 +3933,28 @@ public class StaticPracticeFindingAnalyzer {
                                     + " (add, remove, put) without explicit synchronization is a"
                                     + " data race. Even with synchronization, the cache accumulates"
                                     + " entries indefinitely and becomes inconsistent across"
-                                    + " horizontally-scaled instances because each pod maintains its"
-                                    + " own copy with no coordination.")
+                                    + " horizontally-scaled instances because each pod maintains"
+                                    + " its own copy with no coordination.")
                         .possibleImpact(
                                 "ConcurrentModificationException or silent data corruption under"
                                     + " concurrent load. Stale data returned after updates in a"
-                                    + " multi-instance deployment. OutOfMemoryError if the collection"
-                                    + " grows without bound. Bugs that are invisible in single-user"
-                                    + " testing but manifest under load.")
+                                    + " multi-instance deployment. OutOfMemoryError if the"
+                                    + " collection grows without bound. Bugs that are invisible in"
+                                    + " single-user testing but manifest under load.")
                         .recommendation(
                                 "If you need a per-request store, use a method-local variable or"
                                     + " inject a request-scoped bean. If you need a shared cache,"
                                     + " use Spring's @Cacheable with a proper cache provider"
-                                    + " (Caffeine, Redis) that has TTL and eviction policies."
-                                    + " If you need a thread-safe counter, use AtomicLong or"
+                                    + " (Caffeine, Redis) that has TTL and eviction policies. If"
+                                    + " you need a thread-safe counter, use AtomicLong or"
                                     + " Micrometer's Counter. Remove the static modifier and inject"
                                     + " the dependency through Spring's DI mechanism.")
                         .limitations(
                                 "Detects static non-final fields whose declared type is a common"
-                                    + " mutable collection. Thread-safe variants (ConcurrentHashMap,"
-                                    + " CopyOnWriteArrayList) are not flagged but still represent"
-                                    + " shared unbounded state. Constants (static final) are not"
-                                    + " flagged.")
+                                    + " mutable collection. Thread-safe variants"
+                                    + " (ConcurrentHashMap, CopyOnWriteArrayList) are not flagged"
+                                    + " but still represent shared unbounded state. Constants"
+                                    + " (static final) are not flagged.")
                         .evidence(
                                 "static "
                                         + typeName
@@ -3979,31 +3992,32 @@ public class StaticPracticeFindingAnalyzer {
                                 "@Transactional on "
                                         + (classLevel ? "controller class " : "controller method ")
                                         + target
-                                        + " — database connection held open during HTTP processing.")
+                                        + " — database connection held open during HTTP"
+                                        + " processing.")
                         .whyBadPractice(
                                 "Placing @Transactional on a controller means the database"
                                     + " transaction is open for the entire duration of request"
                                     + " handling, including request body parsing, business logic,"
                                     + " and — critically — response serialisation by Jackson."
                                     + " Jackson serialisation can trigger lazy-loading of JPA"
-                                    + " associations, creating unintended queries inside the"
-                                    + " HTTP layer. This violates the layered architecture:"
-                                    + " transaction boundaries belong in the service layer.")
+                                    + " associations, creating unintended queries inside the HTTP"
+                                    + " layer. This violates the layered architecture: transaction"
+                                    + " boundaries belong in the service layer.")
                         .possibleImpact(
                                 "Database connections held for longer than necessary, increasing"
                                     + " connection pool pressure under load. Lazy-loading queries"
-                                    + " triggered by Jackson during serialisation produce N+1"
-                                    + " query patterns. Deadlock risk if multiple controller"
-                                    + " methods acquire locks in different orders.")
+                                    + " triggered by Jackson during serialisation produce N+1 query"
+                                    + " patterns. Deadlock risk if multiple controller methods"
+                                    + " acquire locks in different orders.")
                         .recommendation(
                                 "Move the @Transactional annotation to the service-layer method"
                                     + " that actually performs the database work. The controller"
                                     + " should call the service and serialize only the returned"
                                     + " DTO, which must not contain JPA proxy references.")
                         .limitations(
-                                "High confidence when @Transactional appears directly on a class"
-                                    + " or method that is also annotated with @RestController or"
-                                    + " @Controller. Meta-annotated aliases are not detected.")
+                                "High confidence when @Transactional appears directly on a class or"
+                                        + " method that is also annotated with @RestController or"
+                                        + " @Controller. Meta-annotated aliases are not detected.")
                         .evidence(
                                 "@Transactional found on "
                                         + (classLevel ? "controller class " : "controller method ")
@@ -4017,9 +4031,7 @@ public class StaticPracticeFindingAnalyzer {
     }
 
     private void detectRepositoryInController(
-            String relativePath,
-            ClassOrInterfaceDeclaration declaration,
-            List<Finding> findings) {
+            String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
         // Check fields
         for (FieldDeclaration field : declaration.getFields()) {
             String typeName = shortTypeName(field.getElementType().asString());
@@ -4067,26 +4079,26 @@ public class StaticPracticeFindingAnalyzer {
                                 + " bypassed.")
                 .whyBadPractice(
                         "Controllers should be responsible only for HTTP concerns:"
-                            + " routing, request parsing, and response serialization. When a"
-                            + " repository is injected directly into a controller, persistence"
-                            + " logic leaks into the web layer. Business rules, transactions,"
-                            + " caching, and authorization decisions have no natural home and"
-                            + " tend to accumulate in the controller, making the code hard to"
-                            + " test, reuse, or reason about.")
+                                + " routing, request parsing, and response serialization. When a"
+                                + " repository is injected directly into a controller, persistence"
+                                + " logic leaks into the web layer. Business rules, transactions,"
+                                + " caching, and authorization decisions have no natural home and"
+                                + " tend to accumulate in the controller, making the code hard to"
+                                + " test, reuse, or reason about.")
                 .possibleImpact(
                         "Business logic duplicated across controllers. No single place to add"
-                            + " cross-cutting concerns (transactions, audit logging, caching)."
-                            + " Controller tests require a full persistence stack instead of a"
-                            + " simple service mock.")
+                                + " cross-cutting concerns (transactions, audit logging, caching)."
+                                + " Controller tests require a full persistence stack instead of a"
+                                + " simple service mock.")
                 .recommendation(
                         "Introduce a @Service class that owns the business logic and calls the"
-                            + " repository. The controller should call the service. This keeps"
-                            + " each layer focused: web layer handles HTTP, service layer owns"
-                            + " the domain, repository layer handles persistence.")
+                                + " repository. The controller should call the service. This keeps"
+                                + " each layer focused: web layer handles HTTP, service layer owns"
+                                + " the domain, repository layer handles persistence.")
                 .limitations(
                         "Detects injection of types whose name ends in Repository, Dao, or DAO."
-                            + " A legitimately named class that is not actually a repository"
-                            + " would produce a false positive.")
+                                + " A legitimately named class that is not actually a repository"
+                                + " would produce a false positive.")
                 .evidence(
                         "Controller "
                                 + target
