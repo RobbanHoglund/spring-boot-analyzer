@@ -51,7 +51,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       # Install the JDK declared in build.gradle. The 'temurin' distribution
       # supports EA versions; 'ea' must be set to true for non-GA releases.
@@ -100,7 +100,7 @@ jobs:
       # Publish the JUnit XML report so GitHub renders individual test results
       # in the Actions UI and on the PR checks page.
       - name: Publish test report
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: backend-test-results-java${{ matrix.java }}
@@ -124,7 +124,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       # setup-node's built-in cache support keys on package-lock.json and
       # avoids a separate actions/cache step for node_modules.
