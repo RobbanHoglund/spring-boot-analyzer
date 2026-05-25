@@ -273,8 +273,11 @@ function render(): void {
     })
   );
 
+  // Semantic main landmark — skip-to-main-content link in index.html targets #main
+  const mainContent = element('main', { attributes: { id: 'main', tabindex: '-1' } });
+
   if (state.currentTab === 'analyze') {
-    shell.appendChild(
+    mainContent.appendChild(
       renderAnalyzeView(
         {
           analyzeMode: state.analyzeMode,
@@ -505,9 +508,14 @@ function render(): void {
     );
   } else {
     if (!state.ruleSettings && !state.ruleSettingsLoading) {
-      void loadRuleSettings();
+      // Set loading=true now so this render already shows the loading state.
+      // Defer the actual fetch via queueMicrotask so it runs after the current
+      // render() call returns — preventing a nested render() → double page-shell.
+      state.ruleSettingsLoading = true;
+      state.ruleSettingsError = '';
+      queueMicrotask(() => void loadRuleSettings());
     }
-    shell.appendChild(
+    mainContent.appendChild(
       renderSettingsView(
         {
           repositoryProfiles: state.repositoryProfiles,
@@ -579,6 +587,7 @@ function render(): void {
     );
   }
 
+  shell.appendChild(mainContent);
   root.appendChild(shell);
   persistAnalysisSession();
   restoreFocusSnapshot(focusSnapshot);
@@ -1540,9 +1549,8 @@ function focusWithoutScrolling(element: HTMLElement): void {
 }
 
 async function loadRuleSettings(): Promise<void> {
-  state.ruleSettingsLoading = true;
-  state.ruleSettingsError = '';
-  render();
+  // State is already set (ruleSettingsLoading=true, ruleSettingsError='') by the
+  // render() caller before queueMicrotask — no need to call render() here again.
   try {
     const config = await fetchRuleSettings();
     state.ruleSettings = config.rules ?? [];

@@ -186,7 +186,7 @@ function renderRepositoryPanel(model: AnalyzeViewModel, actions: AnalyzeViewActi
 }
 
 function renderAnalysisModeSelector(model: AnalyzeViewModel, actions: AnalyzeViewActions): HTMLElement {
-  const select = element('select', { className: 'select-input' }) as HTMLSelectElement;
+  const select = element('select', { className: 'select-input', attributes: { 'aria-label': 'Analysis mode' } }) as HTMLSelectElement;
   select.appendChild(new Option('Static only', 'STATIC_ONLY', false, model.analysisMode === 'STATIC_ONLY'));
   select.appendChild(
     new Option(
