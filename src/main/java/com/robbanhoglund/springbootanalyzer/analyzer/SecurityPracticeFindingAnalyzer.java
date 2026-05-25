@@ -180,7 +180,11 @@ public class SecurityPracticeFindingAnalyzer {
                                             return "disable".equals(ref.getIdentifier());
                                         }
                                         // Also check lambda: csrf(c -> c.disable())
-                                        return arg.toString().contains("disable");
+                                        // Use method-call search rather than toString().contains()
+                                        // to avoid false positives from variable names or comments.
+                                        return arg.findAll(MethodCallExpr.class).stream()
+                                                .anyMatch(
+                                                        m -> "disable".equals(m.getNameAsString()));
                                     });
             if (hasDisableMethodRef) {
                 Integer line = call.getBegin().map(p -> p.line).orElse(null);

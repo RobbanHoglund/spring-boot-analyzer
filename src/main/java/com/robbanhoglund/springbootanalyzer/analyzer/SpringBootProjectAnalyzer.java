@@ -40,14 +40,26 @@ import org.springframework.stereotype.Component;
  *   <li><b>HTTP surface</b> — {@link HttpSurfaceAnalyzer} maps exposed endpoints.</li>
  *   <li><b>Scheduling</b> — {@link SchedulingAnalyzer} identifies scheduled tasks.</li>
  *   <li><b>Messaging</b> — {@link MessagingAnalyzer} identifies messaging listeners.</li>
- *   <li><b>Finding generation</b> — three finding analyzers each contribute rule-based findings:
+ *   <li><b>Finding generation</b> — nine finding analyzers each contribute rule-based findings:
  *     <ul>
- *       <li>{@link StaticPracticeFindingAnalyzer} — source-code practice rules (transaction,
- *           async, exception handling, etc.)</li>
+ *       <li>{@link StaticPracticeFindingAnalyzer} — source-code practice rules (field injection,
+ *           transaction/async misuse, exception handling, CORS/CSRF, etc.)</li>
  *       <li>{@link ConfigurationFindingAnalyzer} — configuration and Gradle model rules
- *           (secrets, profile drift, actuator exposure, etc.)</li>
+ *           (secrets, profile drift, actuator exposure, DDL safety, etc.)</li>
  *       <li>{@link ObservabilityFindingAnalyzer} — observability gaps ({@code @Timed} vs
  *           {@code @Observed}, unobserved scheduled tasks and messaging listeners)</li>
+ *       <li>{@link TestingPracticeFindingAnalyzer} — test-layer rules (@SpringBootTest overuse,
+ *           missing @Transactional rollback, @MockBean excess, wall-clock time in tests)</li>
+ *       <li>{@link CachingPracticeFindingAnalyzer} — caching correctness rules (@Cacheable on
+ *           void/private methods, self-invocation, missing TTL provider, etc.)</li>
+ *       <li>{@link ObservabilityGapFindingAnalyzer} — gaps in observability annotations
+ *           (@Async/@EventListener methods without @Observed, missing exception metrics)</li>
+ *       <li>{@link TransactionPracticeFindingAnalyzer} — transaction boundary rules
+ *           (@Transactional self-invocation, exception swallowed, HTTP calls inside tx)</li>
+ *       <li>{@link SecurityPracticeFindingAnalyzer} — security source-code rules (CSRF disabled,
+ *           @PreAuthorize on private methods, weak password hashing)</li>
+ *       <li>{@link ScalabilityPracticeFindingAnalyzer} — scalability and bean-lifecycle rules
+ *           (hardcoded paths, prototype-in-singleton, RestTemplate without timeout, etc.)</li>
  *     </ul>
  *   </li>
  *   <li><b>Component scan validation</b> — warns when Spring components exist outside the

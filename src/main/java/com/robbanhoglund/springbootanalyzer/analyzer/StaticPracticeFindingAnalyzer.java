@@ -532,7 +532,11 @@ public class StaticPracticeFindingAnalyzer {
                 detectTransactionalHttpCall(relativePath, declaration, method, findings);
             }
 
-            if (controllerLike && hasAnnotation(method.getAnnotations(), "Transactional")) {
+            // Only flag method-level @Transactional when the class itself is not already flagged;
+            // a class-level finding already covers all methods.
+            if (controllerLike
+                    && !classTransactional
+                    && hasAnnotation(method.getAnnotations(), "Transactional")) {
                 detectTransactionalOnController(relativePath, declaration, method, findings);
             }
 

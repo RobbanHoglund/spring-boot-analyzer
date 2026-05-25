@@ -244,14 +244,21 @@ public class ScalabilityPracticeFindingAnalyzer {
         }
 
         for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
-            if (!"get".equals(call.getNameAsString())) {
+            String callName = call.getNameAsString();
+            // Paths.get(...) — legacy API
+            boolean isPaths =
+                    "get".equals(callName)
+                            && call.getScope()
+                                    .map(s -> s.toString().endsWith("Paths"))
+                                    .orElse(false);
+            // Path.of(...) — modern Java 11+ API, same semantics
+            boolean isPathOf =
+                    "of".equals(callName)
+                            && call.getScope().map(s -> "Path".equals(s.toString())).orElse(false);
+            if (!isPaths && !isPathOf) {
                 continue;
             }
-            boolean scopeIsPaths =
-                    call.getScope().map(s -> s.toString().endsWith("Paths")).orElse(false);
-            if (!scopeIsPaths) {
-                continue;
-            }
+            String apiName = isPaths ? "Paths.get" : "Path.of";
             call.getArguments().stream()
                     .filter(arg -> arg instanceof StringLiteralExpr)
                     .map(arg -> ((StringLiteralExpr) arg).asString())
@@ -294,11 +301,13 @@ public class ScalabilityPracticeFindingAnalyzer {
                                                             + " than hardcoding them.")
                                                 .limitations(
                                                         "Only detects string literals passed"
-                                                                + " directly to Paths.get(). Paths"
-                                                                + " assembled via concatenation or"
-                                                                + " variables are not detected.")
+                                                                + " directly to Paths.get() or"
+                                                                + " Path.of(). Paths assembled via"
+                                                                + " concatenation or variables are"
+                                                                + " not detected.")
                                                 .evidence(
-                                                        "Paths.get(\""
+                                                        apiName
+                                                                + "(\""
                                                                 + val
                                                                 + "\") found in "
                                                                 + relativePath
@@ -560,10 +569,17 @@ public class ScalabilityPracticeFindingAnalyzer {
 
     private void detectFilterComponentRegistrationLeak(
             ClassOrInterfaceDeclaration cls, String relativePath, List<Finding> findings) {
-        boolean hasComponent =
+        // @Component, @Service, @Repository are all meta-annotated with @Component and cause the
+        // same auto-registration of the Filter into the global servlet chain.
+        boolean hasSpringStereotype =
                 cls.getAnnotations().stream()
-                        .anyMatch(a -> simpleName(a.getNameAsString()).equals("Component"));
-        if (!hasComponent) {
+                        .map(a -> simpleName(a.getNameAsString()))
+                        .anyMatch(
+                                n ->
+                                        n.equals("Component")
+                                                || n.equals("Service")
+                                                || n.equals("Repository"));
+        if (!hasSpringStereotype) {
             return;
         }
         boolean implementsFilter =
@@ -580,9 +596,9 @@ public class ScalabilityPracticeFindingAnalyzer {
                                 FindingConfidence.HIGH)
                         .shortMessage(
                                 cls.getNameAsString()
-                                        + " implements Filter and is annotated @Component —"
-                                        + " Spring Boot will register it globally, bypassing any"
-                                        + " SecurityFilterChain restrictions.")
+                                        + " implements Filter and carries a Spring stereotype"
+                                        + " annotation — Spring Boot will register it globally,"
+                                        + " bypassing any SecurityFilterChain restrictions.")
                         .whyBadPractice(
                                 "Spring Boot auto-registers every @Component that implements"
                                     + " javax.servlet.Filter or jakarta.servlet.Filter into the"
@@ -607,9 +623,10 @@ public class ScalabilityPracticeFindingAnalyzer {
                                     + " FilterRegistrationBean<YourFilter> bean and call"
                                     + " setEnabled(false) on it.")
                         .limitations(
-                                "High confidence. Both @Component and Filter implementation are"
-                                    + " required for the finding to trigger. @Service, @Controller,"
-                                    + " etc. are not checked — only @Component directly.")
+                                "High confidence. Detects @Component, @Service, and @Repository"
+                                        + " on Filter implementations. @Controller and"
+                                        + " @RestController are intentionally excluded — those are"
+                                        + " unlikely on a Filter class.")
                         .evidence(
                                 cls.getNameAsString()
                                         + " in "
@@ -651,8 +668,10 @@ public class ScalabilityPracticeFindingAnalyzer {
                             && call.getScope()
                                     .map(s -> "Thread".equals(s.toString()))
                                     .orElse(false);
+            // Detect .block(), .blockFirst(), .blockLast() with 0 or 1 argument.
+            // .block(Duration) with a timeout is still blocking and still dangerous in WebFlux.
             boolean isReactiveBlock =
-                    BLOCKING_METHOD_NAMES.contains(name) && call.getArguments().isEmpty();
+                    BLOCKING_METHOD_NAMES.contains(name) && call.getArguments().size() <= 1;
 
             if (!isReactiveBlock && !isThreadSleep) {
                 continue;
@@ -663,7 +682,7 @@ public class ScalabilityPracticeFindingAnalyzer {
             findings.add(
                     FindingFactory.builder(
                                     FindingRules.SPRING_WEBFLUX_BLOCKING_CALL,
-                                    FindingConfidence.HIGH)
+                                    FindingConfidence.MEDIUM)
                             .shortMessage(
                                     callDescription
                                             + " called inside a Spring-managed component in "
