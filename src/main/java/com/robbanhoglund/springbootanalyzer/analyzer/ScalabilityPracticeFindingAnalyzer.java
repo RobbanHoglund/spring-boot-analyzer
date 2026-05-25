@@ -37,7 +37,7 @@ import org.springframework.stereotype.Component;
  *   <li>{@link FindingRules#SPRING_FILTER_COMPONENT_REGISTRATION_LEAK} — {@code @Component} on a
  *       {@code Filter} implementation causes global servlet registration bypassing Security config.
  *   <li>{@link FindingRules#SPRING_HARDCODED_FILE_PATH} — absolute file system path literals
- *       passed to {@code new File(…)} or {@code Paths.get(…)}.
+ *       passed to {@code new File(…)}, {@code Paths.get(…)}, or {@code Path.of(…)}.
  *   <li>{@link FindingRules#SPRING_LOMBOK_DATA_ON_ENTITY} — {@code @Data} combined with
  *       {@code @Entity}, risking eager proxy initialisation and infinite recursion.
  *   <li>{@link FindingRules#SPRING_REST_TEMPLATE_NO_TIMEOUT} — {@code new RestTemplate()} with
@@ -274,7 +274,9 @@ public class ScalabilityPracticeFindingAnalyzer {
                                                 .shortMessage(
                                                         "Hardcoded absolute path \""
                                                                 + val
-                                                                + "\" passed to Paths.get() in "
+                                                                + "\" passed to "
+                                                                + apiName
+                                                                + "() in "
                                                                 + relativePath
                                                                 + ".")
                                                 .whyBadPractice(
