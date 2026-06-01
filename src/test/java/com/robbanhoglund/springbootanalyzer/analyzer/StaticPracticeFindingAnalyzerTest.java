@@ -2182,6 +2182,64 @@ class PriceRefreshJob {
     }
 
     // -------------------------------------------------------------------------
+    // spring.h2.console.enabled=true in production profile
+    // -------------------------------------------------------------------------
+
+    @Test
+    void flagsH2ConsoleEnabledInProdProfile() throws IOException {
+        Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                resources.resolve("application.properties"),
+                "spring.datasource.url=jdbc:h2:mem:test");
+        Files.writeString(
+                resources.resolve("application-prod.properties"),
+                "spring.h2.console.enabled=true\n");
+
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-data-jpa")));
+
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_H2_CONSOLE_ENABLED_PROD
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.ERROR
+                                        && finding.evidence() != null
+                                        && finding.evidence().contains("spring.h2.console.enabled")
+                                        && finding.primaryLocation() != null);
+    }
+
+    @Test
+    void doesNotFlagH2ConsoleInDevProfile() throws IOException {
+        Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                resources.resolve("application.properties"),
+                "spring.datasource.url=jdbc:h2:mem:test");
+        Files.writeString(
+                resources.resolve("application-dev.properties"),
+                "spring.h2.console.enabled=true\n");
+
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-data-jpa")));
+
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_H2_CONSOLE_ENABLED_PROD
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
+    }
+
+    // -------------------------------------------------------------------------
     // spring.jpa.open-in-view
     // -------------------------------------------------------------------------
 

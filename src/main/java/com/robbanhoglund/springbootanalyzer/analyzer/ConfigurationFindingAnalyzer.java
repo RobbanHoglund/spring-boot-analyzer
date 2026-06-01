@@ -449,6 +449,46 @@ public class ConfigurationFindingAnalyzer {
                                 .source(property.sourceFile(), property.line())
                                 .target(name)
                                 .build());
+            } else if (prodLike
+                    && "spring.h2.console.enabled".equals(name)
+                    && "true".equalsIgnoreCase(value)) {
+                findings.add(
+                        FindingFactory.builder(
+                                        FindingRules.SPRING_H2_CONSOLE_ENABLED_PROD,
+                                        FindingConfidence.HIGH)
+                                .shortMessage(
+                                        "spring.h2.console.enabled=true exposes the H2 web console"
+                                                + " in a production-oriented profile.")
+                                .whyBadPractice(
+                                        "The H2 web console accepts arbitrary SQL through a JDBC"
+                                            + " connection and can invoke Java stored procedures"
+                                            + " via CREATE ALIAS, RUNSCRIPT, or SCRIPT. When"
+                                            + " reachable it is a direct remote-code-execution"
+                                            + " vector. Even when bound to localhost it is"
+                                            + " routinely exposed by reverse proxies, port"
+                                            + " forwarding, or Spring Security misconfiguration.")
+                                .possibleImpact(
+                                        "An attacker who reaches the console URL can read and write"
+                                            + " every row in the database, execute arbitrary Java"
+                                            + " code on the host, and pivot from there into the"
+                                            + " rest of the network.")
+                                .recommendation(
+                                        "Set spring.h2.console.enabled=false in production-oriented"
+                                            + " profiles, or remove the H2 dependency entirely and"
+                                            + " use a managed database. Restrict the H2 console to"
+                                            + " local development profiles only.")
+                                .evidence(
+                                        "spring.h2.console.enabled=true was found in "
+                                                + property.sourceFile()
+                                                + ".")
+                                .limitations(
+                                        "Static analysis cannot prove whether this profile is"
+                                            + " actually active in deployment, but the filename or"
+                                            + " profile marker indicates production-oriented"
+                                            + " usage.")
+                                .source(property.sourceFile(), property.line())
+                                .target(name)
+                                .build());
             } else if ("spring.jpa.open-in-view".equals(name) && "true".equalsIgnoreCase(value)) {
                 findings.add(
                         FindingFactory.builder(

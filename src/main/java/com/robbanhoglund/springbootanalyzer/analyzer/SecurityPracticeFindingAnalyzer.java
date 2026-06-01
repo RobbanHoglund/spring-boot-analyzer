@@ -5,8 +5,14 @@ import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.expr.BooleanLiteralExpr;
+import com.github.javaparser.ast.expr.Expression;
+import com.github.javaparser.ast.expr.LambdaExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.MethodReferenceExpr;
+import com.github.javaparser.ast.expr.ObjectCreationExpr;
+import com.github.javaparser.ast.expr.StringLiteralExpr;
+import com.github.javaparser.ast.stmt.ReturnStmt;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
@@ -36,6 +42,21 @@ import org.springframework.stereotype.Component;
  *   <li>{@link FindingRules#SPRING_WEAK_PASSWORD_HASH} — {@code MessageDigest.getInstance()} called
  *       with {@code "MD5"}, {@code "SHA-1"}, or {@code "SHA-256"} — algorithms that are too fast
  *       for safe password hashing.
+ *   <li>{@link FindingRules#SPRING_INSECURE_TRUST_MANAGER} — {@code X509TrustManager} with an
+ *       empty {@code checkServerTrusted}/{@code checkClientTrusted} body, or {@code
+ *       HostnameVerifier} whose {@code verify} returns {@code true} unconditionally.
+ *   <li>{@link FindingRules#SPRING_XXE_VULNERABLE_PARSER} — XML parser factory created without
+ *       any {@code setFeature}/{@code setProperty} call disabling external entities.
+ *   <li>{@link FindingRules#SPRING_INSECURE_DESERIALIZATION} — Jackson default-typing,
+ *       {@code new ObjectInputStream(...)}, or SnakeYAML's {@code new Yaml()} default
+ *       constructor.
+ *   <li>{@link FindingRules#SPRING_SECURITY_HEADERS_DISABLED} — Spring Security HTTP response
+ *       headers explicitly disabled (full {@code .headers().disable()}, or any of
+ *       {@code frameOptions/xssProtection/contentTypeOptions}).
+ *   <li>{@link FindingRules#SPRING_PERMIT_ALL_ANY_REQUEST} — {@code anyRequest().permitAll()}
+ *       or {@code requestMatchers("/**").permitAll()} in a {@code SecurityFilterChain}.
+ *   <li>{@link FindingRules#SPRING_H2_CONSOLE_PERMITALL} — H2 console path
+ *       ({@code /h2-console**}) granted {@code permitAll()} in a security configuration.
  * </ul>
  */
 @Component
@@ -95,12 +116,20 @@ public class SecurityPracticeFindingAnalyzer {
 
         detectCsrfDisabled(cu, relativePath, findings);
         detectWeakPasswordHash(cu, relativePath, findings);
+        detectXxeVulnerableParser(cu, relativePath, findings);
+        detectInsecureDeserialization(cu, relativePath, findings);
+        detectSecurityHeadersDisabled(cu, relativePath, findings);
+        detectPermitAllAnyRequest(cu, relativePath, findings);
+        detectH2ConsolePermitAll(cu, relativePath, findings);
 
         for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
             for (MethodDeclaration method : cls.getMethods()) {
                 detectPreAuthorizeOnPrivateMethod(cls, method, relativePath, findings);
             }
+            detectInsecureTrustManager(cls, relativePath, findings);
+            detectInsecureHostnameVerifier(cls, relativePath, findings);
         }
+        detectInsecureHostnameVerifierLambda(cu, relativePath, findings);
     }
 
     // ---------------------------------------------------------------------------
@@ -376,6 +405,599 @@ public class SecurityPracticeFindingAnalyzer {
                                                 .source(relativePath, line)
                                                 .build());
                             });
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_INSECURE_TRUST_MANAGER (TrustManager half)
+    // ---------------------------------------------------------------------------
+
+    private void detectInsecureTrustManager(
+            ClassOrInterfaceDeclaration cls, String relativePath, List<Finding> findings) {
+        boolean implementsX509TrustManager =
+                cls.getImplementedTypes().stream()
+                        .anyMatch(t -> simpleName(t.getNameAsString()).equals("X509TrustManager"));
+        if (!implementsX509TrustManager) {
+            return;
+        }
+        for (MethodDeclaration method : cls.getMethods()) {
+            String name = method.getNameAsString();
+            if (!"checkServerTrusted".equals(name) && !"checkClientTrusted".equals(name)) {
+                continue;
+            }
+            if (method.getBody().isEmpty()) {
+                continue;
+            }
+            if (!method.getBody().get().getStatements().isEmpty()) {
+                continue;
+            }
+            Integer line = method.getBegin().map(p -> p.line).orElse(null);
+            String target = cls.getNameAsString() + "#" + name;
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_INSECURE_TRUST_MANAGER,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "X509TrustManager."
+                                            + name
+                                            + " has an empty body in "
+                                            + relativePath
+                                            + " — TLS certificate validation is disabled.")
+                            .whyBadPractice(
+                                    "An X509TrustManager whose check method does nothing and never"
+                                        + " throws CertificateException accepts every server"
+                                        + " certificate, including self-signed certificates from a"
+                                        + " man-in-the-middle proxy.")
+                            .possibleImpact(
+                                    "All HTTPS traffic from this application can be silently"
+                                            + " intercepted, allowing credential theft and data"
+                                            + " tampering.")
+                            .recommendation(
+                                    "Remove the custom TrustManager and rely on the default JVM"
+                                        + " trust store. If a self-signed certificate is required"
+                                        + " for testing, install it in the JVM trust store via"
+                                        + " keytool instead of bypassing validation.")
+                            .limitations(
+                                    "High confidence — an empty implementation has no legitimate"
+                                            + " production purpose.")
+                            .evidence(
+                                    "X509TrustManager."
+                                            + name
+                                            + " with empty body found in "
+                                            + relativePath
+                                            + ".")
+                            .source(relativePath, line)
+                            .target(target)
+                            .build());
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_INSECURE_TRUST_MANAGER (HostnameVerifier half)
+    // ---------------------------------------------------------------------------
+
+    private void detectInsecureHostnameVerifier(
+            ClassOrInterfaceDeclaration cls, String relativePath, List<Finding> findings) {
+        boolean implementsHostnameVerifier =
+                cls.getImplementedTypes().stream()
+                        .anyMatch(t -> simpleName(t.getNameAsString()).equals("HostnameVerifier"));
+        if (!implementsHostnameVerifier) {
+            return;
+        }
+        for (MethodDeclaration method : cls.getMethods()) {
+            if (!"verify".equals(method.getNameAsString())) {
+                continue;
+            }
+            if (method.getBody().isEmpty()) {
+                continue;
+            }
+            boolean returnsTrueUnconditionally =
+                    method.getBody().get().getStatements().size() == 1
+                            && method.getBody().get().getStatement(0) instanceof ReturnStmt ret
+                            && ret.getExpression()
+                                    .filter(e -> e instanceof BooleanLiteralExpr)
+                                    .map(e -> ((BooleanLiteralExpr) e).getValue())
+                                    .orElse(false);
+            if (!returnsTrueUnconditionally) {
+                continue;
+            }
+            Integer line = method.getBegin().map(p -> p.line).orElse(null);
+            reportInsecureHostnameVerifier(
+                    relativePath,
+                    line,
+                    cls.getNameAsString() + "#verify",
+                    "HostnameVerifier.verify always returns true",
+                    findings);
+        }
+    }
+
+    private void detectInsecureHostnameVerifierLambda(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            if (!"setHostnameVerifier".equals(call.getNameAsString())) {
+                continue;
+            }
+            for (Expression arg : call.getArguments()) {
+                if (!(arg instanceof LambdaExpr lambda)) {
+                    continue;
+                }
+                Expression body = null;
+                if (lambda.getBody().isExpressionStmt()) {
+                    body = lambda.getBody().asExpressionStmt().getExpression();
+                } else if (lambda.getExpressionBody().isPresent()) {
+                    body = lambda.getExpressionBody().get();
+                } else if (lambda.getBody().isBlockStmt()
+                        && lambda.getBody().asBlockStmt().getStatements().size() == 1
+                        && lambda.getBody().asBlockStmt().getStatement(0) instanceof ReturnStmt r) {
+                    body = r.getExpression().orElse(null);
+                }
+                boolean unconditionalTrue =
+                        body instanceof BooleanLiteralExpr lit && lit.getValue();
+                if (!unconditionalTrue) {
+                    continue;
+                }
+                Integer line = call.getBegin().map(p -> p.line).orElse(null);
+                reportInsecureHostnameVerifier(
+                        relativePath,
+                        line,
+                        null,
+                        "setHostnameVerifier((h, s) -> true) accepts any hostname",
+                        findings);
+            }
+        }
+    }
+
+    private void reportInsecureHostnameVerifier(
+            String relativePath,
+            Integer line,
+            String target,
+            String shortMessageDetail,
+            List<Finding> findings) {
+        var builder =
+                FindingFactory.builder(
+                                FindingRules.SPRING_INSECURE_TRUST_MANAGER, FindingConfidence.HIGH)
+                        .shortMessage(shortMessageDetail + " in " + relativePath + ".")
+                        .whyBadPractice(
+                                "A HostnameVerifier that returns true for every host disables"
+                                    + " hostname verification: the TLS connection completes even"
+                                    + " when the certificate was issued to a different domain.")
+                        .possibleImpact(
+                                "A man-in-the-middle attacker presenting any valid-but-unrelated"
+                                        + " certificate can intercept traffic that the application"
+                                        + " believes is going to the intended host.")
+                        .recommendation(
+                                "Remove the custom HostnameVerifier and rely on the default."
+                                        + " If a specific alternate hostname must be accepted (e.g."
+                                        + " an internal CA), constrain the verifier to that exact"
+                                        + " hostname rather than returning true unconditionally.")
+                        .limitations("High confidence — verifier returns true unconditionally.")
+                        .evidence(shortMessageDetail + " found in " + relativePath + ".")
+                        .source(relativePath, line);
+        if (target != null) {
+            builder.target(target);
+        }
+        findings.add(builder.build());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_XXE_VULNERABLE_PARSER
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> XXE_FACTORY_TYPES =
+            Set.of(
+                    "DocumentBuilderFactory",
+                    "SAXParserFactory",
+                    "XMLInputFactory",
+                    "TransformerFactory");
+
+    private void detectXxeVulnerableParser(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        // Skip files that look like XML security hardening helpers (e.g. test fixtures).
+        boolean fileSetsFeature =
+                cu.findAll(MethodCallExpr.class).stream()
+                        .anyMatch(
+                                m ->
+                                        "setFeature".equals(m.getNameAsString())
+                                                || "setProperty".equals(m.getNameAsString())
+                                                || "setXIncludeAware".equals(m.getNameAsString())
+                                                || "setExpandEntityReferences"
+                                                        .equals(m.getNameAsString()));
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            String n = call.getNameAsString();
+            if (!"newInstance".equals(n) && !"newFactory".equals(n)) {
+                continue;
+            }
+            String scopeType = call.getScope().map(s -> simpleName(s.toString())).orElse("");
+            if (!XXE_FACTORY_TYPES.contains(scopeType)) {
+                continue;
+            }
+            if (fileSetsFeature) {
+                continue; // Best-effort heuristic — assume hardening is in place.
+            }
+            Integer line = call.getBegin().map(p -> p.line).orElse(null);
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_XXE_VULNERABLE_PARSER,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    scopeType
+                                            + "."
+                                            + n
+                                            + "() in "
+                                            + relativePath
+                                            + " — no setFeature/setProperty call disables external"
+                                            + " entities anywhere in this file.")
+                            .whyBadPractice(
+                                    "Java's default XML parsers expand external entities and honour"
+                                        + " DOCTYPE declarations. A malicious XML document can read"
+                                        + " arbitrary local files (file:///etc/passwd), trigger"
+                                        + " internal-network SSRF, or cause denial of service via"
+                                        + " billion-laughs expansion.")
+                            .possibleImpact(
+                                    "Any endpoint or job that parses externally supplied XML can be"
+                                        + " coerced into reading local files, making outbound HTTP"
+                                        + " requests, or exhausting CPU/memory.")
+                            .recommendation(
+                                    "Disable external entities and DOCTYPE before using the parser:"
+                                        + " factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING,"
+                                        + " true);"
+                                        + " factory.setFeature(\"http://apache.org/xml/features/disallow-doctype-decl\","
+                                        + " true); factory.setXIncludeAware(false);"
+                                        + " factory.setExpandEntityReferences(false). Or use"
+                                        + " OWASP's safe XML parsing utility.")
+                            .limitations(
+                                    "Medium confidence — heuristic checks the same file only. If"
+                                            + " hardening is performed in a helper class the parser"
+                                            + " may still be safe.")
+                            .evidence(
+                                    scopeType
+                                            + "."
+                                            + n
+                                            + "() found in "
+                                            + relativePath
+                                            + " with no setFeature/setProperty hardening in the"
+                                            + " same file.")
+                            .source(relativePath, line)
+                            .build());
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_INSECURE_DESERIALIZATION
+    // ---------------------------------------------------------------------------
+
+    private void detectInsecureDeserialization(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        // Jackson polymorphic typing: enableDefaultTyping / activateDefaultTyping
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            String name = call.getNameAsString();
+            if (!"enableDefaultTyping".equals(name) && !"activateDefaultTyping".equals(name)) {
+                continue;
+            }
+            Integer line = call.getBegin().map(p -> p.line).orElse(null);
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_INSECURE_DESERIALIZATION,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "Jackson polymorphic deserialization enabled via "
+                                            + name
+                                            + "() in "
+                                            + relativePath
+                                            + ".")
+                            .whyBadPractice(
+                                    "Jackson default typing instructs the deserializer to honour a"
+                                        + " @class type hint in the JSON payload and instantiate"
+                                        + " the named class. Many classes on a typical classpath"
+                                        + " are known gadget chains that achieve remote code"
+                                        + " execution when constructed with attacker-chosen state.")
+                            .possibleImpact(
+                                    "An attacker who can submit JSON to any deserializing endpoint"
+                                            + " can execute arbitrary code on the server.")
+                            .recommendation(
+                                    "Do not enable default typing. If polymorphism is required, use"
+                                        + " @JsonTypeInfo with an explicit, restrictive subtype"
+                                        + " allowlist via @JsonSubTypes, or use a"
+                                        + " BasicPolymorphicTypeValidator that only allows known"
+                                        + " base types.")
+                            .limitations(
+                                    "High confidence — both APIs are widely flagged in CVE"
+                                            + " advisories.")
+                            .evidence(name + "() call found in " + relativePath + ".")
+                            .source(relativePath, line)
+                            .build());
+        }
+
+        // Java serialization: new ObjectInputStream(...) anywhere is risky for untrusted input.
+        // SnakeYAML: new Yaml() (no-arg) uses an unsafe Constructor.
+        for (ObjectCreationExpr creation : cu.findAll(ObjectCreationExpr.class)) {
+            String typeName = simpleName(creation.getType().getNameAsString());
+            if ("ObjectInputStream".equals(typeName)) {
+                Integer line = creation.getBegin().map(p -> p.line).orElse(null);
+                findings.add(
+                        FindingFactory.builder(
+                                        FindingRules.SPRING_INSECURE_DESERIALIZATION,
+                                        FindingConfidence.MEDIUM)
+                                .shortMessage(
+                                        "new ObjectInputStream(...) in "
+                                                + relativePath
+                                                + " — Java serialization of untrusted input is a"
+                                                + " known RCE vector.")
+                                .whyBadPractice(
+                                        "ObjectInputStream.readObject reconstructs arbitrary class"
+                                            + " graphs and invokes readObject / readResolve on each"
+                                            + " element. Many libraries on a normal classpath are"
+                                            + " published gadget chains that achieve remote code"
+                                            + " execution.")
+                                .possibleImpact(
+                                        "If the input stream is ever attacker-controlled (queue"
+                                            + " message, cache value, uploaded file), the server"
+                                            + " can be remotely compromised.")
+                                .recommendation(
+                                        "Replace Java serialization with a structured format such"
+                                            + " as JSON or Protocol Buffers. If unavoidable,"
+                                            + " install a strict ObjectInputFilter allowlist via"
+                                            + " ObjectInputFilter.Config.")
+                                .limitations(
+                                        "Medium confidence — flagged based on type alone. Some uses"
+                                                + " (deserializing trusted local files) are safe in"
+                                                + " practice.")
+                                .evidence(
+                                        "new ObjectInputStream(...) found in " + relativePath + ".")
+                                .source(relativePath, line)
+                                .build());
+            } else if ("Yaml".equals(typeName) && creation.getArguments().isEmpty()) {
+                Integer line = creation.getBegin().map(p -> p.line).orElse(null);
+                findings.add(
+                        FindingFactory.builder(
+                                        FindingRules.SPRING_INSECURE_DESERIALIZATION,
+                                        FindingConfidence.MEDIUM)
+                                .shortMessage(
+                                        "new Yaml() with no-arg constructor in "
+                                                + relativePath
+                                                + " — SnakeYAML's default Constructor can"
+                                                + " instantiate arbitrary classes.")
+                                .whyBadPractice(
+                                        "SnakeYAML's default Constructor honours the !!javaClass"
+                                            + " tag in the document and reflectively instantiates"
+                                            + " the named class. Several gadget chains on a typical"
+                                            + " Spring Boot classpath escalate this to remote code"
+                                            + " execution.")
+                                .possibleImpact(
+                                        "An attacker controlling the YAML input can execute"
+                                                + " arbitrary code on the server.")
+                                .recommendation(
+                                        "Use new Yaml(new SafeConstructor(new LoaderOptions())) or"
+                                            + " a Constructor configured with a restrictive type"
+                                            + " allowlist. SnakeYAML 2.x defaults to"
+                                            + " SafeConstructor for the no-arg path — verify the"
+                                            + " version.")
+                                .limitations(
+                                        "Medium confidence — SnakeYAML 2.x changed the default to"
+                                                + " be safe; the rule cannot determine the bundled"
+                                                + " version statically.")
+                                .evidence("new Yaml() call found in " + relativePath + ".")
+                                .source(relativePath, line)
+                                .build());
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_SECURITY_HEADERS_DISABLED
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> HEADER_CONFIG_NAMES =
+            Set.of(
+                    "headers",
+                    "frameOptions",
+                    "xssProtection",
+                    "contentTypeOptions",
+                    "httpStrictTransportSecurity",
+                    "contentSecurityPolicy");
+
+    private void detectSecurityHeadersDisabled(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            if (!"disable".equals(call.getNameAsString())) {
+                continue;
+            }
+            String scopeName =
+                    call.getScope()
+                            .filter(s -> s instanceof MethodCallExpr)
+                            .map(s -> ((MethodCallExpr) s).getNameAsString())
+                            .orElse("");
+            if (!HEADER_CONFIG_NAMES.contains(scopeName)) {
+                continue;
+            }
+            if ("headers".equals(scopeName) && !isInsideSpringSecurityConfig(call)) {
+                // The bare name "headers" can collide with non-security DSLs; restrict to
+                // contexts that look like a Spring Security SecurityFilterChain configuration.
+                continue;
+            }
+            Integer line = call.getBegin().map(p -> p.line).orElse(null);
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_SECURITY_HEADERS_DISABLED,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    "."
+                                            + scopeName
+                                            + "().disable() turns off a Spring Security HTTP header"
+                                            + " in "
+                                            + relativePath
+                                            + ".")
+                            .whyBadPractice(
+                                    "Spring Security enables a small set of HTTP response headers"
+                                        + " (X-Frame-Options, X-Content-Type-Options,"
+                                        + " Strict-Transport-Security, an XSS reflection filter,"
+                                        + " and an optional Content-Security-Policy) by default."
+                                        + " They are browser-enforced defenses against"
+                                        + " clickjacking, content sniffing, and TLS downgrade.")
+                            .possibleImpact(
+                                    "The application becomes vulnerable to clickjacking via"
+                                        + " iframe-embedding, content-type confusion attacks, and"
+                                        + " (for the HSTS variant) protocol-downgrade attacks.")
+                            .recommendation(
+                                    "Keep the default headers enabled. If a single header conflicts"
+                                        + " with a specific use case (e.g. SAMEORIGIN frame"
+                                        + " embedding from a known partner), configure that header"
+                                        + " instead of disabling it entirely.")
+                            .limitations(
+                                    "Medium confidence — some applications legitimately disable a"
+                                        + " single header (frameOptions for OAuth pop-ups,"
+                                        + " httpStrictTransportSecurity behind a TLS-terminating"
+                                        + " proxy). Review the surrounding context.")
+                            .evidence(
+                                    "." + scopeName + "().disable() found in " + relativePath + ".")
+                            .source(relativePath, line)
+                            .build());
+        }
+    }
+
+    private static boolean isInsideSpringSecurityConfig(MethodCallExpr call) {
+        // Walk up parents and look for a chain that includes a known security DSL anchor.
+        var node = call.getParentNode();
+        while (node.isPresent()) {
+            var n = node.get();
+            String repr = n.toString();
+            if (repr.contains("HttpSecurity")
+                    || repr.contains("SecurityFilterChain")
+                    || repr.contains("authorizeHttpRequests")
+                    || repr.contains("authorizeRequests")) {
+                return true;
+            }
+            node = n.getParentNode();
+        }
+        return false;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_PERMIT_ALL_ANY_REQUEST
+    // ---------------------------------------------------------------------------
+
+    private void detectPermitAllAnyRequest(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            if (!"permitAll".equals(call.getNameAsString())) {
+                continue;
+            }
+            var scope = call.getScope();
+            if (scope.isEmpty() || !(scope.get() instanceof MethodCallExpr scopeCall)) {
+                continue;
+            }
+            String scopeName = scopeCall.getNameAsString();
+            boolean matchesAnyRequest = "anyRequest".equals(scopeName);
+            boolean matchesWildcardMatcher =
+                    ("requestMatchers".equals(scopeName) || "antMatchers".equals(scopeName))
+                            && scopeCall.getArguments().stream()
+                                    .filter(a -> a instanceof StringLiteralExpr)
+                                    .map(a -> ((StringLiteralExpr) a).asString())
+                                    .anyMatch(s -> "/**".equals(s) || "/*".equals(s));
+            if (!matchesAnyRequest && !matchesWildcardMatcher) {
+                continue;
+            }
+            Integer line = call.getBegin().map(p -> p.line).orElse(null);
+            String shape =
+                    matchesAnyRequest
+                            ? "anyRequest().permitAll()"
+                            : scopeName + "(\"/**\").permitAll()";
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_PERMIT_ALL_ANY_REQUEST,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    shape
+                                            + " grants unauthenticated access to every endpoint in "
+                                            + relativePath
+                                            + ".")
+                            .whyBadPractice(
+                                    "permitAll() on the catch-all matcher removes authentication"
+                                        + " from the entire application. Because the rule sits at"
+                                        + " the end of the chain, any more specific matchers above"
+                                        + " it still apply — but anything that does not match a"
+                                        + " preceding rule is now public.")
+                            .possibleImpact(
+                                    "Every endpoint that is not explicitly secured by an earlier"
+                                            + " matcher is reachable without authentication,"
+                                            + " including any controller a developer later adds.")
+                            .recommendation(
+                                    "Replace the catch-all permitAll() with"
+                                        + " .anyRequest().authenticated() (or .denyAll() if the app"
+                                        + " is purely public-content), and grant permitAll only to"
+                                        + " specific whitelisted paths.")
+                            .limitations(
+                                    "High confidence for the exact patterns checked. Some apps"
+                                        + " intentionally publish read-only public APIs; review the"
+                                        + " controllers behind the chain.")
+                            .evidence(shape + " found in " + relativePath + ".")
+                            .source(relativePath, line)
+                            .build());
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_H2_CONSOLE_PERMITALL
+    // ---------------------------------------------------------------------------
+
+    private void detectH2ConsolePermitAll(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            if (!"permitAll".equals(call.getNameAsString())) {
+                continue;
+            }
+            var scope = call.getScope();
+            if (scope.isEmpty() || !(scope.get() instanceof MethodCallExpr scopeCall)) {
+                continue;
+            }
+            String scopeName = scopeCall.getNameAsString();
+            if (!"requestMatchers".equals(scopeName) && !"antMatchers".equals(scopeName)) {
+                continue;
+            }
+            boolean targetsH2Console =
+                    scopeCall.getArguments().stream()
+                            .filter(a -> a instanceof StringLiteralExpr)
+                            .map(a -> ((StringLiteralExpr) a).asString())
+                            .anyMatch(s -> s.contains("/h2-console") || s.contains("/h2"));
+            if (!targetsH2Console) {
+                continue;
+            }
+            Integer line = call.getBegin().map(p -> p.line).orElse(null);
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_H2_CONSOLE_PERMITALL,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "Security configuration permits unauthenticated access to the"
+                                            + " H2 console path in "
+                                            + relativePath
+                                            + ".")
+                            .whyBadPractice(
+                                    "The H2 web console accepts arbitrary SQL through a JDBC"
+                                        + " connection and can run Java stored procedures, making"
+                                        + " it a remote-code-execution surface. permitAll() on the"
+                                        + " /h2-console path removes the only access control in"
+                                        + " front of it.")
+                            .possibleImpact(
+                                    "Any client that can reach the application port can read and"
+                                            + " write every row in the database and, on most"
+                                            + " configurations, execute arbitrary Java code on the"
+                                            + " host.")
+                            .recommendation(
+                                    "Remove the permitAll() on /h2-console — require"
+                                        + " authentication, restrict it to a developer-only role,"
+                                        + " or remove the H2 dependency entirely from production"
+                                        + " builds.")
+                            .limitations(
+                                    "High confidence — there is essentially no production reason"
+                                            + " to expose the H2 console unauthenticated.")
+                            .evidence(
+                                    scopeName
+                                            + "(\".../h2-console...\").permitAll() found in "
+                                            + relativePath
+                                            + ".")
+                            .source(relativePath, line)
+                            .build());
         }
     }
 

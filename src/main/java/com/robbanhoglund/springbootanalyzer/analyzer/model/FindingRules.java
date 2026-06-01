@@ -1291,6 +1291,99 @@ public final class FindingRules {
                     FindingCategory.SECURITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
+    /** {@code spring.h2.console.enabled=true} is set in a production-oriented profile.
+     *  The H2 web console accepts arbitrary SQL through a JDBC connection and, when reachable,
+     *  is a direct path to remote code execution via {@code SCRIPT}, {@code RUNSCRIPT}, or
+     *  Java-stored procedures. Even when bound to localhost, it is routinely exposed through
+     *  forwarded ports, reverse proxies, or Spring Security misconfiguration. */
+    public static final FindingRule SPRING_H2_CONSOLE_ENABLED_PROD =
+            rule(
+                    "SPRING_H2_CONSOLE_ENABLED_PROD",
+                    "H2 web console enabled in a production-oriented profile",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** An {@code X509TrustManager} implementation whose {@code checkServerTrusted} or
+     *  {@code checkClientTrusted} body is empty (no statements, never throws), or a
+     *  {@code HostnameVerifier} whose {@code verify(...)} method unconditionally returns
+     *  {@code true}. Both patterns disable TLS certificate / hostname validation, allowing
+     *  any man-in-the-middle proxy to intercept HTTPS traffic with a self-signed certificate. */
+    public static final FindingRule SPRING_INSECURE_TRUST_MANAGER =
+            rule(
+                    "SPRING_INSECURE_TRUST_MANAGER",
+                    "TLS validation disabled — TrustManager or HostnameVerifier accepts everything",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** An XML parser factory ({@code DocumentBuilderFactory}, {@code SAXParserFactory},
+     *  {@code XMLInputFactory}, or {@code TransformerFactory}) is constructed without
+     *  calling the corresponding {@code setFeature} / {@code setProperty} calls that
+     *  disable external entity expansion and DOCTYPE declarations. Such a parser is
+     *  vulnerable to XML External Entity (XXE) attacks: arbitrary local-file disclosure,
+     *  internal-network SSRF, and (with deep nesting) denial-of-service. */
+    public static final FindingRule SPRING_XXE_VULNERABLE_PARSER =
+            rule(
+                    "SPRING_XXE_VULNERABLE_PARSER",
+                    "XML parser created without disabling external entities (XXE)",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** Polymorphic deserialization of untrusted input is enabled. Detected patterns include
+     *  Jackson's {@code ObjectMapper.enableDefaultTyping(...)} or
+     *  {@code activateDefaultTyping(LaissezFaireTypeValidator.instance, ...)}, raw
+     *  {@code new ObjectInputStream(...)} for Java serialization, and SnakeYAML's
+     *  {@code new Yaml()} default constructor (which uses an unrestricted constructor and
+     *  can instantiate arbitrary Java classes). All three patterns are well-known remote
+     *  code execution vectors when the input is attacker-controlled. */
+    public static final FindingRule SPRING_INSECURE_DESERIALIZATION =
+            rule(
+                    "SPRING_INSECURE_DESERIALIZATION",
+                    "Insecure deserialization enabled — possible remote code execution",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A Spring Security configuration disables built-in HTTP response headers, e.g.
+     *  {@code .headers(h -> h.disable())}, {@code .frameOptions().disable()},
+     *  {@code .xssProtection().disable()}, or {@code .contentTypeOptions().disable()}.
+     *  These headers are cheap, browser-enforced defenses against clickjacking and content
+     *  sniffing. Disabling them rarely has a defensible production reason. */
+    public static final FindingRule SPRING_SECURITY_HEADERS_DISABLED =
+            rule(
+                    "SPRING_SECURITY_HEADERS_DISABLED",
+                    "Spring Security HTTP response headers disabled",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A Spring Security {@code SecurityFilterChain} configures
+     *  {@code .anyRequest().permitAll()} or {@code .requestMatchers("/**").permitAll()}.
+     *  Either pattern grants public access to every endpoint and is almost always a
+     *  copy/paste accident or an unfinished migration from the deprecated
+     *  {@code WebSecurityConfigurerAdapter}. */
+    public static final FindingRule SPRING_PERMIT_ALL_ANY_REQUEST =
+            rule(
+                    "SPRING_PERMIT_ALL_ANY_REQUEST",
+                    "Spring Security permitAll() applied to every request",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A Spring Security {@code SecurityFilterChain} explicitly permits the H2 console
+     *  path ({@code "/h2-console/**"} or {@code "/h2-console"}) without authentication.
+     *  When combined with {@code spring.h2.console.enabled=true} this exposes an
+     *  unauthenticated SQL shell to the network. */
+    public static final FindingRule SPRING_H2_CONSOLE_PERMITALL =
+            rule(
+                    "SPRING_H2_CONSOLE_PERMITALL",
+                    "H2 console path permitted without authentication in security configuration",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
     /** A Spring-managed component ({@code @Service}, {@code @Component}, {@code @Repository},
      *  {@code @Controller}) declares a {@code static} non-{@code final} field of a mutable
      *  collection type ({@code List}, {@code Map}, {@code Set}, etc.). The field is shared
