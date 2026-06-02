@@ -653,4 +653,424 @@ class SecurityPracticeFindingAnalyzerTest {
 
         assertThat(byRule(findings(), "SPRING_H2_CONSOLE_PERMITALL")).isNull();
     }
+
+    // ── SPRING_COMMAND_INJECTION ──────────────────────────────────────────────
+
+    @Test
+    void flagsRuntimeExecWithConcatenation() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/CmdService.java",
+                """
+                package com.example;
+                public class CmdService {
+                    public void run(String name) throws Exception {
+                        Runtime.getRuntime().exec("ping " + name);
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_COMMAND_INJECTION")).isNotNull();
+    }
+
+    @Test
+    void flagsProcessBuilderWithConcatenation() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/CmdService.java",
+                """
+                package com.example;
+                public class CmdService {
+                    public void run(String name) {
+                        new ProcessBuilder("sh", "-c", "echo " + name);
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_COMMAND_INJECTION")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagRuntimeExecWithLiteral() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/CmdService.java",
+                """
+                package com.example;
+                public class CmdService {
+                    public void run() throws Exception {
+                        Runtime.getRuntime().exec("ls -la");
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_COMMAND_INJECTION")).isNull();
+    }
+
+    // ── SPRING_SPEL_INJECTION ─────────────────────────────────────────────────
+
+    @Test
+    void flagsParseExpressionWithConcatenation() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/SpelService.java",
+                """
+                package com.example;
+                import org.springframework.expression.spel.standard.SpelExpressionParser;
+                public class SpelService {
+                    public Object eval(String input) {
+                        return new SpelExpressionParser().parseExpression("name == " + input);
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_SPEL_INJECTION")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagParseExpressionWithLiteral() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/SpelService.java",
+                """
+                package com.example;
+                import org.springframework.expression.spel.standard.SpelExpressionParser;
+                public class SpelService {
+                    public Object eval() {
+                        return new SpelExpressionParser().parseExpression("name == 'admin'");
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_SPEL_INJECTION")).isNull();
+    }
+
+    // ── SPRING_PATH_TRAVERSAL ─────────────────────────────────────────────────
+
+    @Test
+    void flagsNewFileWithConcatenation() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/FileService.java",
+                """
+                package com.example;
+                import java.io.File;
+                public class FileService {
+                    public File load(String name) {
+                        return new File("/data/" + name);
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_PATH_TRAVERSAL")).isNotNull();
+    }
+
+    @Test
+    void flagsPathsGetWithConcatenation() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/FileService.java",
+                """
+                package com.example;
+                import java.nio.file.Path;
+                import java.nio.file.Paths;
+                public class FileService {
+                    public Path load(String name) {
+                        return Paths.get("/data/" + name);
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_PATH_TRAVERSAL")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagNewFileWithLiteral() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/FileService.java",
+                """
+                package com.example;
+                import java.io.File;
+                public class FileService {
+                    public File load() {
+                        return new File("/data/fixed.txt");
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_PATH_TRAVERSAL")).isNull();
+    }
+
+    // ── SPRING_SSRF_USER_URL ──────────────────────────────────────────────────
+
+    @Test
+    void flagsNewUrlWithConcatenation() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Fetcher.java",
+                """
+                package com.example;
+                import java.net.URL;
+                public class Fetcher {
+                    public URL build(String host) throws Exception {
+                        return new URL("https://" + host + "/api");
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_SSRF_USER_URL")).isNotNull();
+    }
+
+    @Test
+    void flagsRestTemplateGetForObjectWithConcatenation() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Fetcher.java",
+                """
+                package com.example;
+                import org.springframework.web.client.RestTemplate;
+                public class Fetcher {
+                    private final RestTemplate rt = new RestTemplate();
+                    public String get(String host) {
+                        return rt.getForObject("https://" + host + "/api", String.class);
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_SSRF_USER_URL")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagNewUrlWithLiteral() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Fetcher.java",
+                """
+                package com.example;
+                import java.net.URL;
+                public class Fetcher {
+                    public URL build() throws Exception {
+                        return new URL("https://api.example.com/v1");
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_SSRF_USER_URL")).isNull();
+    }
+
+    // ── SPRING_OPEN_REDIRECT ──────────────────────────────────────────────────
+
+    @Test
+    void flagsRedirectViewWithConcatenation() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/RedirectController.java",
+                """
+                package com.example;
+                public class RedirectController {
+                    public String go(String target) {
+                        return "redirect:" + target;
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_OPEN_REDIRECT")).isNotNull();
+    }
+
+    @Test
+    void flagsSendRedirectWithConcatenation() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/RedirectController.java",
+                """
+                package com.example;
+                import jakarta.servlet.http.HttpServletResponse;
+                public class RedirectController {
+                    public void go(HttpServletResponse resp, String target) throws Exception {
+                        resp.sendRedirect("/next?to=" + target);
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_OPEN_REDIRECT")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagRedirectViewWithLiteral() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/RedirectController.java",
+                """
+                package com.example;
+                public class RedirectController {
+                    public String go() {
+                        return "redirect:/home";
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_OPEN_REDIRECT")).isNull();
+    }
+
+    // ── SPRING_INSECURE_RANDOM_FOR_SECURITY ───────────────────────────────────
+
+    @Test
+    void flagsNewRandomInTokenMethod() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/TokenService.java",
+                """
+                package com.example;
+                import java.util.Random;
+                public class TokenService {
+                    public long generateToken() {
+                        return new Random().nextLong();
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_INSECURE_RANDOM_FOR_SECURITY")).isNotNull();
+    }
+
+    @Test
+    void flagsMathRandomInPasswordContext() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/PasswordUtil.java",
+                """
+                package com.example;
+                public class PasswordUtil {
+                    public double saltSeed() {
+                        return Math.random();
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_INSECURE_RANDOM_FOR_SECURITY")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagRandomInNonSecurityContext() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/DiceGame.java",
+                """
+                package com.example;
+                import java.util.Random;
+                public class DiceGame {
+                    public int roll() {
+                        return new Random().nextInt(6) + 1;
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_INSECURE_RANDOM_FOR_SECURITY")).isNull();
+    }
+
+    // ── SPRING_WEAK_CIPHER_ALGORITHM ──────────────────────────────────────────
+
+    @Test
+    void flagsDesCipher() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Crypto.java",
+                """
+                package com.example;
+                import javax.crypto.Cipher;
+                public class Crypto {
+                    public Cipher c() throws Exception {
+                        return Cipher.getInstance("DES");
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_WEAK_CIPHER_ALGORITHM")).isNotNull();
+    }
+
+    @Test
+    void flagsEcbModeCipher() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Crypto.java",
+                """
+                package com.example;
+                import javax.crypto.Cipher;
+                public class Crypto {
+                    public Cipher c() throws Exception {
+                        return Cipher.getInstance("AES/ECB/PKCS5Padding");
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_WEAK_CIPHER_ALGORITHM")).isNotNull();
+    }
+
+    @Test
+    void flagsBareAesCipher() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Crypto.java",
+                """
+                package com.example;
+                import javax.crypto.Cipher;
+                public class Crypto {
+                    public Cipher c() throws Exception {
+                        return Cipher.getInstance("AES");
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_WEAK_CIPHER_ALGORITHM")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagAesGcmCipher() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Crypto.java",
+                """
+                package com.example;
+                import javax.crypto.Cipher;
+                public class Crypto {
+                    public Cipher c() throws Exception {
+                        return Cipher.getInstance("AES/GCM/NoPadding");
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_WEAK_CIPHER_ALGORITHM")).isNull();
+    }
+
+    // ── SPRING_HARDCODED_ENCRYPTION_KEY ───────────────────────────────────────
+
+    @Test
+    void flagsSecretKeySpecFromStringLiteral() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Crypto.java",
+                """
+                package com.example;
+                import javax.crypto.spec.SecretKeySpec;
+                public class Crypto {
+                    public SecretKeySpec key() {
+                        return new SecretKeySpec("1234567890123456".getBytes(), "AES");
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_HARDCODED_ENCRYPTION_KEY")).isNotNull();
+    }
+
+    @Test
+    void flagsIvParameterSpecFromInlineByteArray() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Crypto.java",
+                """
+                package com.example;
+                import javax.crypto.spec.IvParameterSpec;
+                public class Crypto {
+                    public IvParameterSpec iv() {
+                        return new IvParameterSpec(new byte[] {0, 1, 2, 3, 4, 5, 6, 7});
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_HARDCODED_ENCRYPTION_KEY")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagSecretKeySpecFromVariable() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Crypto.java",
+                """
+                package com.example;
+                import javax.crypto.spec.SecretKeySpec;
+                public class Crypto {
+                    public SecretKeySpec key(byte[] material) {
+                        return new SecretKeySpec(material, "AES");
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_HARDCODED_ENCRYPTION_KEY")).isNull();
+    }
 }

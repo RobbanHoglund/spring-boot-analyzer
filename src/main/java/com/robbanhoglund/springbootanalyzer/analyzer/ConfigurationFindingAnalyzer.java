@@ -145,7 +145,62 @@ public class ConfigurationFindingAnalyzer {
         detectConnectionPoolMisconfiguration(configurationAnalysis, findings);
         detectDevToolsInProduction(buildInfo, findings);
         detectAsyncSecurityContextLost(repositoryRoot, buildInfo, findings);
+        detectMultipartUnlimitedSize(configurationAnalysis, findings);
         return findings;
+    }
+
+    private void detectMultipartUnlimitedSize(
+            ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {
+        if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
+            return;
+        }
+        for (ApplicationProperty property : configurationAnalysis.properties()) {
+            if (property == null || property.name() == null || property.value() == null) {
+                continue;
+            }
+            String name = property.name();
+            boolean isMultipartSize =
+                    "spring.servlet.multipart.max-file-size".equals(name)
+                            || "spring.servlet.multipart.max-request-size".equals(name);
+            if (!isMultipartSize) {
+                continue;
+            }
+            if (!"-1".equals(property.value().trim())) {
+                continue;
+            }
+            String profileLabel = property.profile() != null ? " [" + property.profile() + "]" : "";
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_MULTIPART_NO_MAX_SIZE,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    name
+                                            + "=-1"
+                                            + profileLabel
+                                            + " removes the multipart upload size limit.")
+                            .whyBadPractice(
+                                    "Spring Boot caps uploads by default (1MB per file, 10MB per"
+                                        + " request). Setting the limit to -1 makes it unlimited,"
+                                        + " so a single request can stream gigabytes into the"
+                                        + " configured temp directory or heap.")
+                            .possibleImpact(
+                                    "An unauthenticated or low-privilege client can fill the disk"
+                                            + " or exhaust memory with one or a few large uploads,"
+                                            + " taking the instance down (denial of service).")
+                            .recommendation(
+                                    "Set spring.servlet.multipart.max-file-size and"
+                                        + " max-request-size to concrete limits sized for your use"
+                                        + " case (e.g. 5MB / 20MB). Enforce the same limit at the"
+                                        + " reverse proxy or load balancer as defense in depth.")
+                            .limitations(
+                                    "High confidence — the value is read directly as -1"
+                                        + " (unlimited). A deployment that genuinely needs"
+                                        + " unbounded uploads should rely on streaming to object"
+                                        + " storage instead.")
+                            .evidence(name + "=-1 found" + profileLabel + ".")
+                            .source(property.sourceFile(), property.line())
+                            .build());
+        }
     }
 
     private void detectSensitiveProfileDuplication(

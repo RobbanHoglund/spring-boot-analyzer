@@ -5,17 +5,23 @@ import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.expr.ArrayCreationExpr;
+import com.github.javaparser.ast.expr.ArrayInitializerExpr;
+import com.github.javaparser.ast.expr.BinaryExpr;
 import com.github.javaparser.ast.expr.BooleanLiteralExpr;
 import com.github.javaparser.ast.expr.Expression;
+import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.LambdaExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.MethodReferenceExpr;
+import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.StringLiteralExpr;
 import com.github.javaparser.ast.stmt.ReturnStmt;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRule;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -57,6 +63,19 @@ import org.springframework.stereotype.Component;
  *       or {@code requestMatchers("/**").permitAll()} in a {@code SecurityFilterChain}.
  *   <li>{@link FindingRules#SPRING_H2_CONSOLE_PERMITALL} — H2 console path
  *       ({@code /h2-console**}) granted {@code permitAll()} in a security configuration.
+ *   <li>{@link FindingRules#SPRING_COMMAND_INJECTION} — {@code Runtime.exec}/{@code ProcessBuilder}
+ *       argument built with string concatenation.
+ *   <li>{@link FindingRules#SPRING_SPEL_INJECTION} — {@code parseExpression(...)} on a
+ *       concatenated SpEL string.
+ *   <li>{@link FindingRules#SPRING_PATH_TRAVERSAL} — file path built with concatenation.
+ *   <li>{@link FindingRules#SPRING_SSRF_USER_URL} — outbound URL built with concatenation.
+ *   <li>{@link FindingRules#SPRING_OPEN_REDIRECT} — redirect target built with concatenation.
+ *   <li>{@link FindingRules#SPRING_INSECURE_RANDOM_FOR_SECURITY} — {@code java.util.Random}/
+ *       {@code Math.random()} used in a security-sensitive context.
+ *   <li>{@link FindingRules#SPRING_WEAK_CIPHER_ALGORITHM} — weak cipher algorithm/mode passed to
+ *       {@code Cipher.getInstance(...)}.
+ *   <li>{@link FindingRules#SPRING_HARDCODED_ENCRYPTION_KEY} — {@code SecretKeySpec}/
+ *       {@code IvParameterSpec} built from a hardcoded value.
  * </ul>
  */
 @Component
@@ -121,6 +140,14 @@ public class SecurityPracticeFindingAnalyzer {
         detectSecurityHeadersDisabled(cu, relativePath, findings);
         detectPermitAllAnyRequest(cu, relativePath, findings);
         detectH2ConsolePermitAll(cu, relativePath, findings);
+        detectCommandInjection(cu, relativePath, findings);
+        detectSpelInjection(cu, relativePath, findings);
+        detectPathTraversal(cu, relativePath, findings);
+        detectSsrfUserUrl(cu, relativePath, findings);
+        detectOpenRedirect(cu, relativePath, findings);
+        detectInsecureRandomForSecurity(cu, relativePath, findings);
+        detectWeakCipherAlgorithm(cu, relativePath, findings);
+        detectHardcodedEncryptionKey(cu, relativePath, findings);
 
         for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
             for (MethodDeclaration method : cls.getMethods()) {
@@ -1002,8 +1029,537 @@ public class SecurityPracticeFindingAnalyzer {
     }
 
     // ---------------------------------------------------------------------------
+    // Rule: SPRING_COMMAND_INJECTION
+    // ---------------------------------------------------------------------------
+
+    private void detectCommandInjection(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            if (!"exec".equals(call.getNameAsString())) {
+                continue;
+            }
+            boolean scopeRefersRuntime =
+                    call.getScope()
+                            .map(Object::toString)
+                            .map(t -> t.contains("getRuntime") || t.contains("Runtime"))
+                            .orElse(false);
+            if (!scopeRefersRuntime) {
+                continue;
+            }
+            if (call.getArguments().stream()
+                    .anyMatch(SecurityPracticeFindingAnalyzer::isDynamicConcat)) {
+                addCommandInjection(relativePath, lineOf(call), "Runtime.exec(...)", findings);
+            }
+        }
+        for (ObjectCreationExpr creation : cu.findAll(ObjectCreationExpr.class)) {
+            if (!"ProcessBuilder".equals(simpleName(creation.getType().getNameAsString()))) {
+                continue;
+            }
+            if (creation.getArguments().stream()
+                    .anyMatch(SecurityPracticeFindingAnalyzer::isDynamicConcat)) {
+                addCommandInjection(
+                        relativePath, lineOf(creation), "new ProcessBuilder(...)", findings);
+            }
+        }
+    }
+
+    private void addCommandInjection(
+            String relativePath, Integer line, String shape, List<Finding> findings) {
+        add(
+                findings,
+                FindingRules.SPRING_COMMAND_INJECTION,
+                FindingConfidence.MEDIUM,
+                relativePath,
+                line,
+                shape + " builds the command with string concatenation in " + relativePath + ".",
+                "Concatenating non-literal data into an OS command lets an attacker who influences"
+                    + " that data inject additional commands or arguments. When the command runs"
+                    + " through a shell, metacharacters (;, |, &&, $()) execute arbitrary"
+                    + " programs.",
+                "If the concatenated value is reachable from user input, an attacker can execute"
+                        + " arbitrary commands on the host with the application's privileges.",
+                "Avoid the shell: pass the program and each argument as separate elements to"
+                        + " ProcessBuilder (no shell interpolation), validate against a strict"
+                        + " allowlist, and never concatenate user input into the command string.",
+                "Medium confidence — flags concatenation into exec/ProcessBuilder; whether the"
+                        + " value is attacker-controlled requires manual review.",
+                shape + " with concatenated argument found in " + relativePath + ".");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_SPEL_INJECTION
+    // ---------------------------------------------------------------------------
+
+    private void detectSpelInjection(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            if (!"parseExpression".equals(call.getNameAsString())) {
+                continue;
+            }
+            if (call.getArguments().stream()
+                    .anyMatch(SecurityPracticeFindingAnalyzer::isDynamicConcat)) {
+                add(
+                        findings,
+                        FindingRules.SPRING_SPEL_INJECTION,
+                        FindingConfidence.MEDIUM,
+                        relativePath,
+                        lineOf(call),
+                        "parseExpression(...) is called on a concatenated SpEL string in "
+                                + relativePath
+                                + ".",
+                        "Spring Expression Language can call arbitrary methods, constructors, and"
+                                + " static utilities (e.g. T(java.lang.Runtime)). Parsing and"
+                                + " evaluating an expression assembled from non-literal data turns"
+                                + " that data into executable code.",
+                        "If the concatenated value is attacker-influenced, the attacker achieves"
+                                + " remote code execution.",
+                        "Never build SpEL from untrusted input. Use a fixed expression with a"
+                                + " controlled EvaluationContext, or use SimpleEvaluationContext to"
+                                + " restrict the expression to data binding only.",
+                        "Medium confidence — flags concatenation into parseExpression; confirm"
+                                + " whether the value is attacker-controlled.",
+                        "parseExpression(...) with concatenated argument found in "
+                                + relativePath
+                                + ".");
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_PATH_TRAVERSAL
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> PATH_CONSTRUCTOR_TYPES =
+            Set.of(
+                    "File",
+                    "FileInputStream",
+                    "FileOutputStream",
+                    "FileReader",
+                    "FileWriter",
+                    "RandomAccessFile");
+
+    private void detectPathTraversal(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (ObjectCreationExpr creation : cu.findAll(ObjectCreationExpr.class)) {
+            if (!PATH_CONSTRUCTOR_TYPES.contains(
+                    simpleName(creation.getType().getNameAsString()))) {
+                continue;
+            }
+            if (creation.getArguments().stream()
+                    .anyMatch(SecurityPracticeFindingAnalyzer::isDynamicConcat)) {
+                addPathTraversal(
+                        relativePath,
+                        lineOf(creation),
+                        "new " + simpleName(creation.getType().getNameAsString()) + "(...)",
+                        findings);
+            }
+        }
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            String name = call.getNameAsString();
+            String scope = call.getScope().map(s -> simpleName(s.toString())).orElse("");
+            boolean isPathsGet = "get".equals(name) && "Paths".equals(scope);
+            boolean isPathOf = "of".equals(name) && "Path".equals(scope);
+            if (!isPathsGet && !isPathOf) {
+                continue;
+            }
+            if (call.getArguments().stream()
+                    .anyMatch(SecurityPracticeFindingAnalyzer::isDynamicConcat)) {
+                addPathTraversal(
+                        relativePath, lineOf(call), scope + "." + name + "(...)", findings);
+            }
+        }
+    }
+
+    private void addPathTraversal(
+            String relativePath, Integer line, String shape, List<Finding> findings) {
+        add(
+                findings,
+                FindingRules.SPRING_PATH_TRAVERSAL,
+                FindingConfidence.MEDIUM,
+                relativePath,
+                line,
+                shape + " builds a file path with string concatenation in " + relativePath + ".",
+                "A file path assembled by concatenation can contain traversal sequences (../../)"
+                    + " supplied by the caller, escaping the intended base directory and reaching"
+                    + " arbitrary files on disk.",
+                "If the concatenated value is attacker-influenced, an attacker can read sensitive"
+                        + " files (configuration, keys) or overwrite files outside the intended"
+                        + " directory.",
+                "Resolve the path against a fixed base directory, call"
+                    + " toRealPath()/getCanonicalPath(), and verify the result still starts with"
+                    + " the base directory before using it. Reject inputs containing path"
+                    + " separators or '..'.",
+                "Medium confidence — flags concatenation into a file path; confirm whether the"
+                        + " value is attacker-controlled.",
+                shape + " with concatenated argument found in " + relativePath + ".");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_SSRF_USER_URL
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> REST_TEMPLATE_URL_METHODS =
+            Set.of("getForObject", "getForEntity", "postForObject", "postForEntity");
+
+    private void detectSsrfUserUrl(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (ObjectCreationExpr creation : cu.findAll(ObjectCreationExpr.class)) {
+            if (!"URL".equals(simpleName(creation.getType().getNameAsString()))) {
+                continue;
+            }
+            if (creation.getArguments().stream()
+                    .anyMatch(SecurityPracticeFindingAnalyzer::isDynamicConcat)) {
+                addSsrf(relativePath, lineOf(creation), "new URL(...)", findings);
+            }
+        }
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            String name = call.getNameAsString();
+            String scope = call.getScope().map(s -> simpleName(s.toString())).orElse("");
+            boolean isUriCreate = "create".equals(name) && "URI".equals(scope);
+            boolean isRestTemplate = REST_TEMPLATE_URL_METHODS.contains(name);
+            boolean isWebClientUri = "uri".equals(name);
+            if (!isUriCreate && !isRestTemplate && !isWebClientUri) {
+                continue;
+            }
+            boolean firstArgConcat =
+                    !call.getArguments().isEmpty() && isDynamicConcat(call.getArgument(0));
+            if (firstArgConcat) {
+                addSsrf(relativePath, lineOf(call), name + "(...)", findings);
+            }
+        }
+    }
+
+    private void addSsrf(String relativePath, Integer line, String shape, List<Finding> findings) {
+        add(
+                findings,
+                FindingRules.SPRING_SSRF_USER_URL,
+                FindingConfidence.MEDIUM,
+                relativePath,
+                line,
+                shape
+                        + " builds an outbound request URL with string concatenation in "
+                        + relativePath
+                        + ".",
+                "When the host/path of an outbound request is concatenated from non-literal data,"
+                    + " an attacker who influences it can point the request at internal hosts the"
+                    + " server can reach but the attacker cannot — cloud metadata endpoints,"
+                    + " internal admin APIs, or localhost services.",
+                "If the concatenated value is attacker-influenced, the attacker can read internal"
+                        + " resources or pivot into the internal network (SSRF).",
+                "Validate the target against a strict allowlist of permitted hosts/schemes before"
+                    + " making the call; do not let user input control the host or scheme. Block"
+                    + " requests to private/loopback/link-local address ranges.",
+                "Medium confidence — flags concatenation into an outbound URL; confirm whether the"
+                        + " value is attacker-controlled.",
+                shape + " with concatenated argument found in " + relativePath + ".");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_OPEN_REDIRECT
+    // ---------------------------------------------------------------------------
+
+    private void detectOpenRedirect(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (ReturnStmt ret : cu.findAll(ReturnStmt.class)) {
+            Expression expr = ret.getExpression().orElse(null);
+            if (expr == null || !isDynamicConcat(expr)) {
+                continue;
+            }
+            boolean redirectPrefix =
+                    expr.findAll(StringLiteralExpr.class).stream()
+                            .anyMatch(s -> s.asString().startsWith("redirect:"));
+            if (redirectPrefix) {
+                addOpenRedirect(relativePath, lineOf(ret), "\"redirect:\" + value", findings);
+            }
+        }
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            if (!"sendRedirect".equals(call.getNameAsString())) {
+                continue;
+            }
+            if (call.getArguments().stream()
+                    .anyMatch(SecurityPracticeFindingAnalyzer::isDynamicConcat)) {
+                addOpenRedirect(relativePath, lineOf(call), "sendRedirect(...)", findings);
+            }
+        }
+    }
+
+    private void addOpenRedirect(
+            String relativePath, Integer line, String shape, List<Finding> findings) {
+        add(
+                findings,
+                FindingRules.SPRING_OPEN_REDIRECT,
+                FindingConfidence.MEDIUM,
+                relativePath,
+                line,
+                shape + " builds a redirect target with concatenation in " + relativePath + ".",
+                "A redirect destination assembled from non-literal data lets an attacker craft a"
+                    + " link to the trusted application that bounces the victim to an"
+                    + " attacker-controlled site, which is convincing for phishing and can steal"
+                    + " OAuth tokens passed in the URL.",
+                "If the concatenated value is attacker-influenced, the application becomes an"
+                        + " open redirector usable in phishing and token-theft attacks.",
+                "Redirect only to a fixed allowlist of paths, or map an opaque key to a known"
+                    + " destination server-side. If an absolute URL is unavoidable, validate the"
+                    + " host against an allowlist.",
+                "Medium confidence — flags concatenation into a redirect target; confirm whether"
+                        + " the value is attacker-controlled.",
+                shape + " with concatenated argument found in " + relativePath + ".");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_INSECURE_RANDOM_FOR_SECURITY
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> SECURITY_VALUE_KEYWORDS =
+            Set.of(
+                    "token",
+                    "password",
+                    "passwd",
+                    "secret",
+                    "salt",
+                    "nonce",
+                    "otp",
+                    "sessionid",
+                    "apikey",
+                    "credential",
+                    "csrf");
+
+    private void detectInsecureRandomForSecurity(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (ObjectCreationExpr creation : cu.findAll(ObjectCreationExpr.class)) {
+            if (!"Random".equals(simpleName(creation.getType().getNameAsString()))) {
+                continue;
+            }
+            if (inSecuritySensitiveContext(creation)) {
+                addInsecureRandom(relativePath, lineOf(creation), "new Random()", findings);
+            }
+        }
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            boolean isMathRandom =
+                    "random".equals(call.getNameAsString())
+                            && call.getScope()
+                                    .map(s -> simpleName(s.toString()))
+                                    .map("Math"::equals)
+                                    .orElse(false);
+            if (isMathRandom && inSecuritySensitiveContext(call)) {
+                addInsecureRandom(relativePath, lineOf(call), "Math.random()", findings);
+            }
+        }
+    }
+
+    private static boolean inSecuritySensitiveContext(com.github.javaparser.ast.Node node) {
+        StringBuilder context = new StringBuilder();
+        node.findAncestor(MethodDeclaration.class)
+                .ifPresent(m -> context.append(m.getNameAsString()).append(' '));
+        node.findAncestor(ClassOrInterfaceDeclaration.class)
+                .ifPresent(c -> context.append(c.getNameAsString()));
+        String haystack = context.toString().toLowerCase(java.util.Locale.ROOT);
+        return SECURITY_VALUE_KEYWORDS.stream().anyMatch(haystack::contains);
+    }
+
+    private void addInsecureRandom(
+            String relativePath, Integer line, String shape, List<Finding> findings) {
+        add(
+                findings,
+                FindingRules.SPRING_INSECURE_RANDOM_FOR_SECURITY,
+                FindingConfidence.MEDIUM,
+                relativePath,
+                line,
+                shape
+                        + " is used in a security-sensitive context in "
+                        + relativePath
+                        + " — use SecureRandom.",
+                "java.util.Random (and Math.random()) is a linear congruential generator. Its"
+                        + " 48-bit seed and predictable sequence let an attacker who observes a few"
+                        + " outputs reconstruct the internal state and predict all future values.",
+                "Predictable tokens, password-reset codes, session identifiers, or salts can be"
+                        + " guessed by an attacker, enabling account takeover.",
+                "Generate security-sensitive values with java.security.SecureRandom (or"
+                    + " RandomStringUtils backed by SecureRandom). Never use java.util.Random or"
+                    + " Math.random() for anything an attacker should not be able to predict.",
+                "Medium confidence — flagged because the enclosing method/class name suggests a"
+                        + " security value; review the actual use of the random output.",
+                shape + " found in a security-named context in " + relativePath + ".");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_WEAK_CIPHER_ALGORITHM
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> WEAK_CIPHER_PREFIXES =
+            Set.of("DES", "DESEDE", "RC2", "RC4", "ARCFOUR", "BLOWFISH");
+
+    private static final Set<String> KEY_FACTORY_SCOPES =
+            Set.of("KeyGenerator", "SecretKeyFactory", "KeyPairGenerator");
+
+    private void detectWeakCipherAlgorithm(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            if (!"getInstance".equals(call.getNameAsString())) {
+                continue;
+            }
+            String scope = call.getScope().map(s -> simpleName(s.toString())).orElse("");
+            boolean isCipher = "Cipher".equals(scope);
+            boolean isKeyFactory = KEY_FACTORY_SCOPES.contains(scope);
+            if (!isCipher && !isKeyFactory) {
+                continue;
+            }
+            String algo =
+                    call.getArguments().stream()
+                            .filter(a -> a instanceof StringLiteralExpr)
+                            .map(a -> ((StringLiteralExpr) a).asString())
+                            .findFirst()
+                            .orElse(null);
+            if (algo == null) {
+                continue;
+            }
+            String upper = algo.toUpperCase(java.util.Locale.ROOT);
+            String base = upper.contains("/") ? upper.substring(0, upper.indexOf('/')) : upper;
+            boolean weakLegacy = WEAK_CIPHER_PREFIXES.contains(base);
+            boolean ecbMode = isCipher && upper.contains("/ECB/");
+            boolean bareEcbDefault = isCipher && ("AES".equals(upper) || "DES".equals(upper));
+            if (!weakLegacy && !ecbMode && !bareEcbDefault) {
+                continue;
+            }
+            String reason =
+                    weakLegacy
+                            ? base + " is cryptographically broken"
+                            : ecbMode
+                                    ? "ECB mode leaks plaintext structure"
+                                    : "the bare \""
+                                            + algo
+                                            + "\" transformation defaults to ECB mode";
+            add(
+                    findings,
+                    FindingRules.SPRING_WEAK_CIPHER_ALGORITHM,
+                    FindingConfidence.HIGH,
+                    relativePath,
+                    lineOf(call),
+                    scope
+                            + ".getInstance(\""
+                            + algo
+                            + "\") in "
+                            + relativePath
+                            + " — "
+                            + reason
+                            + ".",
+                    "Legacy ciphers (DES, 3DES, RC2, RC4, Blowfish) have small key sizes or known"
+                            + " attacks. ECB mode encrypts identical plaintext blocks to identical"
+                            + " ciphertext blocks, revealing patterns; the bare \"AES\"/\"DES\""
+                            + " transformation silently selects ECB.",
+                    "Encrypted data can be decrypted or have its structure inferred, defeating the"
+                            + " confidentiality the encryption was meant to provide.",
+                    "Use AES in an authenticated mode — \"AES/GCM/NoPadding\" — with a random IV"
+                            + " per message and a key from a KDF or a managed key store. Avoid DES,"
+                            + " 3DES, RC4, and ECB entirely.",
+                    "High confidence — the algorithm/mode is read directly from the string"
+                            + " literal.",
+                    scope + ".getInstance(\"" + algo + "\") found in " + relativePath + ".");
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_HARDCODED_ENCRYPTION_KEY
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> KEY_SPEC_TYPES = Set.of("SecretKeySpec", "IvParameterSpec");
+
+    private void detectHardcodedEncryptionKey(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (ObjectCreationExpr creation : cu.findAll(ObjectCreationExpr.class)) {
+            String type = simpleName(creation.getType().getNameAsString());
+            if (!KEY_SPEC_TYPES.contains(type) || creation.getArguments().isEmpty()) {
+                continue;
+            }
+            Expression firstArg = creation.getArgument(0);
+            boolean literalGetBytes =
+                    firstArg instanceof MethodCallExpr mce
+                            && "getBytes".equals(mce.getNameAsString())
+                            && mce.getScope()
+                                    .filter(s -> s instanceof StringLiteralExpr)
+                                    .isPresent();
+            boolean inlineByteArray =
+                    firstArg instanceof ArrayCreationExpr ace && ace.getInitializer().isPresent()
+                            || firstArg instanceof ArrayInitializerExpr;
+            if (!literalGetBytes && !inlineByteArray) {
+                continue;
+            }
+            add(
+                    findings,
+                    FindingRules.SPRING_HARDCODED_ENCRYPTION_KEY,
+                    literalGetBytes ? FindingConfidence.HIGH : FindingConfidence.MEDIUM,
+                    relativePath,
+                    lineOf(creation),
+                    "new "
+                            + type
+                            + "(...) is built from a hardcoded value in "
+                            + relativePath
+                            + ".",
+                    "A cryptographic key or IV embedded in source code is visible to anyone with"
+                        + " the JAR or the repository, is identical across every deployment, and"
+                        + " cannot be rotated without rebuilding and redeploying the application.",
+                    "An attacker who obtains the artifact can decrypt all data protected with the"
+                            + " key, and a leaked key cannot be revoked quickly.",
+                    "Load keys from a secret manager or the environment at runtime (e.g. Vault,"
+                            + " AWS KMS, a JCEKS/PKCS12 keystore). Generate a fresh random IV per"
+                            + " message rather than hardcoding one.",
+                    literalGetBytes
+                            ? "High confidence — key/IV material is a string literal."
+                            : "Medium confidence — key/IV material is an inline byte-array"
+                                    + " literal.",
+                    "new " + type + "(...) with hardcoded material found in " + relativePath + ".");
+        }
+    }
+
+    // ---------------------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------------------
+
+    /**
+     * Returns true when {@code e} is a string concatenation ({@code a + b}) that mixes at least
+     * one fixed string literal with at least one non-literal operand (a variable, field access,
+     * or method call). This is the canonical "building a command/path/URL string from input"
+     * shape; pure-literal and pure-numeric expressions are intentionally excluded.
+     */
+    private static boolean isDynamicConcat(Expression e) {
+        if (!(e instanceof BinaryExpr be) || be.getOperator() != BinaryExpr.Operator.PLUS) {
+            return false;
+        }
+        boolean hasStringLiteral = !e.findAll(StringLiteralExpr.class).isEmpty();
+        boolean hasDynamicLeaf =
+                !e.findAll(NameExpr.class).isEmpty()
+                        || !e.findAll(FieldAccessExpr.class).isEmpty()
+                        || !e.findAll(MethodCallExpr.class).isEmpty();
+        return hasStringLiteral && hasDynamicLeaf;
+    }
+
+    private static Integer lineOf(com.github.javaparser.ast.Node node) {
+        return node.getBegin().map(p -> p.line).orElse(null);
+    }
+
+    private void add(
+            List<Finding> findings,
+            FindingRule rule,
+            FindingConfidence confidence,
+            String relativePath,
+            Integer line,
+            String shortMessage,
+            String whyBadPractice,
+            String possibleImpact,
+            String recommendation,
+            String limitations,
+            String evidence) {
+        findings.add(
+                FindingFactory.builder(rule, confidence)
+                        .shortMessage(shortMessage)
+                        .whyBadPractice(whyBadPractice)
+                        .possibleImpact(possibleImpact)
+                        .recommendation(recommendation)
+                        .limitations(limitations)
+                        .evidence(evidence)
+                        .source(relativePath, line)
+                        .build());
+    }
 
     private static String simpleName(String name) {
         int dot = name.lastIndexOf('.');

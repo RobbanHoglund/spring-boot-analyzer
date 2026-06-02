@@ -1439,6 +1439,160 @@ public final class FindingRules {
                     FindingCategory.MAINTAINABILITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
+    // ── Injection / RCE (Tier A) ──────────────────────────────────────────────
+
+    /** An OS command is executed via {@code Runtime.getRuntime().exec(...)} or
+     *  {@code new ProcessBuilder(...)} where an argument is assembled with string
+     *  concatenation rather than a fixed literal. Concatenating caller-influenced data into a
+     *  shell command is the classic OS command-injection vector. */
+    public static final FindingRule SPRING_COMMAND_INJECTION =
+            rule(
+                    "SPRING_COMMAND_INJECTION",
+                    "OS command built with string concatenation — possible command injection",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A Spring Expression Language (SpEL) expression is parsed from a value built with string
+     *  concatenation: {@code parser.parseExpression("..." + value)}. SpEL can invoke arbitrary
+     *  methods and constructors, so evaluating an attacker-influenced expression is a direct
+     *  remote-code-execution vector. */
+    public static final FindingRule SPRING_SPEL_INJECTION =
+            rule(
+                    "SPRING_SPEL_INJECTION",
+                    "SpEL expression parsed from concatenated input — possible RCE",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A file system path passed to {@code new File(...)}, {@code Paths.get(...)},
+     *  {@code Path.of(...)}, or a {@code new FileInputStream(...)} is assembled with string
+     *  concatenation involving a variable. Without canonicalisation and an allowlist this
+     *  enables path-traversal ({@code ../../etc/passwd}) to read or write arbitrary files. */
+    public static final FindingRule SPRING_PATH_TRAVERSAL =
+            rule(
+                    "SPRING_PATH_TRAVERSAL",
+                    "File path built with concatenation — possible path traversal",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** An outbound request target ({@code new URL(...)}, {@code URI.create(...)}, or a
+     *  {@code RestTemplate}/{@code WebClient} call) is assembled with string concatenation
+     *  involving a variable. If the variable is request-influenced, an attacker can redirect
+     *  the call to internal hosts (cloud metadata endpoints, internal admin APIs) — a
+     *  server-side request forgery (SSRF). */
+    public static final FindingRule SPRING_SSRF_USER_URL =
+            rule(
+                    "SPRING_SSRF_USER_URL",
+                    "Outbound URL built with concatenation — possible SSRF",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A redirect target is built from concatenated input: a returned
+     *  {@code "redirect:" + value} view name, or {@code response.sendRedirect(... + value)}.
+     *  If the value is attacker-influenced this is an open-redirect used for phishing and
+     *  OAuth token theft. */
+    public static final FindingRule SPRING_OPEN_REDIRECT =
+            rule(
+                    "SPRING_OPEN_REDIRECT",
+                    "Redirect target built from concatenated input — possible open redirect",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    // ── Cryptography (Tier B) ─────────────────────────────────────────────────
+
+    /** {@code new Random()} or {@code Math.random()} is used inside a method or class whose name
+     *  indicates security-sensitive value generation (token, password, secret, salt, nonce, OTP,
+     *  session id, API key). {@code java.util.Random} is a linear congruential generator whose
+     *  output is predictable from a few samples; security values must use {@code SecureRandom}. */
+    public static final FindingRule SPRING_INSECURE_RANDOM_FOR_SECURITY =
+            rule(
+                    "SPRING_INSECURE_RANDOM_FOR_SECURITY",
+                    "Predictable java.util.Random used for a security-sensitive value",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code Cipher.getInstance(...)} (or {@code KeyGenerator}/{@code SecretKeyFactory}) is
+     *  given a broken or weak algorithm: DES, DESede/3DES, RC2, RC4, Blowfish, the ECB block
+     *  mode, or the bare {@code "AES"} transformation (which defaults to ECB). ECB leaks
+     *  plaintext structure; the legacy ciphers are cryptographically broken. */
+    public static final FindingRule SPRING_WEAK_CIPHER_ALGORITHM =
+            rule(
+                    "SPRING_WEAK_CIPHER_ALGORITHM",
+                    "Weak or broken cipher algorithm/mode (DES, RC4, ECB, bare AES)",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code SecretKeySpec} or {@code IvParameterSpec} is constructed from a hardcoded value
+     *  ({@code "literal".getBytes(...)} or an inline byte-array literal). A key or IV baked into
+     *  source code is visible to anyone with the artifact and cannot be rotated without a
+     *  redeploy, defeating the purpose of encryption. */
+    public static final FindingRule SPRING_HARDCODED_ENCRYPTION_KEY =
+            rule(
+                    "SPRING_HARDCODED_ENCRYPTION_KEY",
+                    "Hardcoded encryption key or IV in source code",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    // ── Thread safety (Tier C) ────────────────────────────────────────────────
+
+    /** A Spring-managed singleton ({@code @Service}, {@code @Component}, {@code @Repository},
+     *  {@code @Controller}, {@code @RestController}) declares an instance field of a
+     *  non-thread-safe formatter type ({@code SimpleDateFormat}, {@code DateFormat},
+     *  {@code NumberFormat}, {@code DecimalFormat}). Because the bean is a singleton shared by
+     *  all request threads, concurrent {@code format}/{@code parse} calls corrupt internal
+     *  state and silently return wrong results. */
+    public static final FindingRule SPRING_NON_THREAD_SAFE_FORMATTER_FIELD =
+            rule(
+                    "SPRING_NON_THREAD_SAFE_FORMATTER_FIELD",
+                    "Non-thread-safe formatter as a field in a Spring singleton",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    // ── Resource exhaustion / startup (Tier D) ────────────────────────────────
+
+    /** An unbounded {@code repository.findAll()} (no {@code Pageable}/{@code Sort}/{@code Example}
+     *  argument) is called from a {@code @Service}, {@code @Component}, {@code @Controller}, or
+     *  {@code @RestController}. On a large table this loads every row into memory at once,
+     *  risking {@code OutOfMemoryError} and long GC pauses. */
+    public static final FindingRule SPRING_UNBOUNDED_FINDALL =
+            rule(
+                    "SPRING_UNBOUNDED_FINDALL",
+                    "Unbounded repository.findAll() can load an entire table into memory",
+                    FindingSeverity.WARNING,
+                    FindingCategory.PERSISTENCE,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A class annotated with {@code @Entity} has no field or accessor annotated with
+     *  {@code @Id}, {@code @EmbeddedId}, or {@code @IdClass}. Hibernate cannot map an entity
+     *  without an identifier and throws at startup, so the application context fails to load. */
+    public static final FindingRule SPRING_ENTITY_MISSING_ID =
+            rule(
+                    "SPRING_ENTITY_MISSING_ID",
+                    "@Entity has no @Id — Hibernate mapping fails at startup",
+                    FindingSeverity.ERROR,
+                    FindingCategory.PERSISTENCE,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code spring.servlet.multipart.max-file-size} or {@code max-request-size} is explicitly
+     *  set to {@code -1}, which removes Spring Boot's default upload cap (1MB file / 10MB request)
+     *  and makes the size unlimited. A client can then stream an arbitrarily large upload and
+     *  exhaust disk or memory — an availability (DoS) risk. */
+    public static final FindingRule SPRING_MULTIPART_NO_MAX_SIZE =
+            rule(
+                    "SPRING_MULTIPART_NO_MAX_SIZE",
+                    "Multipart upload size limit set to unlimited (-1)",
+                    FindingSeverity.WARNING,
+                    FindingCategory.CONFIGURATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
     private FindingRules() {}
 
     private static FindingRule rule(

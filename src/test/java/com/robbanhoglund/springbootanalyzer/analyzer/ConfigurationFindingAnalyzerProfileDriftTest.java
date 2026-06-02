@@ -380,4 +380,39 @@ class ConfigurationFindingAnalyzerProfileDriftTest {
 
         assertThat(byRule(findings(cfg), "SPRING_JPA_DDL_AUTO_DANGEROUS")).isNull();
     }
+
+    // ── SPRING_MULTIPART_NO_MAX_SIZE ──────────────────────────────────────────
+
+    @Test
+    void flagsMultipartMaxFileSizeUnlimited() {
+        ConfigurationAnalysis cfg =
+                config(prop("spring.servlet.multipart.max-file-size", "-1", null));
+
+        Finding f = byRule(findings(cfg), "SPRING_MULTIPART_NO_MAX_SIZE");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("max-file-size");
+    }
+
+    @Test
+    void flagsMultipartMaxRequestSizeUnlimited() {
+        ConfigurationAnalysis cfg =
+                config(prop("spring.servlet.multipart.max-request-size", "-1", null));
+
+        assertThat(byRule(findings(cfg), "SPRING_MULTIPART_NO_MAX_SIZE")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagMultipartWithConcreteLimit() {
+        ConfigurationAnalysis cfg =
+                config(prop("spring.servlet.multipart.max-file-size", "5MB", null));
+
+        assertThat(byRule(findings(cfg), "SPRING_MULTIPART_NO_MAX_SIZE")).isNull();
+    }
+
+    @Test
+    void doesNotFlagWhenMultipartSizeNotConfigured() {
+        ConfigurationAnalysis cfg = config(prop("server.port", "8080", null));
+
+        assertThat(byRule(findings(cfg), "SPRING_MULTIPART_NO_MAX_SIZE")).isNull();
+    }
 }

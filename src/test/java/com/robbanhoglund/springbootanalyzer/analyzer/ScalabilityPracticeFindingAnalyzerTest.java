@@ -444,4 +444,177 @@ class ScalabilityPracticeFindingAnalyzerTest {
 
         assertThat(byRule(findings(), "SPRING_WEBFLUX_BLOCKING_CALL")).isNull();
     }
+
+    // ── SPRING_NON_THREAD_SAFE_FORMATTER_FIELD ────────────────────────────────
+
+    @Test
+    void flagsSimpleDateFormatFieldInService() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/DateService.java",
+                """
+                package com.example;
+                import java.text.SimpleDateFormat;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class DateService {
+                    private final SimpleDateFormat fmt = new SimpleDateFormat("yyyy-MM-dd");
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_NON_THREAD_SAFE_FORMATTER_FIELD");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("DateService#fmt");
+    }
+
+    @Test
+    void doesNotFlagSimpleDateFormatInNonComponent() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Helper.java",
+                """
+                package com.example;
+                import java.text.SimpleDateFormat;
+                public class Helper {
+                    private final SimpleDateFormat fmt = new SimpleDateFormat("yyyy-MM-dd");
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_NON_THREAD_SAFE_FORMATTER_FIELD")).isNull();
+    }
+
+    @Test
+    void doesNotFlagDateTimeFormatterField() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/DateService.java",
+                """
+                package com.example;
+                import java.time.format.DateTimeFormatter;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class DateService {
+                    private final DateTimeFormatter fmt = DateTimeFormatter.ISO_DATE;
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_NON_THREAD_SAFE_FORMATTER_FIELD")).isNull();
+    }
+
+    // ── SPRING_UNBOUNDED_FINDALL ──────────────────────────────────────────────
+
+    @Test
+    void flagsNoArgFindAllOnRepository() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/UserService.java",
+                """
+                package com.example;
+                import java.util.List;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class UserService {
+                    private final UserRepository userRepository = null;
+                    public List<?> all() {
+                        return userRepository.findAll();
+                    }
+                }
+                interface UserRepository {
+                    List<?> findAll();
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_UNBOUNDED_FINDALL")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagFindAllWithPageable() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/UserService.java",
+                """
+                package com.example;
+                import org.springframework.data.domain.Pageable;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class UserService {
+                    private final UserRepository userRepository = null;
+                    public Object page(Pageable pageable) {
+                        return userRepository.findAll(pageable);
+                    }
+                }
+                interface UserRepository {
+                    Object findAll(Pageable p);
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_UNBOUNDED_FINDALL")).isNull();
+    }
+
+    @Test
+    void doesNotFlagFindAllOnNonRepositoryReceiver() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Cache.java",
+                """
+                package com.example;
+                import java.util.List;
+                public class Cache {
+                    private final java.util.List<String> items = new java.util.ArrayList<>();
+                    public List<String> all() {
+                        return items;
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_UNBOUNDED_FINDALL")).isNull();
+    }
+
+    // ── SPRING_ENTITY_MISSING_ID ──────────────────────────────────────────────
+
+    @Test
+    void flagsEntityWithoutId() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Order.java",
+                """
+                package com.example;
+                import jakarta.persistence.Entity;
+                @Entity
+                public class Order {
+                    private String description;
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_ENTITY_MISSING_ID");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("Order");
+    }
+
+    @Test
+    void doesNotFlagEntityWithId() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Order.java",
+                """
+                package com.example;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+                @Entity
+                public class Order {
+                    @Id
+                    private Long id;
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_ENTITY_MISSING_ID")).isNull();
+    }
+
+    @Test
+    void doesNotFlagEntityThatExtendsSuperclass() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Order.java",
+                """
+                package com.example;
+                import jakarta.persistence.Entity;
+                @Entity
+                public class Order extends BaseEntity {
+                    private String description;
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_ENTITY_MISSING_ID")).isNull();
+    }
 }

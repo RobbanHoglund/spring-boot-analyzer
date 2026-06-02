@@ -6,7 +6,10 @@ import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.ConstructorDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
+import com.github.javaparser.ast.expr.Expression;
+import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.StringLiteralExpr;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
@@ -44,6 +47,12 @@ import org.springframework.stereotype.Component;
  *       no-arg constructor and no explicit timeout.
  *   <li>{@link FindingRules#SPRING_WEBFLUX_BLOCKING_CALL} — {@code .block()}, {@code .blockFirst()},
  *       {@code .blockLast()}, or {@code Thread.sleep()} called inside a Spring-managed component.
+ *   <li>{@link FindingRules#SPRING_NON_THREAD_SAFE_FORMATTER_FIELD} — {@code SimpleDateFormat},
+ *       {@code NumberFormat}, etc. held as a field in a Spring singleton.
+ *   <li>{@link FindingRules#SPRING_UNBOUNDED_FINDALL} — no-arg {@code repository.findAll()} that
+ *       can load an entire table into memory.
+ *   <li>{@link FindingRules#SPRING_ENTITY_MISSING_ID} — {@code @Entity} class with no
+ *       {@code @Id}/{@code @EmbeddedId}.
  * </ul>
  */
 @Component
@@ -166,10 +175,13 @@ public class ScalabilityPracticeFindingAnalyzer {
         detectHardcodedFilePaths(cu, relativePath, findings);
         detectRestTemplateNoTimeout(cu, relativePath, findings);
         detectWebFluxBlockingCalls(cu, relativePath, findings);
+        detectUnboundedFindAll(cu, relativePath, findings);
 
         for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
             detectLombokDataOnEntity(cls, relativePath, findings);
             detectFilterComponentRegistrationLeak(cls, relativePath, findings);
+            detectNonThreadSafeFormatterField(cls, relativePath, findings);
+            detectEntityMissingId(cls, relativePath, findings);
             if (!prototypeTypes.isEmpty()) {
                 detectPrototypeBeanInSingleton(cls, relativePath, prototypeTypes, findings);
             }
@@ -738,6 +750,218 @@ public class ScalabilityPracticeFindingAnalyzer {
                             .source(relativePath, line)
                             .build());
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_NON_THREAD_SAFE_FORMATTER_FIELD
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> NON_THREAD_SAFE_FORMATTER_TYPES =
+            Set.of("SimpleDateFormat", "DateFormat", "NumberFormat", "DecimalFormat");
+
+    private void detectNonThreadSafeFormatterField(
+            ClassOrInterfaceDeclaration cls, String relativePath, List<Finding> findings) {
+        boolean isSingleton =
+                cls.getAnnotations().stream()
+                        .anyMatch(
+                                a ->
+                                        SINGLETON_ANNOTATIONS.contains(
+                                                simpleName(a.getNameAsString())));
+        if (!isSingleton) {
+            return;
+        }
+        for (FieldDeclaration field : cls.getFields()) {
+            String fieldType = simpleName(field.getElementType().asString());
+            if (!NON_THREAD_SAFE_FORMATTER_TYPES.contains(fieldType)) {
+                continue;
+            }
+            Integer line = field.getBegin().map(p -> p.line).orElse(null);
+            String fieldName =
+                    field.getVariables().isEmpty()
+                            ? fieldType
+                            : field.getVariable(0).getNameAsString();
+            String target = cls.getNameAsString() + "#" + fieldName;
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_NON_THREAD_SAFE_FORMATTER_FIELD,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    fieldType
+                                            + " field "
+                                            + target
+                                            + " in a Spring singleton is not thread-safe.")
+                            .whyBadPractice(
+                                    fieldType
+                                            + " (and the other java.text formatters) is documented"
+                                            + " as not thread-safe: it mutates internal Calendar"
+                                            + " state during format()/parse(). A Spring"
+                                            + " @Service/@Component is a singleton shared by every"
+                                            + " request thread, so concurrent calls interleave and"
+                                            + " corrupt that state.")
+                            .possibleImpact(
+                                    "Under concurrency the formatter silently returns wrong dates"
+                                        + " or numbers, or throws NumberFormatException /"
+                                        + " ArrayIndexOutOfBoundsException intermittently — bugs"
+                                        + " that are very hard to reproduce.")
+                            .recommendation(
+                                    "Use java.time.format.DateTimeFormatter (immutable and"
+                                        + " thread-safe) instead of SimpleDateFormat. If you must"
+                                        + " use a java.text formatter, create a new instance per"
+                                        + " call or store it in a ThreadLocal.")
+                            .limitations(
+                                    "High confidence — these types are well-documented as not"
+                                            + " thread-safe and a singleton field is shared across"
+                                            + " threads.")
+                            .evidence(
+                                    fieldType
+                                            + " field declared in "
+                                            + cls.getNameAsString()
+                                            + " ("
+                                            + relativePath
+                                            + ").")
+                            .source(relativePath, line)
+                            .target(target)
+                            .build());
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_UNBOUNDED_FINDALL
+    // ---------------------------------------------------------------------------
+
+    private void detectUnboundedFindAll(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            if (!"findAll".equals(call.getNameAsString()) || !call.getArguments().isEmpty()) {
+                continue;
+            }
+            String receiver = receiverName(call.getScope().orElse(null));
+            if (receiver == null) {
+                continue;
+            }
+            String lower = receiver.toLowerCase(java.util.Locale.ROOT);
+            if (!lower.contains("repository")
+                    && !lower.contains("repo")
+                    && !lower.contains("dao")) {
+                continue;
+            }
+            Integer line = call.getBegin().map(p -> p.line).orElse(null);
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_UNBOUNDED_FINDALL, FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    receiver
+                                            + ".findAll() with no Pageable in "
+                                            + relativePath
+                                            + " loads the whole table into memory.")
+                            .whyBadPractice(
+                                    "A no-argument findAll() issues SELECT * with no LIMIT. On a"
+                                        + " table that grows over time this materialises every row"
+                                        + " (and its associations) into the heap at once.")
+                            .possibleImpact(
+                                    "As the table grows the call causes long GC pauses and"
+                                        + " eventually OutOfMemoryError, taking down the instance —"
+                                        + " a failure that only appears once production data is"
+                                        + " large enough.")
+                            .recommendation(
+                                    "Use the paginated overload findAll(Pageable) and stream/page"
+                                        + " through results, or add a query with an explicit WHERE"
+                                        + " and LIMIT. Reserve unbounded findAll() for small,"
+                                        + " bounded reference tables only.")
+                            .limitations(
+                                    "Medium confidence — flagged by the receiver name containing"
+                                        + " 'repository'/'repo'/'dao'. Small fixed lookup tables"
+                                        + " are a legitimate exception.")
+                            .evidence(receiver + ".findAll() found in " + relativePath + ".")
+                            .source(relativePath, line)
+                            .build());
+        }
+    }
+
+    private static String receiverName(Expression scope) {
+        if (scope instanceof NameExpr ne) {
+            return ne.getNameAsString();
+        }
+        if (scope instanceof FieldAccessExpr fae) {
+            return fae.getNameAsString();
+        }
+        return null;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_ENTITY_MISSING_ID
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> ID_ANNOTATIONS = Set.of("Id", "EmbeddedId");
+
+    private void detectEntityMissingId(
+            ClassOrInterfaceDeclaration cls, String relativePath, List<Finding> findings) {
+        boolean hasEntity =
+                cls.getAnnotations().stream()
+                        .anyMatch(a -> "Entity".equals(simpleName(a.getNameAsString())));
+        if (!hasEntity) {
+            return;
+        }
+        // An @IdClass on the type, or a superclass (possibly @MappedSuperclass), may supply the id.
+        boolean hasIdClass =
+                cls.getAnnotations().stream()
+                        .anyMatch(a -> "IdClass".equals(simpleName(a.getNameAsString())));
+        if (hasIdClass || !cls.getExtendedTypes().isEmpty()) {
+            return;
+        }
+        boolean hasIdOnField =
+                cls.getFields().stream()
+                        .flatMap(f -> f.getAnnotations().stream())
+                        .anyMatch(a -> ID_ANNOTATIONS.contains(simpleName(a.getNameAsString())));
+        boolean hasIdOnMethod =
+                cls.getMethods().stream()
+                        .flatMap(m -> m.getAnnotations().stream())
+                        .anyMatch(a -> ID_ANNOTATIONS.contains(simpleName(a.getNameAsString())));
+        if (hasIdOnField || hasIdOnMethod) {
+            return;
+        }
+        Integer line = cls.getBegin().map(p -> p.line).orElse(null);
+        String target = cls.getNameAsString();
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_ENTITY_MISSING_ID, FindingConfidence.MEDIUM)
+                        .shortMessage(
+                                "@Entity "
+                                        + target
+                                        + " in "
+                                        + relativePath
+                                        + " declares no @Id — Hibernate mapping fails at startup.")
+                        .whyBadPractice(
+                                "Every JPA entity needs a persistent identity. Without @Id,"
+                                        + " @EmbeddedId, or @IdClass, Hibernate cannot build the"
+                                        + " persister for the entity and throws"
+                                        + " '"
+                                        + target
+                                        + " has no identifier' while building the"
+                                        + " EntityManagerFactory.")
+                        .possibleImpact(
+                                "The application context fails to start: the bean factory cannot"
+                                        + " initialise the JPA EntityManagerFactory, so the whole"
+                                        + " service is down.")
+                        .recommendation(
+                                "Add an identifier: a field annotated @Id (optionally with"
+                                    + " @GeneratedValue), an @EmbeddedId for a composite key, or"
+                                    + " @IdClass on the type. If identity is inherited, extend a"
+                                    + " @MappedSuperclass that declares the @Id.")
+                        .limitations(
+                                "Medium confidence — the analyzer only sees this class. An @Id"
+                                    + " provided by an interface default or a superclass it cannot"
+                                    + " resolve would be a false positive (classes that extend a"
+                                    + " parent are already skipped).")
+                        .evidence(
+                                "@Entity "
+                                        + target
+                                        + " with no @Id/@EmbeddedId/@IdClass found in "
+                                        + relativePath
+                                        + ".")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
     }
 
     // ---------------------------------------------------------------------------
