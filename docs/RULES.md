@@ -302,7 +302,7 @@ Static analysis without compilation or runtime context will produce false positi
 - `SPRING_FLYWAY_MISSING_MIGRATIONS` checks for `V*.sql` files under `db/migration`. Custom migration locations configured via `spring.flyway.locations` are not followed.
 
 **Transaction rules**
-- `SPRING_TRANSACTION_SELF_INVOCATION` cannot always determine whether a class injects itself. True self-injections that use `@Autowired ApplicationContext` to retrieve the proxy will still trigger the finding.
+- `SPRING_TRANSACTIONAL_SELF_INVOCATION` cannot always determine whether a class injects itself. True self-injections that use `@Autowired ApplicationContext` to retrieve the proxy will still trigger the finding.
 
 **Scheduling and async rules**
 - `SPRING_ASYNC_EXECUTOR_NOT_CONFIGURED` may fire even if a custom executor is configured in a separate `@Configuration` class not visible to the analyzer at scan time.
