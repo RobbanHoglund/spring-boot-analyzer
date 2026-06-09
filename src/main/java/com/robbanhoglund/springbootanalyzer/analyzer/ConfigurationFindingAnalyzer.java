@@ -146,7 +146,220 @@ public class ConfigurationFindingAnalyzer {
         detectDevToolsInProduction(buildInfo, findings);
         detectAsyncSecurityContextLost(repositoryRoot, buildInfo, findings);
         detectMultipartUnlimitedSize(configurationAnalysis, findings);
+        detectJdbcUrlEmbeddedCredentials(configurationAnalysis, findings);
+        detectDefaultUserPasswordLiteral(configurationAnalysis, findings);
+        detectDeprecatedSpringProfiles(configurationAnalysis, findings);
+        detectActuatorHttptraceRenamed(configurationAnalysis, findings);
         return findings;
+    }
+
+    private void detectJdbcUrlEmbeddedCredentials(
+            ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {
+        if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
+            return;
+        }
+        for (ApplicationProperty property : configurationAnalysis.properties()) {
+            if (property == null || property.name() == null || property.value() == null) {
+                continue;
+            }
+            String name = property.name();
+            boolean isJdbcUrl =
+                    name.endsWith("datasource.url")
+                            || name.endsWith("datasource.jdbc-url")
+                            || name.endsWith("datasource.jdbcUrl");
+            if (!isJdbcUrl) {
+                continue;
+            }
+            String value = property.value().toLowerCase(Locale.ROOT);
+            if (!value.contains("password=") && !value.contains("user=")) {
+                continue;
+            }
+            String profileLabel = property.profile() != null ? " [" + property.profile() + "]" : "";
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_JDBC_URL_EMBEDDED_CREDENTIALS,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    name
+                                            + profileLabel
+                                            + " embeds credentials directly in the JDBC connection"
+                                            + " string.")
+                            .whyBadPractice(
+                                    "Putting user=/password= in the JDBC URL stores the database"
+                                        + " credentials in plain text in configuration. The full"
+                                        + " URL — including the password — is also written to"
+                                        + " connection pool logs and exception messages.")
+                            .possibleImpact(
+                                    "The database password is exposed to anyone with access to the"
+                                        + " config files, the build artifact, or the application"
+                                        + " logs, and cannot be rotated without a redeploy.")
+                            .recommendation(
+                                    "Move the credentials to spring.datasource.username and"
+                                        + " spring.datasource.password backed by environment"
+                                        + " variables or a secrets manager, and keep only host/db"
+                                        + " in the URL.")
+                            .evidence(
+                                    name
+                                            + " contains user/password query parameters in "
+                                            + property.sourceFile()
+                                            + ".")
+                            .limitations(
+                                    "Medium confidence — the URL may point at a disposable local"
+                                            + " database. Review whether the credentials are"
+                                            + " sensitive.")
+                            .source(property.sourceFile(), property.line())
+                            .target(name)
+                            .build());
+        }
+    }
+
+    private void detectDefaultUserPasswordLiteral(
+            ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {
+        if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
+            return;
+        }
+        for (ApplicationProperty property : configurationAnalysis.properties()) {
+            if (property == null || !"spring.security.user.password".equals(property.name())) {
+                continue;
+            }
+            if (property.placeholderValue()) {
+                continue; // ${...} reference — not a literal.
+            }
+            String profileLabel = property.profile() != null ? " [" + property.profile() + "]" : "";
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_DEFAULT_USER_PASSWORD_LITERAL,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "spring.security.user.password"
+                                            + profileLabel
+                                            + " is set to a literal value.")
+                            .whyBadPractice(
+                                    "spring.security.user.password configures the default in-memory"
+                                        + " user. A literal value is committed to version control"
+                                        + " and shipped in the build, so the credential is known to"
+                                        + " anyone with repository or artifact access.")
+                            .possibleImpact(
+                                    "If this default user is active in a deployed environment, the"
+                                            + " hardcoded password grants access to whatever it is"
+                                            + " authorised for.")
+                            .recommendation(
+                                    "Reference an environment variable or secret"
+                                        + " (spring.security.user.password=${ADMIN_PASSWORD}), or"
+                                        + " replace the default user with a real UserDetailsService"
+                                        + " backed by a secured credential store.")
+                            .evidence(
+                                    "spring.security.user.password set to a literal in "
+                                            + property.sourceFile()
+                                            + ".")
+                            .limitations(
+                                    "The default user is often used only for local development;"
+                                        + " confirm whether this profile is active in deployment.")
+                            .source(property.sourceFile(), property.line())
+                            .target("spring.security.user.password")
+                            .build());
+        }
+    }
+
+    private void detectDeprecatedSpringProfiles(
+            ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {
+        if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
+            return;
+        }
+        for (ApplicationProperty property : configurationAnalysis.properties()) {
+            if (property == null || !"spring.profiles".equals(property.name())) {
+                continue;
+            }
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_PROFILES_PROPERTY_DEPRECATED,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "The deprecated spring.profiles property is used in "
+                                            + property.sourceFile()
+                                            + ".")
+                            .whyBadPractice(
+                                    "spring.profiles (used to bind a document to a profile) was"
+                                        + " deprecated in Spring Boot 2.4 and removed in Spring"
+                                        + " Boot 3. It is silently ignored there, so the document"
+                                        + " is applied unconditionally instead of only for the"
+                                        + " intended profile.")
+                            .possibleImpact(
+                                    "After upgrading to Spring Boot 3 the profile guard no longer"
+                                        + " applies, which can activate the wrong configuration in"
+                                        + " every environment.")
+                            .recommendation(
+                                    "Replace spring.profiles with spring.config.activate.on-profile"
+                                            + " (to guard a document) or spring.profiles.group (to"
+                                            + " compose profiles).")
+                            .evidence("spring.profiles found in " + property.sourceFile() + ".")
+                            .limitations(
+                                    "Does not apply to spring.profiles.active/include/group, which"
+                                            + " remain valid.")
+                            .source(property.sourceFile(), property.line())
+                            .target("spring.profiles")
+                            .build());
+        }
+    }
+
+    private void detectActuatorHttptraceRenamed(
+            ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {
+        if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
+            return;
+        }
+        for (ApplicationProperty property : configurationAnalysis.properties()) {
+            if (property == null || property.name() == null) {
+                continue;
+            }
+            String name = property.name();
+            String value =
+                    property.value() == null ? "" : property.value().toLowerCase(Locale.ROOT);
+            boolean dedicatedHttptraceProperty = name.contains("endpoint.httptrace");
+            boolean exposedInList =
+                    ("management.endpoints.web.exposure.include".equals(name)
+                                    || "management.endpoints.web.exposure.exclude".equals(name))
+                            && Stream.of(value.split(","))
+                                    .map(String::trim)
+                                    .anyMatch("httptrace"::equals);
+            if (!dedicatedHttptraceProperty && !exposedInList) {
+                continue;
+            }
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_ACTUATOR_HTTPTRACE_RENAMED,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "The actuator 'httptrace' endpoint referenced in "
+                                            + property.sourceFile()
+                                            + " was renamed to 'httpexchanges' in Spring Boot 3.")
+                            .whyBadPractice(
+                                    "Spring Boot 3 renamed the httptrace actuator endpoint to"
+                                        + " httpexchanges (backed by HttpExchangeRepository). The"
+                                        + " old id no longer maps to anything, so the property has"
+                                        + " no effect after upgrading.")
+                            .possibleImpact(
+                                    "After upgrading to Spring Boot 3 the endpoint is silently not"
+                                            + " exposed/configured, and any dashboards or scripts"
+                                            + " pointing at /actuator/httptrace return 404.")
+                            .recommendation(
+                                    "Rename httptrace to httpexchanges and provide an"
+                                        + " HttpExchangeRepository bean (the in-memory repository"
+                                        + " is no longer auto-configured by default).")
+                            .evidence(
+                                    name
+                                            + (property.value() == null
+                                                    ? ""
+                                                    : "=" + property.value())
+                                            + " found in "
+                                            + property.sourceFile()
+                                            + ".")
+                            .limitations(
+                                    "Informational — only relevant when targeting Spring Boot 3 or"
+                                            + " later.")
+                            .source(property.sourceFile(), property.line())
+                            .target(name)
+                            .build());
+        }
     }
 
     private void detectMultipartUnlimitedSize(

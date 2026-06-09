@@ -50,6 +50,10 @@ This catalog documents every static-analysis rule built into the Spring Boot Ana
 | `SPRING_INSECURE_RANDOM_FOR_SECURITY` | WARNING | `new Random()` or `Math.random()` used in a method/class named for a security value (token, password, secret, salt, nonce, OTP, session, API key) | `java.util.Random` is a predictable LCG; its output can be reconstructed from a few samples | Use `java.security.SecureRandom` for any value an attacker should not be able to predict |
 | `SPRING_WEAK_CIPHER_ALGORITHM` | WARNING | `Cipher.getInstance(...)` (or `KeyGenerator`/`SecretKeyFactory`) with a broken/weak algorithm or mode: DES, 3DES, RC2, RC4, Blowfish, ECB, or bare `"AES"` (defaults to ECB) | Legacy ciphers are broken; ECB leaks plaintext structure | Use `"AES/GCM/NoPadding"` with a random per-message IV and a key from a KDF or key store |
 | `SPRING_HARDCODED_ENCRYPTION_KEY` | WARNING | `SecretKeySpec`/`IvParameterSpec` built from a string literal (`"...".getBytes()`) or an inline byte-array literal | A key/IV baked into source is visible in the artifact, identical across deployments, and cannot be rotated | Load keys from a secret manager/keystore at runtime; generate a fresh random IV per message |
+| `SPRING_JDBC_URL_EMBEDDED_CREDENTIALS` | WARNING | JDBC datasource URL embeds `user=`/`password=` query parameters (e.g. `jdbc:postgresql://host/db?user=admin&password=secret`) | Credentials stored in plain text in config, and the full URL — including the password — is written to connection-pool logs and exception messages | Move credentials to `spring.datasource.username`/`password` backed by env vars or a secrets manager; keep only host/db in the URL |
+| `SPRING_DEFAULT_USER_PASSWORD_LITERAL` | WARNING | `spring.security.user.password` set to a plain-text literal rather than a `${…}` placeholder | The default in-memory user's password is committed to version control and shipped in the build | Reference an env var/secret (`${ADMIN_PASSWORD}`), or replace the default user with a `UserDetailsService` backed by a secured store |
+| `SPRING_LOGGING_AUTH_HEADER` | WARNING | An `Authorization` header (`getHeader("Authorization")`) or a bearer/JWT-token-named value passed to a logging call | Authorization headers carry credentials and bearer tokens; logs are persisted and forwarded to aggregation/SIEM systems with weaker access control | Never log the header or token; log a non-reversible id (user id, token id) or a redacted placeholder; add a masking converter to the logging config |
+| `SPRING_BCRYPT_LOW_STRENGTH` | INFO | `new BCryptPasswordEncoder(n)` with an explicit strength `n` below the default of 10 | The strength is the base-2 log of the hashing rounds, so a low value makes offline brute-forcing of a leaked hash dramatically cheaper | Remove the explicit strength (defaults to 10) or pass 10–12, tuned so one hash takes ~100–250 ms on production hardware |
 
 ---
 
@@ -98,6 +102,7 @@ This catalog documents every static-analysis rule built into the Spring Boot Ana
 | `SPRING_UNBOUNDED_FINDALL` | WARNING | No-argument `repository.findAll()` (receiver named `*repository`/`*repo`/`*dao`) called from a Spring component | `SELECT *` with no `LIMIT` materialises the whole table into the heap; as data grows this causes GC pressure and `OutOfMemoryError` | Use `findAll(Pageable)` and page through results, or a query with an explicit `WHERE`/`LIMIT`; reserve unbounded reads for small reference tables |
 | `SPRING_LOMBOK_DATA_ON_ENTITY` | WARNING | `@Data` and `@Entity` on the same class | Lombok generates `equals()`, `hashCode()`, and `toString()` over all fields; on bidirectional lazy associations this causes eager proxy initialization and `StackOverflowError` | Replace `@Data` with `@Getter` and `@Setter`; implement `equals()`/`hashCode()` on the primary key only; use `@ToString.Exclude` on association fields |
 | `SPRING_FLYWAY_DUPLICATE_VERSION` | WARNING | Two or more Flyway migration scripts share the same version number | Flyway fails on startup because version numbers must be unique across all configured locations | Assign unique, monotonically increasing version numbers to all migration scripts |
+| `SPRING_JPA_QUERY_NO_PAGINATION` | INFO | A Spring Data `@Query` method returns a `List`/`Collection`/`Set`/`Iterable` and declares no `Pageable` parameter | A collection-returning query with no `Pageable` runs without a `LIMIT`; every matching row is materialised into the heap as the table grows | Add a `Pageable` parameter and return `Page<T>`/`Slice<T>`, or constrain the query with an explicit `WHERE`/`LIMIT`; reserve unbounded queries for small reference data |
 
 ### Example bad patterns — Persistence ERRORs
 
@@ -132,6 +137,7 @@ spring.jpa.hibernate.ddl-auto=create-drop
 | `SPRING_TRANSACTION_MISSING_BOUNDARY` | INFO | Service method with save/delete/update calls has no visible `@Transactional` | Multiple writes may execute in separate transactions, leaving data partially applied on failure | Annotate the service method with `@Transactional` |
 | `SPRING_TRANSACTIONAL_EXCEPTION_SWALLOWED` | **ERROR** | `@Transactional` method contains a `catch` block that catches `RuntimeException` or `Exception` without rethrowing | Spring's automatic rollback is only triggered by uncaught runtime exceptions; swallowing the exception leaves the database in a partially written state | Either rethrow the exception or call `TransactionAspectSupport.currentTransactionStatus().setRollbackOnly()` explicitly |
 | `SPRING_TRANSACTIONAL_HTTP_CALL` | WARNING | Outbound HTTP call (`RestTemplate`, `WebClient`, `HttpClient`, `@FeignClient`) inside a `@Transactional` method | Holds an open database connection for the entire network round-trip; a slow downstream service exhausts the connection pool under load | Perform the HTTP call before entering the transaction, or decouple it via messaging |
+| `SPRING_REQUIRES_NEW_IN_LOOP` | WARNING | A method annotated `@Transactional(propagation = REQUIRES_NEW)` is invoked from inside a loop | Each iteration suspends the current transaction and opens a new one, borrowing a second connection from the pool per iteration; large loops can exhaust the pool and deadlock | Move the loop inside a single transaction, or batch the work; reserve `REQUIRES_NEW` for the few cases that need an independent commit and call them outside hot loops |
 
 ---
 
@@ -158,6 +164,7 @@ spring.jpa.hibernate.ddl-auto=create-drop
 | `SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER` | WARNING | `RestTemplate` used without a custom `ResponseErrorHandler` | Error responses from downstream are lost or handled inconsistently | Register a `ResponseErrorHandler` or switch to `WebClient` with `.onStatus()` |
 | `SPRING_HTTP_CLIENT_NO_RESILIENCE` | INFO | HTTP client has no visible retry or circuit-breaker configuration | Transient upstream failures propagate directly to the caller | Add retry logic (Spring Retry) or a circuit breaker (Resilience4j) |
 | `SPRING_REST_TEMPLATE_NO_TIMEOUT` | WARNING | `new RestTemplate()` called with the no-arg constructor | The default `SimpleClientHttpRequestFactory` has zero connect and read timeouts; a hanging downstream service blocks the thread indefinitely | Pass a `SimpleClientHttpRequestFactory` or `HttpComponentsClientHttpRequestFactory` with explicit timeouts, or inject the auto-configured `RestTemplateBuilder` |
+| `SPRING_RESTTEMPLATE_NEW_PER_REQUEST` | WARNING | `new RestTemplate(factory)` or `RestClient.create(…)` instantiated inside a (non-`@Bean`) method of a Spring component | A fresh client — and its connection pool and TLS context — is built on every call instead of being reused, adding latency and leaking sockets under load (the no-arg `new RestTemplate()` case is covered by `SPRING_REST_TEMPLATE_NO_TIMEOUT`) | Create the client once as a singleton bean (or inject `RestTemplateBuilder`/`RestClient.Builder`) and reuse it |
 
 ---
 
@@ -296,6 +303,21 @@ spring.jpa.hibernate.ddl-auto=create-drop
 
 ---
 
+## Spring Boot 3 Migration
+
+These rules flag code and configuration that breaks, or is deprecated, when upgrading from Spring Boot 2 to Spring Boot 3 (Jakarta EE 9 namespace, Spring Security 6). The Spring Security and `spring.profiles` rules fire regardless of the detected Boot version — on a Boot 2 project they flag work to do before upgrading; the Jakarta-namespace rule fires only once the project is already on Boot 3.
+
+| Rule ID | Severity | What it detects | Why it matters | Recommendation |
+|---------|----------|-----------------|----------------|----------------|
+| `SPRING_SECURITY_WEBSECURITYCONFIGURERADAPTER` | WARNING | A class `extends WebSecurityConfigurerAdapter` | Deprecated in Spring Security 5.7 and removed in Spring Security 6 (Boot 3); the class will not compile after upgrading | Delete the adapter and expose a `SecurityFilterChain` `@Bean` (plus a `WebSecurityCustomizer` for `web.ignoring()` rules) |
+| `SPRING_SECURITY_ANTMATCHERS_REMOVED` | WARNING | `antMatchers(…)`, `mvcMatchers(…)`, or `regexMatchers(…)` in a security configuration | All three were removed in Spring Security 6 and unified into `requestMatchers(…)` | Replace with `requestMatchers(…)`; use the `AntPathRequestMatcher`/`RegexRequestMatcher` overloads when an explicit strategy is needed |
+| `SPRING_SECURITY_ENABLE_GLOBAL_METHOD_SECURITY` | INFO | `@EnableGlobalMethodSecurity` on a class | Deprecated in Spring Security 5.6 and superseded by `@EnableMethodSecurity`, which enables `@PreAuthorize`/`@PostAuthorize` by default | Replace with `@EnableMethodSecurity` (prePost is on by default); carry over `securedEnabled`/`jsr250Enabled` explicitly |
+| `SPRING_JAKARTA_NAMESPACE_ON_BOOT3` | WARNING | A legacy `javax.*` EE import (`javax.persistence`, `javax.servlet`, `javax.validation`, …) in a project whose detected Spring Boot version is 3.x+ | Boot 3 moved to the `jakarta.*` namespace; the `javax.*` EE types no longer resolve and the file will not compile | Replace the import with its `jakarta.*` equivalent; the Eclipse Transformer or OpenRewrite `jakarta` recipes migrate all imports at once |
+| `SPRING_PROFILES_PROPERTY_DEPRECATED` | INFO | The deprecated `spring.profiles` property in a config file | Deprecated in Boot 2.4 and removed in Boot 3; it is silently ignored there, so the document applies unconditionally instead of per-profile | Replace with `spring.config.activate.on-profile` (to guard a document) or `spring.profiles.group` (to compose profiles) |
+| `SPRING_ACTUATOR_HTTPTRACE_RENAMED` | INFO | A reference to the `httptrace` actuator endpoint (in `exposure.include`/`exclude` or `management.endpoint.httptrace.*`) | Boot 3 renamed the endpoint to `httpexchanges`; the old id maps to nothing, so the property has no effect after upgrading | Rename `httptrace` to `httpexchanges` and provide an `HttpExchangeRepository` bean (no longer auto-configured by default) |
+
+---
+
 ## Known limitations and false positives
 
 Static analysis without compilation or runtime context will produce false positives. Common scenarios where a finding may not apply:
@@ -310,6 +332,8 @@ Static analysis without compilation or runtime context will produce false positi
 - `SPRING_CSRF_DISABLED` is appropriate for stateless REST APIs using token-based authentication.
 - The injection rules (`SPRING_COMMAND_INJECTION`, `SPRING_SPEL_INJECTION`, `SPRING_PATH_TRAVERSAL`, `SPRING_SSRF_USER_URL`, `SPRING_OPEN_REDIRECT`) flag string **concatenation** into a sink without taint tracking. They cannot prove the concatenated value is attacker-controlled — review each finding to confirm the source. Concatenations using only constants (e.g. `"a" + CONST`) may still be flagged if a variable is involved.
 - `SPRING_INSECURE_RANDOM_FOR_SECURITY` relies on the enclosing method/class name to infer a security context, so it may miss security uses with neutral names and may fire on a non-security value that happens to live in a security-named class.
+- `SPRING_LOGGING_AUTH_HEADER` matches logging calls that reference an `Authorization` header lookup or a token-named value; it cannot prove the value is actually emitted, and a value named e.g. `bearerToken` that holds something else would be a false positive.
+- `SPRING_JDBC_URL_EMBEDDED_CREDENTIALS` flags any `user=`/`password=` in a datasource URL, including URLs that point at a disposable local database.
 
 **Persistence rules**
 - `SPRING_JPA_LAZY_LOADING_OUTSIDE_TRANSACTION` uses heuristics to detect service methods; it may miss transactional boundaries provided by outer callers.
@@ -317,6 +341,15 @@ Static analysis without compilation or runtime context will produce false positi
 
 **Transaction rules**
 - `SPRING_TRANSACTIONAL_SELF_INVOCATION` cannot always determine whether a class injects itself. True self-injections that use `@Autowired ApplicationContext` to retrieve the proxy will still trigger the finding.
+- `SPRING_REQUIRES_NEW_IN_LOOP` matches the loop call site to a `REQUIRES_NEW` method by method name across the scanned sources (no type resolution), so an unrelated method that shares the name could be flagged. It is reported at low confidence.
+
+**Migration rules**
+- `SPRING_SECURITY_ANTMATCHERS_REMOVED` matches any call named `antMatchers`/`mvcMatchers`/`regexMatchers`; a like-named method on a non-Spring-Security DSL would be a false positive.
+- `SPRING_JAKARTA_NAMESPACE_ON_BOOT3` fires only when the detected Spring Boot version is 3.x or later. It checks a curated set of EE package prefixes and deliberately skips `javax.annotation.*` (some members remain in the JDK) and JSR-305 types.
+
+**Performance rules**
+- `SPRING_RESTTEMPLATE_NEW_PER_REQUEST` flags clients built inside a non-`@Bean` method of a Spring component; a short-lived client intentionally scoped to a single operation may be acceptable.
+- `SPRING_JPA_QUERY_NO_PAGINATION` flags collection-returning `@Query` methods with no `Pageable`; queries already bounded to a small result set by their `WHERE` clause do not need pagination.
 
 **Scheduling and async rules**
 - `SPRING_ASYNC_EXECUTOR_NOT_CONFIGURED` may fire even if a custom executor is configured in a separate `@Configuration` class not visible to the analyzer at scan time.

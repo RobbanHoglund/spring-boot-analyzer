@@ -90,6 +90,7 @@ class SpringBootProjectAnalyzerTest {
                     new TransactionPracticeFindingAnalyzer(),
                     new SecurityPracticeFindingAnalyzer(),
                     new ScalabilityPracticeFindingAnalyzer(),
+                    new MigrationPracticeFindingAnalyzer(),
                     new AnalyzerProperties(
                             Path.of("."),
                             true,

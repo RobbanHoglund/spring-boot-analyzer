@@ -3,15 +3,22 @@ package com.robbanhoglund.springbootanalyzer.analyzer;
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.ConstructorDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
+import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.body.Parameter;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.StringLiteralExpr;
+import com.github.javaparser.ast.stmt.DoStmt;
+import com.github.javaparser.ast.stmt.ForEachStmt;
+import com.github.javaparser.ast.stmt.ForStmt;
+import com.github.javaparser.ast.stmt.WhileStmt;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
@@ -106,18 +113,50 @@ public class ScalabilityPracticeFindingAnalyzer {
             return findings;
         }
 
-        // Pass 1: collect all simple type names of @Scope("prototype") beans
+        // Pass 1: collect all simple type names of @Scope("prototype") beans and the names of
+        // methods annotated @Transactional(propagation = REQUIRES_NEW).
         Set<String> prototypeTypes = collectPrototypeTypes(sourceFiles);
+        Set<String> requiresNewMethods = collectRequiresNewMethods(sourceFiles);
 
         // Pass 2: per-file analysis
         for (Path sourceFile : sourceFiles) {
             try {
-                analyzeSourceFile(repositoryRoot, sourceFile, prototypeTypes, findings);
+                analyzeSourceFile(
+                        repositoryRoot, sourceFile, prototypeTypes, requiresNewMethods, findings);
             } catch (IOException e) {
                 // Best-effort — skip unreadable files
             }
         }
         return findings;
+    }
+
+    private Set<String> collectRequiresNewMethods(List<Path> sourceFiles) {
+        Set<String> methods = new HashSet<>();
+        for (Path sourceFile : sourceFiles) {
+            com.github.javaparser.ParseResult<CompilationUnit> parseResult;
+            try {
+                parseResult = javaParser.parse(sourceFile);
+            } catch (IOException e) {
+                continue;
+            }
+            if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
+                continue;
+            }
+            CompilationUnit cu = parseResult.getResult().orElseThrow();
+            for (MethodDeclaration method : cu.findAll(MethodDeclaration.class)) {
+                boolean requiresNew =
+                        method.getAnnotations().stream()
+                                .anyMatch(
+                                        a ->
+                                                simpleName(a.getNameAsString())
+                                                                .equals("Transactional")
+                                                        && a.toString().contains("REQUIRES_NEW"));
+                if (requiresNew) {
+                    methods.add(method.getNameAsString());
+                }
+            }
+        }
+        return methods;
     }
 
     // ---------------------------------------------------------------------------
@@ -163,6 +202,7 @@ public class ScalabilityPracticeFindingAnalyzer {
             Path repositoryRoot,
             Path sourceFile,
             Set<String> prototypeTypes,
+            Set<String> requiresNewMethods,
             List<Finding> findings)
             throws IOException {
         var parseResult = javaParser.parse(sourceFile);
@@ -176,6 +216,11 @@ public class ScalabilityPracticeFindingAnalyzer {
         detectRestTemplateNoTimeout(cu, relativePath, findings);
         detectWebFluxBlockingCalls(cu, relativePath, findings);
         detectUnboundedFindAll(cu, relativePath, findings);
+        detectRestTemplateNewPerRequest(cu, relativePath, findings);
+        detectJpaQueryNoPagination(cu, relativePath, findings);
+        if (!requiresNewMethods.isEmpty()) {
+            detectRequiresNewInLoop(cu, relativePath, requiresNewMethods, findings);
+        }
 
         for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
             detectLombokDataOnEntity(cls, relativePath, findings);
@@ -962,6 +1007,254 @@ public class ScalabilityPracticeFindingAnalyzer {
                         .source(relativePath, line)
                         .target(target)
                         .build());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_RESTTEMPLATE_NEW_PER_REQUEST
+    // ---------------------------------------------------------------------------
+
+    private void detectRestTemplateNewPerRequest(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        // new RestTemplate(factory) created inside a regular method body. The no-arg
+        // constructor is already covered by SPRING_REST_TEMPLATE_NO_TIMEOUT, so only the
+        // arg-bearing form (which may have a timeout but is still recreated per call) is flagged.
+        for (ObjectCreationExpr creation : cu.findAll(ObjectCreationExpr.class)) {
+            if (!"RestTemplate".equals(simpleName(creation.getType().getNameAsString()))) {
+                continue;
+            }
+            if (creation.getArguments().isEmpty()) {
+                continue;
+            }
+            if (!isPerRequestInstantiation(creation)) {
+                continue;
+            }
+            reportPerRequestClient(
+                    relativePath,
+                    creation.getBegin().map(p -> p.line).orElse(null),
+                    "new RestTemplate(...)",
+                    findings);
+        }
+        // RestClient.create(...) inside a regular method body.
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            boolean isRestClientCreate =
+                    "create".equals(call.getNameAsString())
+                            && call.getScope()
+                                    .map(s -> "RestClient".equals(simpleName(s.toString())))
+                                    .orElse(false);
+            if (!isRestClientCreate || !isPerRequestInstantiation(call)) {
+                continue;
+            }
+            reportPerRequestClient(
+                    relativePath,
+                    call.getBegin().map(p -> p.line).orElse(null),
+                    "RestClient.create(...)",
+                    findings);
+        }
+    }
+
+    /**
+     * True when {@code node} sits inside a method body (not a field initializer) of a
+     * Spring-managed component, and that method is not a {@code @Bean} factory method. This is the
+     * "created fresh on every call" shape, as opposed to a reused singleton bean.
+     */
+    private boolean isPerRequestInstantiation(Node node) {
+        MethodDeclaration method = node.findAncestor(MethodDeclaration.class).orElse(null);
+        if (method == null) {
+            return false;
+        }
+        boolean isBeanMethod =
+                method.getAnnotations().stream()
+                        .anyMatch(a -> "Bean".equals(simpleName(a.getNameAsString())));
+        if (isBeanMethod) {
+            return false;
+        }
+        ClassOrInterfaceDeclaration cls =
+                node.findAncestor(ClassOrInterfaceDeclaration.class).orElse(null);
+        return cls != null
+                && cls.getAnnotations().stream()
+                        .anyMatch(
+                                a ->
+                                        SINGLETON_ANNOTATIONS.contains(
+                                                simpleName(a.getNameAsString())));
+    }
+
+    private void reportPerRequestClient(
+            String relativePath, Integer line, String shape, List<Finding> findings) {
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_RESTTEMPLATE_NEW_PER_REQUEST,
+                                FindingConfidence.MEDIUM)
+                        .shortMessage(
+                                shape
+                                        + " is created inside a method in "
+                                        + relativePath
+                                        + " — a new HTTP client per call.")
+                        .whyBadPractice(
+                                "Instantiating an HTTP client inside a request-handling method"
+                                    + " builds a fresh client — and its underlying connection pool"
+                                    + " and TLS context — on every invocation. None of that is"
+                                    + " reused across calls, and the auto-configured Micrometer"
+                                    + " metrics and tracing instrumentation are bypassed.")
+                        .possibleImpact(
+                                "Per-call connection setup adds latency, leaks sockets under load,"
+                                        + " and defeats connection keep-alive. Throughput collapses"
+                                        + " when the endpoint is hot.")
+                        .recommendation(
+                                "Create the client once as a singleton bean (or inject the"
+                                    + " auto-configured RestTemplateBuilder / RestClient.Builder)"
+                                    + " and reuse it. Configure timeouts and connection pooling on"
+                                    + " that single instance.")
+                        .limitations(
+                                "Medium confidence — flagged because the client is built inside a"
+                                        + " non-@Bean method of a Spring component. A short-lived"
+                                        + " client intentionally scoped to one operation may be"
+                                        + " acceptable.")
+                        .evidence(
+                                shape + " inside a component method found in " + relativePath + ".")
+                        .source(relativePath, line)
+                        .build());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_JPA_QUERY_NO_PAGINATION
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> COLLECTION_RETURN_TYPES =
+            Set.of("List", "Collection", "Set", "Iterable");
+
+    private void detectJpaQueryNoPagination(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (MethodDeclaration method : cu.findAll(MethodDeclaration.class)) {
+            boolean hasQuery =
+                    method.getAnnotations().stream()
+                            .anyMatch(a -> "Query".equals(simpleName(a.getNameAsString())));
+            if (!hasQuery) {
+                continue;
+            }
+            if (!method.getType().isClassOrInterfaceType()) {
+                continue;
+            }
+            String returnType = method.getType().asClassOrInterfaceType().getNameAsString();
+            if (!COLLECTION_RETURN_TYPES.contains(returnType)) {
+                continue;
+            }
+            boolean hasPageable =
+                    method.getParameters().stream()
+                            .map(Parameter::getType)
+                            .anyMatch(t -> "Pageable".equals(simpleName(t.asString())));
+            if (hasPageable) {
+                continue;
+            }
+            Integer line = method.getBegin().map(p -> p.line).orElse(null);
+            String target = method.getNameAsString();
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_JPA_QUERY_NO_PAGINATION,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    "@Query method "
+                                            + target
+                                            + " in "
+                                            + relativePath
+                                            + " returns "
+                                            + returnType
+                                            + " with no Pageable — the query has no LIMIT.")
+                            .whyBadPractice(
+                                    "A @Query that returns a collection and takes no Pageable runs"
+                                        + " without a LIMIT clause. Every matching row is fetched"
+                                        + " and materialised into the heap, regardless of how large"
+                                        + " the result set grows over time.")
+                            .possibleImpact(
+                                    "As the underlying data grows, the query causes rising memory"
+                                        + " use, long GC pauses, and eventually OutOfMemoryError —"
+                                        + " problems that only surface once production data is"
+                                        + " large.")
+                            .recommendation(
+                                    "Add a Pageable parameter and return Page<T> or Slice<T>, or"
+                                        + " constrain the query with an explicit WHERE/LIMIT."
+                                        + " Reserve unbounded collection queries for small bounded"
+                                        + " reference data.")
+                            .limitations(
+                                    "Medium confidence — some queries are intentionally bounded by"
+                                        + " their WHERE clause to a small result set, in which case"
+                                        + " pagination is unnecessary.")
+                            .evidence(
+                                    "@Query method "
+                                            + target
+                                            + " returning "
+                                            + returnType
+                                            + " without a Pageable parameter found in "
+                                            + relativePath
+                                            + ".")
+                            .source(relativePath, line)
+                            .target(target)
+                            .build());
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_REQUIRES_NEW_IN_LOOP
+    // ---------------------------------------------------------------------------
+
+    private void detectRequiresNewInLoop(
+            CompilationUnit cu,
+            String relativePath,
+            Set<String> requiresNewMethods,
+            List<Finding> findings) {
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            if (!requiresNewMethods.contains(call.getNameAsString())) {
+                continue;
+            }
+            boolean inLoop =
+                    call.findAncestor(ForStmt.class).isPresent()
+                            || call.findAncestor(ForEachStmt.class).isPresent()
+                            || call.findAncestor(WhileStmt.class).isPresent()
+                            || call.findAncestor(DoStmt.class).isPresent();
+            if (!inLoop) {
+                continue;
+            }
+            Integer line = call.getBegin().map(p -> p.line).orElse(null);
+            String target = call.getNameAsString();
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_REQUIRES_NEW_IN_LOOP, FindingConfidence.LOW)
+                            .shortMessage(
+                                    target
+                                            + "(...) is annotated @Transactional(REQUIRES_NEW) and"
+                                            + " is called inside a loop in "
+                                            + relativePath
+                                            + ".")
+                            .whyBadPractice(
+                                    "Propagation.REQUIRES_NEW suspends the current transaction and"
+                                        + " starts a fresh one for the call, which borrows a second"
+                                        + " connection from the pool while the outer transaction"
+                                        + " still holds its own. Doing this once per loop iteration"
+                                        + " multiplies connection pressure by the iteration count.")
+                            .possibleImpact(
+                                    "Large loops can exhaust the connection pool and deadlock"
+                                            + " (every thread holds one connection and waits for a"
+                                            + " second), or simply run far slower than a single"
+                                            + " transaction would.")
+                            .recommendation(
+                                    "Move the loop inside a single transaction, or batch the work"
+                                        + " so a new transaction is not opened per element. Reserve"
+                                        + " REQUIRES_NEW for the few cases that genuinely need an"
+                                        + " independent commit, and call them outside hot loops.")
+                            .limitations(
+                                    "Low confidence — the match is by method name across the"
+                                            + " scanned sources, so an unrelated method sharing the"
+                                            + " name could be flagged. Confirm the callee is the"
+                                            + " REQUIRES_NEW method.")
+                            .evidence(
+                                    "Call to REQUIRES_NEW method "
+                                            + target
+                                            + "(...) found inside a loop in "
+                                            + relativePath
+                                            + ".")
+                            .source(relativePath, line)
+                            .target(target)
+                            .build());
+        }
     }
 
     // ---------------------------------------------------------------------------

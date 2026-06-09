@@ -18,5 +18,6 @@ public enum FindingCategory {
     OBSERVABILITY,
     MAINTAINABILITY,
     TESTING,
-    CACHING
+    CACHING,
+    MIGRATION
 }

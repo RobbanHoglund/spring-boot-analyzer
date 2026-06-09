@@ -90,6 +90,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
     private final TransactionPracticeFindingAnalyzer transactionPracticeFindingAnalyzer;
     private final SecurityPracticeFindingAnalyzer securityPracticeFindingAnalyzer;
     private final ScalabilityPracticeFindingAnalyzer scalabilityPracticeFindingAnalyzer;
+    private final MigrationPracticeFindingAnalyzer migrationPracticeFindingAnalyzer;
     private final AnalyzerProperties analyzerProperties;
 
     public SpringBootProjectAnalyzer(
@@ -110,6 +111,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
             TransactionPracticeFindingAnalyzer transactionPracticeFindingAnalyzer,
             SecurityPracticeFindingAnalyzer securityPracticeFindingAnalyzer,
             ScalabilityPracticeFindingAnalyzer scalabilityPracticeFindingAnalyzer,
+            MigrationPracticeFindingAnalyzer migrationPracticeFindingAnalyzer,
             AnalyzerProperties analyzerProperties) {
         this.buildFileAnalyzer = buildFileAnalyzer;
         this.javaSourceAnalyzer = javaSourceAnalyzer;
@@ -128,6 +130,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
         this.transactionPracticeFindingAnalyzer = transactionPracticeFindingAnalyzer;
         this.securityPracticeFindingAnalyzer = securityPracticeFindingAnalyzer;
         this.scalabilityPracticeFindingAnalyzer = scalabilityPracticeFindingAnalyzer;
+        this.migrationPracticeFindingAnalyzer = migrationPracticeFindingAnalyzer;
         this.analyzerProperties = analyzerProperties;
     }
 
@@ -211,6 +214,9 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
         findings.addAll(transactionPracticeFindingAnalyzer.analyze(repositoryRoot));
         findings.addAll(securityPracticeFindingAnalyzer.analyze(repositoryRoot));
         findings.addAll(scalabilityPracticeFindingAnalyzer.analyze(repositoryRoot));
+        findings.addAll(
+                migrationPracticeFindingAnalyzer.analyze(
+                        repositoryRoot, runtimeResult.runtimeStackAnalysis()));
 
         return new AnalysisResult(
                 repositoryReference.repositoryUrl(),

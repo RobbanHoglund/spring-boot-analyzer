@@ -617,4 +617,230 @@ class ScalabilityPracticeFindingAnalyzerTest {
 
         assertThat(byRule(findings(), "SPRING_ENTITY_MISSING_ID")).isNull();
     }
+
+    // ── SPRING_RESTTEMPLATE_NEW_PER_REQUEST ───────────────────────────────────
+
+    @Test
+    void flagsRestTemplateCreatedInMethodWithFactory() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ApiClient.java",
+                """
+                package com.example;
+                import org.springframework.http.client.SimpleClientHttpRequestFactory;
+                import org.springframework.stereotype.Service;
+                import org.springframework.web.client.RestTemplate;
+                @Service
+                public class ApiClient {
+                    public String call() {
+                        RestTemplate rt = new RestTemplate(new SimpleClientHttpRequestFactory());
+                        return rt.getForObject("https://x", String.class);
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_RESTTEMPLATE_NEW_PER_REQUEST")).isNotNull();
+    }
+
+    @Test
+    void flagsRestClientCreateInMethod() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ApiClient.java",
+                """
+                package com.example;
+                import org.springframework.stereotype.Service;
+                import org.springframework.web.client.RestClient;
+                @Service
+                public class ApiClient {
+                    public String call() {
+                        return RestClient.create().get().uri("https://x").retrieve().body(String.class);
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_RESTTEMPLATE_NEW_PER_REQUEST")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagRestTemplateBeanField() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ApiClient.java",
+                """
+                package com.example;
+                import org.springframework.http.client.SimpleClientHttpRequestFactory;
+                import org.springframework.stereotype.Service;
+                import org.springframework.web.client.RestTemplate;
+                @Service
+                public class ApiClient {
+                    private final RestTemplate rt =
+                        new RestTemplate(new SimpleClientHttpRequestFactory());
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_RESTTEMPLATE_NEW_PER_REQUEST")).isNull();
+    }
+
+    @Test
+    void doesNotFlagRestTemplateInBeanMethod() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ClientConfig.java",
+                """
+                package com.example;
+                import org.springframework.context.annotation.Bean;
+                import org.springframework.context.annotation.Configuration;
+                import org.springframework.http.client.SimpleClientHttpRequestFactory;
+                import org.springframework.web.client.RestTemplate;
+                @Configuration
+                public class ClientConfig {
+                    @Bean
+                    RestTemplate restTemplate() {
+                        return new RestTemplate(new SimpleClientHttpRequestFactory());
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_RESTTEMPLATE_NEW_PER_REQUEST")).isNull();
+    }
+
+    // ── SPRING_JPA_QUERY_NO_PAGINATION ────────────────────────────────────────
+
+    @Test
+    void flagsQueryReturningListWithoutPageable() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/OrderRepository.java",
+                """
+                package com.example;
+                import java.util.List;
+                import org.springframework.data.jpa.repository.Query;
+                import org.springframework.data.repository.Repository;
+                public interface OrderRepository extends Repository<Object, Long> {
+                    @Query("SELECT o FROM Order o WHERE o.status = ?1")
+                    List<Object> findByStatus(String status);
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_JPA_QUERY_NO_PAGINATION");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("findByStatus");
+    }
+
+    @Test
+    void doesNotFlagQueryWithPageable() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/OrderRepository.java",
+                """
+                package com.example;
+                import java.util.List;
+                import org.springframework.data.domain.Pageable;
+                import org.springframework.data.jpa.repository.Query;
+                import org.springframework.data.repository.Repository;
+                public interface OrderRepository extends Repository<Object, Long> {
+                    @Query("SELECT o FROM Order o WHERE o.status = ?1")
+                    List<Object> findByStatus(String status, Pageable pageable);
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_JPA_QUERY_NO_PAGINATION")).isNull();
+    }
+
+    @Test
+    void doesNotFlagQueryReturningSingleEntity() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/OrderRepository.java",
+                """
+                package com.example;
+                import org.springframework.data.jpa.repository.Query;
+                import org.springframework.data.repository.Repository;
+                public interface OrderRepository extends Repository<Object, Long> {
+                    @Query("SELECT o FROM Order o WHERE o.id = ?1")
+                    Object findOne(Long id);
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_JPA_QUERY_NO_PAGINATION")).isNull();
+    }
+
+    // ── SPRING_REQUIRES_NEW_IN_LOOP ───────────────────────────────────────────
+
+    @Test
+    void flagsRequiresNewMethodCalledInLoop() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/BatchService.java",
+                """
+                package com.example;
+                import java.util.List;
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Propagation;
+                import org.springframework.transaction.annotation.Transactional;
+                @Service
+                public class BatchService {
+                    private final ItemService itemService = null;
+                    public void run(List<String> items) {
+                        for (String item : items) {
+                            itemService.process(item);
+                        }
+                    }
+                }
+                @Service
+                class ItemService {
+                    @Transactional(propagation = Propagation.REQUIRES_NEW)
+                    public void process(String item) {}
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_REQUIRES_NEW_IN_LOOP")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagRequiresNewMethodCalledOutsideLoop() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/BatchService.java",
+                """
+                package com.example;
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Propagation;
+                import org.springframework.transaction.annotation.Transactional;
+                @Service
+                public class BatchService {
+                    private final ItemService itemService = null;
+                    public void run(String item) {
+                        itemService.process(item);
+                    }
+                }
+                @Service
+                class ItemService {
+                    @Transactional(propagation = Propagation.REQUIRES_NEW)
+                    public void process(String item) {}
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_REQUIRES_NEW_IN_LOOP")).isNull();
+    }
+
+    @Test
+    void doesNotFlagPlainTransactionalMethodInLoop() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/BatchService.java",
+                """
+                package com.example;
+                import java.util.List;
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+                @Service
+                public class BatchService {
+                    private final ItemService itemService = null;
+                    public void run(List<String> items) {
+                        for (String item : items) {
+                            itemService.process(item);
+                        }
+                    }
+                }
+                @Service
+                class ItemService {
+                    @Transactional
+                    public void process(String item) {}
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_REQUIRES_NEW_IN_LOOP")).isNull();
+    }
 }

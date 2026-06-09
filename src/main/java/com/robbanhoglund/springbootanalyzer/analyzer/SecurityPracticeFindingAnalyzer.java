@@ -11,6 +11,7 @@ import com.github.javaparser.ast.expr.BinaryExpr;
 import com.github.javaparser.ast.expr.BooleanLiteralExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
+import com.github.javaparser.ast.expr.IntegerLiteralExpr;
 import com.github.javaparser.ast.expr.LambdaExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.MethodReferenceExpr;
@@ -148,6 +149,8 @@ public class SecurityPracticeFindingAnalyzer {
         detectInsecureRandomForSecurity(cu, relativePath, findings);
         detectWeakCipherAlgorithm(cu, relativePath, findings);
         detectHardcodedEncryptionKey(cu, relativePath, findings);
+        detectLoggingAuthHeader(cu, relativePath, findings);
+        detectBcryptLowStrength(cu, relativePath, findings);
 
         for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
             for (MethodDeclaration method : cls.getMethods()) {
@@ -1508,6 +1511,140 @@ public class SecurityPracticeFindingAnalyzer {
                             : "Medium confidence — key/IV material is an inline byte-array"
                                     + " literal.",
                     "new " + type + "(...) with hardcoded material found in " + relativePath + ".");
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_LOGGING_AUTH_HEADER
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> LOGGING_METHODS =
+            Set.of("trace", "debug", "info", "warn", "error");
+
+    private static final Set<String> AUTH_NAME_HINTS =
+            Set.of("authorizationheader", "authheader", "bearertoken", "jwttoken", "accesstoken");
+
+    private void detectLoggingAuthHeader(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            if (!LOGGING_METHODS.contains(call.getNameAsString()) || call.getScope().isEmpty()) {
+                continue;
+            }
+            if (!referencesAuthorization(call)) {
+                continue;
+            }
+            add(
+                    findings,
+                    FindingRules.SPRING_LOGGING_AUTH_HEADER,
+                    FindingConfidence.MEDIUM,
+                    relativePath,
+                    lineOf(call),
+                    "A logging call may write the Authorization header or a bearer token to logs in"
+                            + " "
+                            + relativePath
+                            + ".",
+                    "The Authorization header carries credentials — Basic auth secrets or"
+                            + " bearer/JWT tokens. Logging frameworks persist messages to files and"
+                            + " forward them to centralized aggregation and SIEM systems that are"
+                            + " usually less tightly access-controlled than the credential store.",
+                    "Anyone with read access to the logs can replay the captured token or"
+                        + " credential and impersonate the user until it expires or is revoked.",
+                    "Never log the Authorization header or token. If you must record that a request"
+                        + " was authenticated, log a non-reversible identifier (user id, token id)"
+                        + " or a redacted placeholder. Add a masking converter to the logging"
+                        + " configuration as defense in depth.",
+                    "Medium confidence — flagged because the logging call references an"
+                            + " Authorization header or a token-named value; confirm the value is"
+                            + " actually emitted.",
+                    "Logging call referencing an Authorization header/token found in "
+                            + relativePath
+                            + ".");
+            return; // One finding per file is sufficient.
+        }
+    }
+
+    private static boolean referencesAuthorization(MethodCallExpr call) {
+        boolean headerLookup =
+                call.findAll(MethodCallExpr.class).stream()
+                        .anyMatch(
+                                m ->
+                                        ("getHeader".equals(m.getNameAsString())
+                                                        || "getHeaders".equals(m.getNameAsString())
+                                                        || "getFirst".equals(m.getNameAsString()))
+                                                && m.getArguments().stream()
+                                                        .filter(a -> a instanceof StringLiteralExpr)
+                                                        .map(
+                                                                a ->
+                                                                        ((StringLiteralExpr) a)
+                                                                                .asString())
+                                                        .anyMatch(
+                                                                s ->
+                                                                        s.equalsIgnoreCase(
+                                                                                "authorization")));
+        boolean stringLiteralHint =
+                call.findAll(StringLiteralExpr.class).stream()
+                        .map(s -> s.asString().toLowerCase(java.util.Locale.ROOT))
+                        .anyMatch(s -> s.contains("authorization") || s.startsWith("bearer "));
+        boolean nameHint =
+                call.findAll(NameExpr.class).stream()
+                        .map(n -> n.getNameAsString().toLowerCase(java.util.Locale.ROOT))
+                        .anyMatch(AUTH_NAME_HINTS::contains);
+        return headerLookup || stringLiteralHint || nameHint;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_BCRYPT_LOW_STRENGTH
+    // ---------------------------------------------------------------------------
+
+    private void detectBcryptLowStrength(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (ObjectCreationExpr creation : cu.findAll(ObjectCreationExpr.class)) {
+            if (!"BCryptPasswordEncoder".equals(simpleName(creation.getType().getNameAsString()))) {
+                continue;
+            }
+            Integer strength =
+                    creation.getArguments().stream()
+                            .filter(a -> a instanceof IntegerLiteralExpr)
+                            .map(a -> safeInt(((IntegerLiteralExpr) a).getValue()))
+                            .filter(v -> v != null)
+                            .findFirst()
+                            .orElse(null);
+            if (strength == null || strength >= 10) {
+                continue;
+            }
+            add(
+                    findings,
+                    FindingRules.SPRING_BCRYPT_LOW_STRENGTH,
+                    FindingConfidence.HIGH,
+                    relativePath,
+                    lineOf(creation),
+                    "new BCryptPasswordEncoder("
+                            + strength
+                            + ") in "
+                            + relativePath
+                            + " uses a work factor below the default of 10.",
+                    "BCrypt's strength parameter is the base-2 logarithm of the number of hashing"
+                        + " rounds, so each step doubles the work an attacker must do. The Spring"
+                        + " Security default is 10. A value of "
+                            + strength
+                            + " makes hashing — and therefore offline brute-forcing of a leaked"
+                            + " hash — dramatically cheaper.",
+                    "If the password hashes are leaked, a low work factor lets an attacker crack"
+                            + " them far faster than intended.",
+                    "Remove the explicit strength to use the default of 10, or pass a value of"
+                        + " 10–12 (tuned so a single hash takes roughly 100–250 ms on production"
+                        + " hardware). Re-encode existing passwords on next login when raising the"
+                        + " factor.",
+                    "High confidence — the strength is read directly from the integer literal.",
+                    "new BCryptPasswordEncoder(" + strength + ") found in " + relativePath + ".");
+        }
+    }
+
+    private static Integer safeInt(String value) {
+        try {
+            return Integer.valueOf(value);
+        } catch (NumberFormatException ex) {
+            return null;
         }
     }
 

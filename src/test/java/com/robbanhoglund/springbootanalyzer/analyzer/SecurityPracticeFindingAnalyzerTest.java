@@ -1073,4 +1073,121 @@ class SecurityPracticeFindingAnalyzerTest {
 
         assertThat(byRule(findings(), "SPRING_HARDCODED_ENCRYPTION_KEY")).isNull();
     }
+
+    // ── SPRING_LOGGING_AUTH_HEADER ────────────────────────────────────────────
+
+    @Test
+    void flagsLoggingAuthorizationHeaderLookup() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/AuthController.java",
+                """
+                package com.example;
+                import jakarta.servlet.http.HttpServletRequest;
+                import org.slf4j.Logger;
+                import org.slf4j.LoggerFactory;
+                public class AuthController {
+                    private static final Logger log = LoggerFactory.getLogger(AuthController.class);
+                    public void handle(HttpServletRequest request) {
+                        log.info("incoming token {}", request.getHeader("Authorization"));
+                    }
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_LOGGING_AUTH_HEADER");
+        assertThat(f).isNotNull();
+    }
+
+    @Test
+    void flagsLoggingBearerTokenVariable() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/AuthController.java",
+                """
+                package com.example;
+                import org.slf4j.Logger;
+                import org.slf4j.LoggerFactory;
+                public class AuthController {
+                    private static final Logger log = LoggerFactory.getLogger(AuthController.class);
+                    public void handle(String bearerToken) {
+                        log.debug("auth = {}", bearerToken);
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_LOGGING_AUTH_HEADER")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagLoggingUnrelatedHeader() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/AuthController.java",
+                """
+                package com.example;
+                import jakarta.servlet.http.HttpServletRequest;
+                import org.slf4j.Logger;
+                import org.slf4j.LoggerFactory;
+                public class AuthController {
+                    private static final Logger log = LoggerFactory.getLogger(AuthController.class);
+                    public void handle(HttpServletRequest request) {
+                        log.info("user agent {}", request.getHeader("User-Agent"));
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_LOGGING_AUTH_HEADER")).isNull();
+    }
+
+    // ── SPRING_BCRYPT_LOW_STRENGTH ────────────────────────────────────────────
+
+    @Test
+    void flagsBcryptStrengthBelowDefault() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/PasswordConfig.java",
+                """
+                package com.example;
+                import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+                public class PasswordConfig {
+                    BCryptPasswordEncoder encoder() {
+                        return new BCryptPasswordEncoder(4);
+                    }
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_BCRYPT_LOW_STRENGTH");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("4");
+    }
+
+    @Test
+    void doesNotFlagBcryptWithDefaultStrength() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/PasswordConfig.java",
+                """
+                package com.example;
+                import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+                public class PasswordConfig {
+                    BCryptPasswordEncoder encoder() {
+                        return new BCryptPasswordEncoder();
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_BCRYPT_LOW_STRENGTH")).isNull();
+    }
+
+    @Test
+    void doesNotFlagBcryptWithStrengthTwelve() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/PasswordConfig.java",
+                """
+                package com.example;
+                import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+                public class PasswordConfig {
+                    BCryptPasswordEncoder encoder() {
+                        return new BCryptPasswordEncoder(12);
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_BCRYPT_LOW_STRENGTH")).isNull();
+    }
 }

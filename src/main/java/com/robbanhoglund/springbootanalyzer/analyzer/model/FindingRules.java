@@ -1593,6 +1593,159 @@ public final class FindingRules {
                     FindingCategory.CONFIGURATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
+    // ── Spring Boot 3 / Jakarta / Spring Security 6 migration ─────────────────
+
+    /** A class extends {@code WebSecurityConfigurerAdapter}, which was deprecated in Spring
+     *  Security 5.7 and removed in Spring Security 6 (Spring Boot 3). Code that still relies on
+     *  it will not compile against Spring Boot 3 and must be migrated to the component-based
+     *  {@code SecurityFilterChain} model. */
+    public static final FindingRule SPRING_SECURITY_WEBSECURITYCONFIGURERADAPTER =
+            rule(
+                    "SPRING_SECURITY_WEBSECURITYCONFIGURERADAPTER",
+                    "WebSecurityConfigurerAdapter was removed in Spring Security 6",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MIGRATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A Spring Security HTTP configuration uses {@code antMatchers(...)}, {@code mvcMatchers(...)},
+     *  or {@code regexMatchers(...)}. All three were removed in Spring Security 6 (Spring Boot 3)
+     *  and replaced by the unified {@code requestMatchers(...)}. */
+    public static final FindingRule SPRING_SECURITY_ANTMATCHERS_REMOVED =
+            rule(
+                    "SPRING_SECURITY_ANTMATCHERS_REMOVED",
+                    "antMatchers/mvcMatchers/regexMatchers were removed in Spring Security 6",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MIGRATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A class is annotated with {@code @EnableGlobalMethodSecurity}, which was deprecated in
+     *  Spring Security 5.6 and superseded by {@code @EnableMethodSecurity} (the default in
+     *  Spring Security 6 / Spring Boot 3). */
+    public static final FindingRule SPRING_SECURITY_ENABLE_GLOBAL_METHOD_SECURITY =
+            rule(
+                    "SPRING_SECURITY_ENABLE_GLOBAL_METHOD_SECURITY",
+                    "@EnableGlobalMethodSecurity is superseded by @EnableMethodSecurity",
+                    FindingSeverity.INFO,
+                    FindingCategory.MIGRATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A source file in a Spring Boot 3 project imports from the legacy {@code javax.persistence},
+     *  {@code javax.servlet}, {@code javax.validation}, {@code javax.annotation}, or related EE
+     *  namespaces. Spring Boot 3 moved to the {@code jakarta.*} namespace; the {@code javax.*}
+     *  types no longer resolve. Only reported when the detected Spring Boot version is 3.x or
+     *  later. */
+    public static final FindingRule SPRING_JAKARTA_NAMESPACE_ON_BOOT3 =
+            rule(
+                    "SPRING_JAKARTA_NAMESPACE_ON_BOOT3",
+                    "Legacy javax.* import in a Spring Boot 3 project (should be jakarta.*)",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MIGRATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A configuration file sets the deprecated {@code spring.profiles} property to activate or
+     *  group profiles. It was deprecated in Spring Boot 2.4 and removed in Spring Boot 3 in
+     *  favour of {@code spring.config.activate.on-profile} and {@code spring.profiles.group}. */
+    public static final FindingRule SPRING_PROFILES_PROPERTY_DEPRECATED =
+            rule(
+                    "SPRING_PROFILES_PROPERTY_DEPRECATED",
+                    "Deprecated spring.profiles property — use spring.config.activate.on-profile",
+                    FindingSeverity.INFO,
+                    FindingCategory.MIGRATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A configuration file references the {@code httptrace} actuator endpoint (e.g. in
+     *  {@code management.endpoints.web.exposure.include}). In Spring Boot 3 this endpoint was
+     *  renamed to {@code httpexchanges}, so the old id silently exposes nothing. */
+    public static final FindingRule SPRING_ACTUATOR_HTTPTRACE_RENAMED =
+            rule(
+                    "SPRING_ACTUATOR_HTTPTRACE_RENAMED",
+                    "Actuator 'httptrace' endpoint was renamed to 'httpexchanges' in Spring Boot 3",
+                    FindingSeverity.INFO,
+                    FindingCategory.MIGRATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    // ── Additional security rules ─────────────────────────────────────────────
+
+    /** A JDBC datasource URL embeds credentials directly in the connection string via the
+     *  {@code user=}/{@code password=} query parameters (e.g.
+     *  {@code jdbc:postgresql://host/db?user=admin&password=secret}). The credentials are then
+     *  stored in plain text in configuration and surface in connection logs. */
+    public static final FindingRule SPRING_JDBC_URL_EMBEDDED_CREDENTIALS =
+            rule(
+                    "SPRING_JDBC_URL_EMBEDDED_CREDENTIALS",
+                    "JDBC URL embeds credentials in the connection string",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** The default in-memory user password ({@code spring.security.user.password}) is set to a
+     *  plain-text literal rather than an environment-variable reference or secret placeholder. */
+    public static final FindingRule SPRING_DEFAULT_USER_PASSWORD_LITERAL =
+            rule(
+                    "SPRING_DEFAULT_USER_PASSWORD_LITERAL",
+                    "spring.security.user.password is set to a literal value",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** An {@code Authorization} request header (or a bearer/JWT token read from it) is passed to a
+     *  logging call. Authorization headers carry credentials and bearer tokens that should never
+     *  be written to log files or aggregation systems. */
+    public static final FindingRule SPRING_LOGGING_AUTH_HEADER =
+            rule(
+                    "SPRING_LOGGING_AUTH_HEADER",
+                    "Authorization header or bearer token may be written to logs",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code BCryptPasswordEncoder} is constructed with an explicit strength (log rounds)
+     *  argument below 10, weakening the work factor below the Spring Security default. */
+    public static final FindingRule SPRING_BCRYPT_LOW_STRENGTH =
+            rule(
+                    "SPRING_BCRYPT_LOW_STRENGTH",
+                    "BCryptPasswordEncoder configured with a strength below the default of 10",
+                    FindingSeverity.INFO,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    // ── Additional reliability rules ──────────────────────────────────────────
+
+    /** A {@code RestTemplate} (with a request-factory argument) or {@code RestClient.create(...)}
+     *  is instantiated inside a method body rather than reused as a singleton bean/field. A fresh
+     *  client — and its connection pool — is then created on every invocation. (The no-arg
+     *  {@code new RestTemplate()} case is covered by {@link #SPRING_REST_TEMPLATE_NO_TIMEOUT}.) */
+    public static final FindingRule SPRING_RESTTEMPLATE_NEW_PER_REQUEST =
+            rule(
+                    "SPRING_RESTTEMPLATE_NEW_PER_REQUEST",
+                    "HTTP client instantiated per request instead of reused as a bean",
+                    FindingSeverity.WARNING,
+                    FindingCategory.HTTP,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A Spring Data {@code @Query} method returns a {@code List} (or {@code Collection}) and
+     *  declares no {@code Pageable} parameter, so the query has no {@code LIMIT}. On a large table
+     *  this materialises every matching row into the heap. */
+    public static final FindingRule SPRING_JPA_QUERY_NO_PAGINATION =
+            rule(
+                    "SPRING_JPA_QUERY_NO_PAGINATION",
+                    "@Query returning a collection has no Pageable parameter (no LIMIT)",
+                    FindingSeverity.INFO,
+                    FindingCategory.PERSISTENCE,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A method annotated {@code @Transactional(propagation = REQUIRES_NEW)} is invoked from
+     *  inside a loop. Each iteration suspends the current transaction and opens a brand-new one,
+     *  consuming an additional connection from the pool per iteration and risking pool
+     *  exhaustion. */
+    public static final FindingRule SPRING_REQUIRES_NEW_IN_LOOP =
+            rule(
+                    "SPRING_REQUIRES_NEW_IN_LOOP",
+                    "@Transactional(REQUIRES_NEW) method invoked inside a loop",
+                    FindingSeverity.WARNING,
+                    FindingCategory.TRANSACTION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
     private FindingRules() {}
 
     private static FindingRule rule(
