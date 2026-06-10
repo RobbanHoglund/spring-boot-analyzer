@@ -60,16 +60,20 @@ public record AnalyzerProperties(
      *
      * @param enabled     whether periodic cleanup is active
      * @param maxAge      workspaces older than this are eligible for deletion; defaults to 7 days
-     * @param runsPerDay  how many times per day the cleanup runs; defaults to 1 if &lt;= 0
+     * @param runsPerDay  how many times per day the cleanup runs; defaults to 1 if &lt;= 0 and is
+     *                    capped at 1440 (once per minute) so the derived interval can never
+     *                    collapse to zero and spin the scheduler
      */
     public record ScheduledWorkspaceCleanupProperties(
             boolean enabled, Duration maxAge, int runsPerDay) {
+        private static final int MAX_RUNS_PER_DAY = 1440;
+
         public ScheduledWorkspaceCleanupProperties {
             maxAge =
                     maxAge == null || maxAge.isNegative() || maxAge.isZero()
                             ? Duration.ofDays(7)
                             : maxAge;
-            runsPerDay = runsPerDay <= 0 ? 1 : runsPerDay;
+            runsPerDay = runsPerDay <= 0 ? 1 : Math.min(runsPerDay, MAX_RUNS_PER_DAY);
         }
 
         /** Returns the interval between cleanup runs as milliseconds, derived from {@code runsPerDay}. */

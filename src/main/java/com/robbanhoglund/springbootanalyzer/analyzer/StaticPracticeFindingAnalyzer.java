@@ -71,10 +71,15 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 @Component
 public class StaticPracticeFindingAnalyzer {
+
+    private static final Logger LOGGER =
+            LoggerFactory.getLogger(StaticPracticeFindingAnalyzer.class);
 
     private static final Set<String> SENSITIVE_MARKERS =
             Set.of(
@@ -249,8 +254,10 @@ public class StaticPracticeFindingAnalyzer {
                         repositoryRoot, sourceFile, outboundByFile, controllerClasses, findings);
             }
         } catch (IOException exception) {
-            throw new IllegalStateException(
-                    "Failed to scan Java sources for static practice findings", exception);
+            LOGGER.warn(
+                    "Failed to fully scan Java sources for static practice findings;"
+                            + " returning partial results",
+                    exception);
         }
         detectAsyncWithoutExecutor(repositoryRoot, findings);
         detectScheduledWithoutExecutor(repositoryRoot, findings);
@@ -2339,9 +2346,13 @@ public class StaticPracticeFindingAnalyzer {
                                 if (!transactionalMethods.contains(call.getNameAsString())) {
                                     return;
                                 }
-                                if (!(call.getScope().orElse(null) instanceof ThisExpr)
-                                        && call.getScope().orElse(null) != null
-                                        && !(call.getScope().orElse(null) instanceof NameExpr)) {
+                                // Only an unqualified call (foo()) or an explicit this.foo() is a
+                                // genuine self-invocation. A call qualified by any other receiver
+                                // (collaborator.foo()) targets a different bean, even when it
+                                // happens to share a method name with a local @Transactional
+                                // method.
+                                var scope = call.getScope().orElse(null);
+                                if (scope != null && !(scope instanceof ThisExpr)) {
                                     return;
                                 }
                                 findings.add(

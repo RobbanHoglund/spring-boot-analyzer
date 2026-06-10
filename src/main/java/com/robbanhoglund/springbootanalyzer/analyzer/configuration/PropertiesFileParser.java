@@ -5,10 +5,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 @Component
 public class PropertiesFileParser {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(PropertiesFileParser.class);
 
     public List<ParsedConfigurationProperty> parse(Path path, String relativePath, String profile) {
         try {
@@ -36,7 +40,9 @@ public class PropertiesFileParser {
             }
             return properties;
         } catch (IOException exception) {
-            throw new IllegalStateException("Failed to parse properties file: " + path, exception);
+            // Skip an individual unreadable file rather than aborting configuration analysis.
+            LOGGER.debug("Failed to parse properties file {}; skipping", path, exception);
+            return List.of();
         }
     }
 

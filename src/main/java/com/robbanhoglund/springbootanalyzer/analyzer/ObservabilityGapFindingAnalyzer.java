@@ -444,7 +444,11 @@ public class ObservabilityGapFindingAnalyzer {
             return;
         }
         String rawType = rawTypeName(method.getType().asString());
-        if (ASYNC_ALLOWED_RETURN_TYPES.contains(rawType)) {
+        // ASYNC_ALLOWED_RETURN_TYPES holds simple names, so compare against the simple name to
+        // avoid a false positive when the method declares a fully-qualified return type
+        // (e.g. java.util.concurrent.CompletableFuture<T>).
+        String simpleType = rawType.substring(rawType.lastIndexOf('.') + 1);
+        if (ASYNC_ALLOWED_RETURN_TYPES.contains(simpleType)) {
             return;
         }
         Integer line = method.getBegin().map(p -> p.line).orElse(null);

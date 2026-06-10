@@ -18,6 +18,8 @@ import java.util.List;
 import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -35,6 +37,14 @@ public class RepositoryAnalysisService {
     private final SuppressionService suppressionService;
     private final UserRuleConfigService userRuleConfigService;
 
+    /**
+     * Whether to retain the workspace after analysis so the UI can fetch source snippets. Only
+     * meaningful in web mode: there the scheduled cleanup task eventually reclaims retained
+     * workspaces. In CLI mode there is no scheduler and no snippet UI, so retaining would leak the
+     * cloned repository into the temp directory on every run.
+     */
+    private final boolean retainWorkspaceForSnippetBrowsing;
+
     public RepositoryAnalysisService(
             WorkspaceService workspaceService,
             GitCloneService gitCloneService,
@@ -44,7 +54,8 @@ public class RepositoryAnalysisService {
             AnalysisSessionRegistry analysisSessionRegistry,
             FindingNormalizer findingNormalizer,
             SuppressionService suppressionService,
-            UserRuleConfigService userRuleConfigService) {
+            UserRuleConfigService userRuleConfigService,
+            Environment environment) {
         this.workspaceService = workspaceService;
         this.gitCloneService = gitCloneService;
         this.staticAnalyzer = staticAnalyzer;
@@ -54,6 +65,7 @@ public class RepositoryAnalysisService {
         this.findingNormalizer = findingNormalizer;
         this.suppressionService = suppressionService;
         this.userRuleConfigService = userRuleConfigService;
+        this.retainWorkspaceForSnippetBrowsing = !environment.acceptsProfiles(Profiles.of("cli"));
     }
 
     public AnalysisResult analyze(GitRepositoryReference repositoryReference) {
@@ -107,7 +119,7 @@ public class RepositoryAnalysisService {
                     workspace.path());
             return;
         }
-        if (result != null && result.analysisId() != null) {
+        if (retainWorkspaceForSnippetBrowsing && result != null && result.analysisId() != null) {
             LOGGER.info(
                     "Workspace retained for source snippet browsing: workspaceId={}, path={}",
                     workspace.id(),

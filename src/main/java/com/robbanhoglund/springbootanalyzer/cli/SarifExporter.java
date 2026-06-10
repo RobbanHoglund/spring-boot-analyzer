@@ -219,9 +219,7 @@ public final class SarifExporter {
     }
 
     private static String ruleId(Finding f) {
-        if (f.ruleId() != null) return f.ruleId();
-        if (f.location() != null) return "UNKNOWN";
-        return "UNKNOWN";
+        return f.ruleId() != null ? f.ruleId() : "UNKNOWN";
     }
 
     private static String toLevel(FindingSeverity severity) {

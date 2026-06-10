@@ -51,10 +51,14 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 @Component
 public class HttpSurfaceAnalyzer {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(HttpSurfaceAnalyzer.class);
 
     private static final Pattern PLACEHOLDER_PATTERN =
             Pattern.compile("\\$\\{([^}:]+)(?::[^}]*)?}");
@@ -237,8 +241,10 @@ public class HttpSurfaceAnalyzer {
                         repositoryRoot, file, inboundEndpoints, outboundEndpoints, baseUrlCatalog);
             }
         } catch (IOException exception) {
-            throw new IllegalStateException(
-                    "Failed to scan Java sources for HTTP surface analysis", exception);
+            LOGGER.warn(
+                    "Failed to fully scan Java sources for HTTP surface analysis;"
+                            + " returning partial results",
+                    exception);
         }
         return new SourceSurface(List.copyOf(inboundEndpoints), List.copyOf(outboundEndpoints));
     }
@@ -288,8 +294,9 @@ public class HttpSurfaceAnalyzer {
                         .ifPresent(outboundEndpoints::add);
             }
         } catch (IOException exception) {
-            throw new IllegalStateException(
-                    "Failed to read Java source file: " + sourceFile, exception);
+            // Skip an individual unreadable file rather than aborting HTTP surface analysis.
+            LOGGER.debug(
+                    "Failed to read {} for HTTP surface analysis; skipping", sourceFile, exception);
         }
     }
 

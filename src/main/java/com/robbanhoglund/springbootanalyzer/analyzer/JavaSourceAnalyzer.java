@@ -27,6 +27,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
@@ -49,6 +51,8 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class JavaSourceAnalyzer {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(JavaSourceAnalyzer.class);
 
     private static final Map<String, SpringComponentType> COMPONENT_TYPES =
             Map.ofEntries(
@@ -87,8 +91,8 @@ public class JavaSourceAnalyzer {
      * root an empty {@code SourceAnalysis} is returned immediately.
      *
      * @param repositoryRoot root directory of the project being analysed
-     * @return the combined source analysis result; never null
-     * @throws IllegalStateException if the source tree cannot be walked due to an I/O error
+     * @return the combined source analysis result; never null. If the source tree cannot be fully
+     *     walked due to an I/O error, the partial results gathered so far are returned.
      */
     public SourceAnalysis analyze(Path repositoryRoot) {
         Path sourceRoot = repositoryRoot.resolve("src/main/java");
@@ -108,8 +112,10 @@ public class JavaSourceAnalyzer {
                                     analyzeSourceFile(
                                             repositoryRoot, path, detectedClasses, findings));
         } catch (IOException exception) {
-            throw new IllegalStateException(
-                    "Failed to scan Java sources under " + sourceRoot, exception);
+            LOGGER.warn(
+                    "Failed to fully scan Java sources under {}; returning partial results",
+                    sourceRoot,
+                    exception);
         }
 
         return new SourceAnalysis(List.copyOf(detectedClasses), List.copyOf(findings));

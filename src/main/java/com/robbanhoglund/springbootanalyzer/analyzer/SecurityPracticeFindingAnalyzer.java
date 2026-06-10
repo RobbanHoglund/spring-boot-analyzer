@@ -14,7 +14,6 @@ import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.IntegerLiteralExpr;
 import com.github.javaparser.ast.expr.LambdaExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
-import com.github.javaparser.ast.expr.MethodReferenceExpr;
 import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.StringLiteralExpr;
@@ -41,8 +40,6 @@ import org.springframework.stereotype.Component;
  * <p>Rules covered:
  *
  * <ul>
- *   <li>{@link FindingRules#SPRING_CSRF_DISABLED_CODE} — CSRF protection explicitly disabled via
- *       {@code .csrf().disable()} or {@code csrf(AbstractHttpConfigurer::disable)}.
  *   <li>{@link FindingRules#SPRING_PREAUTHORIZE_ON_PRIVATE_METHOD} — {@code @PreAuthorize},
  *       {@code @PostAuthorize}, {@code @Secured}, or {@code @RolesAllowed} on a private method
  *       that Spring Security's AOP proxy cannot intercept.
@@ -134,7 +131,6 @@ public class SecurityPracticeFindingAnalyzer {
         CompilationUnit cu = parseResult.getResult().orElseThrow();
         String relativePath = repositoryRoot.relativize(sourceFile).toString().replace('\\', '/');
 
-        detectCsrfDisabled(cu, relativePath, findings);
         detectWeakPasswordHash(cu, relativePath, findings);
         detectXxeVulnerableParser(cu, relativePath, findings);
         detectInsecureDeserialization(cu, relativePath, findings);
@@ -160,132 +156,6 @@ public class SecurityPracticeFindingAnalyzer {
             detectInsecureHostnameVerifier(cls, relativePath, findings);
         }
         detectInsecureHostnameVerifierLambda(cu, relativePath, findings);
-    }
-
-    // ---------------------------------------------------------------------------
-    // Rule: SPRING_CSRF_DISABLED_CODE
-    // ---------------------------------------------------------------------------
-
-    /**
-     * Detects CSRF disabled via two patterns:
-     * <ol>
-     *   <li>{@code .csrf().disable()} — a {@code disable()} call whose receiver is a call named
-     *       {@code csrf}.
-     *   <li>{@code csrf(AbstractHttpConfigurer::disable)} — a {@code csrf(...)} call whose
-     *       argument contains a method reference to {@code disable}.
-     * </ol>
-     */
-    private void detectCsrfDisabled(
-            CompilationUnit cu, String relativePath, List<Finding> findings) {
-        // Pattern 1: csrf().disable()
-        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
-            if (!"disable".equals(call.getNameAsString())) {
-                continue;
-            }
-            boolean scopeIsCsrfCall =
-                    call.getScope()
-                            .filter(s -> s instanceof MethodCallExpr)
-                            .map(s -> "csrf".equals(((MethodCallExpr) s).getNameAsString()))
-                            .orElse(false);
-            if (scopeIsCsrfCall) {
-                Integer line = call.getBegin().map(p -> p.line).orElse(null);
-                findings.add(
-                        FindingFactory.builder(
-                                        FindingRules.SPRING_CSRF_DISABLED_CODE,
-                                        FindingConfidence.MEDIUM)
-                                .shortMessage(
-                                        "CSRF protection explicitly disabled via csrf().disable()"
-                                                + " in "
-                                                + relativePath
-                                                + ".")
-                                .whyBadPractice(
-                                        "CSRF (Cross-Site Request Forgery) protection prevents"
-                                            + " malicious sites from making state-changing requests"
-                                            + " on behalf of authenticated users. Disabling it"
-                                            + " leaves browser-based applications vulnerable to"
-                                            + " CSRF attacks.")
-                                .possibleImpact(
-                                        "Authenticated users can be tricked into performing"
-                                                + " unintended state-changing actions (transfers,"
-                                                + " account changes, data deletion) via malicious"
-                                                + " cross-origin requests.")
-                                .recommendation(
-                                        "Only disable CSRF for stateless REST APIs that use"
-                                            + " token-based authentication (e.g. JWT in the"
-                                            + " Authorization header) and do not rely on browser"
-                                            + " session cookies. If session cookies are used, keep"
-                                            + " CSRF protection enabled.")
-                                .limitations(
-                                        "Medium confidence — disabling CSRF is intentional and"
-                                            + " correct for stateless REST APIs with token-based"
-                                            + " authentication.")
-                                .evidence("csrf().disable() call found in " + relativePath + ".")
-                                .source(relativePath, line)
-                                .build());
-                return; // One finding per file is sufficient
-            }
-        }
-
-        // Pattern 2: csrf(AbstractHttpConfigurer::disable) — method reference argument
-        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
-            if (!"csrf".equals(call.getNameAsString())) {
-                continue;
-            }
-            boolean hasDisableMethodRef =
-                    call.getArguments().stream()
-                            .anyMatch(
-                                    arg -> {
-                                        if (arg instanceof MethodReferenceExpr ref) {
-                                            return "disable".equals(ref.getIdentifier());
-                                        }
-                                        // Also check lambda: csrf(c -> c.disable())
-                                        // Use method-call search rather than toString().contains()
-                                        // to avoid false positives from variable names or comments.
-                                        return arg.findAll(MethodCallExpr.class).stream()
-                                                .anyMatch(
-                                                        m -> "disable".equals(m.getNameAsString()));
-                                    });
-            if (hasDisableMethodRef) {
-                Integer line = call.getBegin().map(p -> p.line).orElse(null);
-                findings.add(
-                        FindingFactory.builder(
-                                        FindingRules.SPRING_CSRF_DISABLED_CODE,
-                                        FindingConfidence.MEDIUM)
-                                .shortMessage(
-                                        "CSRF protection explicitly disabled via"
-                                                + " csrf(AbstractHttpConfigurer::disable) in "
-                                                + relativePath
-                                                + ".")
-                                .whyBadPractice(
-                                        "CSRF (Cross-Site Request Forgery) protection prevents"
-                                            + " malicious sites from making state-changing requests"
-                                            + " on behalf of authenticated users. Disabling it"
-                                            + " leaves browser-based applications vulnerable to"
-                                            + " CSRF attacks.")
-                                .possibleImpact(
-                                        "Authenticated users can be tricked into performing"
-                                                + " unintended state-changing actions (transfers,"
-                                                + " account changes, data deletion) via malicious"
-                                                + " cross-origin requests.")
-                                .recommendation(
-                                        "Only disable CSRF for stateless REST APIs that use"
-                                            + " token-based authentication (e.g. JWT in the"
-                                            + " Authorization header) and do not rely on browser"
-                                            + " session cookies. If session cookies are used, keep"
-                                            + " CSRF protection enabled.")
-                                .limitations(
-                                        "Medium confidence — disabling CSRF is intentional and"
-                                            + " correct for stateless REST APIs with token-based"
-                                            + " authentication.")
-                                .evidence(
-                                        "csrf(AbstractHttpConfigurer::disable) call found in "
-                                                + relativePath
-                                                + ".")
-                                .source(relativePath, line)
-                                .build());
-                return;
-            }
-        }
     }
 
     // ---------------------------------------------------------------------------

@@ -10,10 +10,14 @@ import java.util.List;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 @Component
 public class ConfigurationFileScanner {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(ConfigurationFileScanner.class);
 
     private static final List<String> ROOTS =
             List.of("src/main/resources", "src/test/resources", "config", ".");
@@ -33,8 +37,10 @@ public class ConfigurationFileScanner {
                         .sorted(Comparator.naturalOrder())
                         .forEach(path -> candidates.add(toCandidate(repositoryRoot, path)));
             } catch (IOException exception) {
-                throw new IllegalStateException(
-                        "Failed to scan configuration files under " + start, exception);
+                LOGGER.warn(
+                        "Failed to scan configuration files under {}; skipping this root",
+                        start,
+                        exception);
             }
         }
         return candidates.stream().distinct().toList();

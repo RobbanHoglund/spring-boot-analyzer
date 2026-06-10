@@ -27,10 +27,15 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 @Component
 public class ConfigurationPropertiesClassAnalyzer {
+
+    private static final Logger LOGGER =
+            LoggerFactory.getLogger(ConfigurationPropertiesClassAnalyzer.class);
 
     private static final Set<String> VALIDATION_ANNOTATIONS =
             Set.of(
@@ -70,8 +75,10 @@ public class ConfigurationPropertiesClassAnalyzer {
                     .sorted(Comparator.naturalOrder())
                     .forEach(path -> analyzeSourceFile(repositoryRoot, path, classes));
         } catch (IOException exception) {
-            throw new IllegalStateException(
-                    "Failed to scan @ConfigurationProperties classes under " + sourceRoot,
+            LOGGER.warn(
+                    "Failed to fully scan @ConfigurationProperties classes under {};"
+                            + " returning partial results",
+                    sourceRoot,
                     exception);
         }
         return List.copyOf(classes);
@@ -104,7 +111,8 @@ public class ConfigurationPropertiesClassAnalyzer {
                         .ifPresent(classes::add);
             }
         } catch (IOException exception) {
-            throw new IllegalStateException("Failed to read source file: " + sourceFile, exception);
+            // Skip an individual unreadable file rather than aborting the scan.
+            LOGGER.debug("Failed to read source file {}; skipping", sourceFile, exception);
         }
     }
 
