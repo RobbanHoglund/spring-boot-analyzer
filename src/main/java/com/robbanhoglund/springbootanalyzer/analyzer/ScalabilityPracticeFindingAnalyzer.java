@@ -1,7 +1,5 @@
 package com.robbanhoglund.springbootanalyzer.analyzer;
 
-import com.github.javaparser.JavaParser;
-import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
@@ -23,17 +21,13 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 import org.springframework.stereotype.Component;
 
 /**
@@ -70,16 +64,6 @@ public class ScalabilityPracticeFindingAnalyzer {
                     "^(/var/|/tmp/|/home/|/etc/|/opt/|/data/|/mnt/|/srv/|/usr/)"
                             + "|^[A-Za-z]:\\\\");
 
-    private final JavaParser javaParser;
-
-    public ScalabilityPracticeFindingAnalyzer() {
-        this.javaParser =
-                new JavaParser(
-                        new ParserConfiguration()
-                                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                                .setCharacterEncoding(StandardCharsets.UTF_8));
-    }
-
     private static final Set<String> SINGLETON_ANNOTATIONS =
             Set.of(
                     "Service",
@@ -96,53 +80,44 @@ public class ScalabilityPracticeFindingAnalyzer {
      * @return list of findings; never null
      */
     public List<Finding> analyze(Path repositoryRoot) {
+        return analyze(JavaSources.from(repositoryRoot));
+    }
+
+    /**
+     * Analyzes the {@code src/main/java} sources parsed once and shared across the pipeline.
+     *
+     * @param sources the source tree parsed once for this analysis
+     * @return list of findings; never null
+     */
+    public List<Finding> analyze(JavaSources sources) {
         List<Finding> findings = new ArrayList<>();
-        Path sourceRoot = repositoryRoot.resolve("src/main/java");
-        if (Files.notExists(sourceRoot)) {
-            return findings;
-        }
-
-        List<Path> sourceFiles;
-        try (Stream<Path> walk = Files.walk(sourceRoot)) {
-            sourceFiles =
-                    walk.filter(Files::isRegularFile)
-                            .filter(p -> p.toString().endsWith(".java"))
-                            .sorted(Comparator.naturalOrder())
-                            .toList();
-        } catch (IOException e) {
-            return findings;
-        }
-
         // Pass 1: collect all simple type names of @Scope("prototype") beans and the names of
         // methods annotated @Transactional(propagation = REQUIRES_NEW).
-        Set<String> prototypeTypes = collectPrototypeTypes(sourceFiles);
-        Set<String> requiresNewMethods = collectRequiresNewMethods(sourceFiles);
+        Set<String> prototypeTypes = collectPrototypeTypes(sources);
+        Set<String> requiresNewMethods = collectRequiresNewMethods(sources);
 
         // Pass 2: per-file analysis
-        for (Path sourceFile : sourceFiles) {
-            try {
-                analyzeSourceFile(
-                        repositoryRoot, sourceFile, prototypeTypes, requiresNewMethods, findings);
-            } catch (IOException e) {
-                // Best-effort — skip unreadable files
+        for (JavaSources.JavaFile file : sources.files()) {
+            if (file.compilationUnit() == null) {
+                continue;
             }
+            analyzeSourceFile(
+                    file.compilationUnit(),
+                    file.relativePath(),
+                    prototypeTypes,
+                    requiresNewMethods,
+                    findings);
         }
         return findings;
     }
 
-    private Set<String> collectRequiresNewMethods(List<Path> sourceFiles) {
+    private Set<String> collectRequiresNewMethods(JavaSources sources) {
         Set<String> methods = new HashSet<>();
-        for (Path sourceFile : sourceFiles) {
-            com.github.javaparser.ParseResult<CompilationUnit> parseResult;
-            try {
-                parseResult = javaParser.parse(sourceFile);
-            } catch (IOException e) {
+        for (JavaSources.JavaFile file : sources.files()) {
+            CompilationUnit cu = file.compilationUnit();
+            if (cu == null) {
                 continue;
             }
-            if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
-                continue;
-            }
-            CompilationUnit cu = parseResult.getResult().orElseThrow();
             for (MethodDeclaration method : cu.findAll(MethodDeclaration.class)) {
                 boolean requiresNew =
                         method.getAnnotations().stream()
@@ -163,19 +138,13 @@ public class ScalabilityPracticeFindingAnalyzer {
     // Pass 1: collect prototype-scoped type names
     // ---------------------------------------------------------------------------
 
-    private Set<String> collectPrototypeTypes(List<Path> sourceFiles) {
+    private Set<String> collectPrototypeTypes(JavaSources sources) {
         Set<String> prototypeTypes = new HashSet<>();
-        for (Path sourceFile : sourceFiles) {
-            com.github.javaparser.ParseResult<CompilationUnit> parseResult;
-            try {
-                parseResult = javaParser.parse(sourceFile);
-            } catch (IOException e) {
+        for (JavaSources.JavaFile file : sources.files()) {
+            CompilationUnit cu = file.compilationUnit();
+            if (cu == null) {
                 continue;
             }
-            if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
-                continue;
-            }
-            CompilationUnit cu = parseResult.getResult().orElseThrow();
             for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
                 boolean isPrototype =
                         cls.getAnnotations().stream()
@@ -199,19 +168,11 @@ public class ScalabilityPracticeFindingAnalyzer {
     // ---------------------------------------------------------------------------
 
     private void analyzeSourceFile(
-            Path repositoryRoot,
-            Path sourceFile,
+            CompilationUnit cu,
+            String relativePath,
             Set<String> prototypeTypes,
             Set<String> requiresNewMethods,
-            List<Finding> findings)
-            throws IOException {
-        var parseResult = javaParser.parse(sourceFile);
-        if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
-            return;
-        }
-        CompilationUnit cu = parseResult.getResult().orElseThrow();
-        String relativePath = repositoryRoot.relativize(sourceFile).toString().replace('\\', '/');
-
+            List<Finding> findings) {
         detectHardcodedFilePaths(cu, relativePath, findings);
         detectRestTemplateNoTimeout(cu, relativePath, findings);
         detectWebFluxBlockingCalls(cu, relativePath, findings);

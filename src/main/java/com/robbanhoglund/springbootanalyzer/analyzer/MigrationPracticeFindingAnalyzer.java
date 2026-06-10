@@ -1,7 +1,5 @@
 package com.robbanhoglund.springbootanalyzer.analyzer;
 
-import com.github.javaparser.JavaParser;
-import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
@@ -12,15 +10,11 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRule;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.RuntimeStackAnalysis;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
-import java.util.stream.Stream;
 import org.springframework.stereotype.Component;
 
 /**
@@ -68,16 +62,6 @@ public class MigrationPracticeFindingAnalyzer {
                     "javax.websocket.",
                     "javax.mail.");
 
-    private final JavaParser javaParser;
-
-    public MigrationPracticeFindingAnalyzer() {
-        this.javaParser =
-                new JavaParser(
-                        new ParserConfiguration()
-                                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                                .setCharacterEncoding(StandardCharsets.UTF_8));
-    }
-
     /**
      * Walks every {@code .java} file under {@code <repositoryRoot>/src/main/java} and returns all
      * migration findings.
@@ -88,36 +72,35 @@ public class MigrationPracticeFindingAnalyzer {
      * @return all detected migration findings; never null, may be empty
      */
     public List<Finding> analyze(Path repositoryRoot, RuntimeStackAnalysis runtimeStackAnalysis) {
+        return analyze(JavaSources.from(repositoryRoot), runtimeStackAnalysis);
+    }
+
+    /**
+     * Analyzes the {@code src/main/java} sources parsed once and shared across the pipeline.
+     *
+     * @param sources the source tree parsed once for this analysis
+     * @param runtimeStackAnalysis the detected runtime stacks; used to gate the Jakarta-namespace
+     *     rule on Spring Boot 3+
+     * @return all detected migration findings; never null, may be empty
+     */
+    public List<Finding> analyze(JavaSources sources, RuntimeStackAnalysis runtimeStackAnalysis) {
         List<Finding> findings = new ArrayList<>();
-        Path sourceRoot = repositoryRoot.resolve("src/main/java");
-        if (Files.notExists(sourceRoot)) {
-            return findings;
-        }
         boolean springBoot3Plus = isSpringBoot3Plus(runtimeStackAnalysis);
-        try (Stream<Path> files = Files.walk(sourceRoot)) {
-            for (Path sourceFile :
-                    files.filter(Files::isRegularFile)
-                            .filter(p -> p.toString().endsWith(".java"))
-                            .sorted(Comparator.naturalOrder())
-                            .toList()) {
-                analyzeSourceFile(repositoryRoot, sourceFile, springBoot3Plus, findings);
+        for (JavaSources.JavaFile file : sources.files()) {
+            if (file.compilationUnit() == null) {
+                continue;
             }
-        } catch (IOException e) {
-            // Best-effort — skip unreadable files
+            analyzeSourceFile(
+                    file.compilationUnit(), file.relativePath(), springBoot3Plus, findings);
         }
         return findings;
     }
 
     private void analyzeSourceFile(
-            Path repositoryRoot, Path sourceFile, boolean springBoot3Plus, List<Finding> findings)
-            throws IOException {
-        var parseResult = javaParser.parse(sourceFile);
-        if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
-            return;
-        }
-        CompilationUnit cu = parseResult.getResult().orElseThrow();
-        String relativePath = repositoryRoot.relativize(sourceFile).toString().replace('\\', '/');
-
+            CompilationUnit cu,
+            String relativePath,
+            boolean springBoot3Plus,
+            List<Finding> findings) {
         detectWebSecurityConfigurerAdapter(cu, relativePath, findings);
         detectRemovedMatchers(cu, relativePath, findings);
         detectEnableGlobalMethodSecurity(cu, relativePath, findings);

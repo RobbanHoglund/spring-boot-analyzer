@@ -1,7 +1,5 @@
 package com.robbanhoglund.springbootanalyzer.analyzer.scheduling;
 
-import com.github.javaparser.JavaParser;
-import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
@@ -12,67 +10,37 @@ import com.github.javaparser.ast.expr.MemberValuePair;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.scheduling.AsyncMethodEndpoint;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.scheduling.ScheduledTaskEndpoint;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.scheduling.SchedulingAnalysis;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.stream.Stream;
 import org.springframework.stereotype.Component;
 
 @Component
 public class SchedulingAnalyzer {
 
-    private final JavaParser javaParser;
-
-    public SchedulingAnalyzer() {
-        this.javaParser =
-                new JavaParser(
-                        new ParserConfiguration()
-                                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                                .setCharacterEncoding(StandardCharsets.UTF_8));
+    public SchedulingAnalysis analyze(Path repositoryRoot) {
+        return analyze(JavaSources.from(repositoryRoot));
     }
 
-    public SchedulingAnalysis analyze(Path repositoryRoot) {
-        Path sourceRoot = repositoryRoot.resolve("src/main/java");
-        if (!Files.isDirectory(sourceRoot)) {
-            return SchedulingAnalysis.empty();
-        }
-
+    public SchedulingAnalysis analyze(JavaSources sources) {
         List<ScheduledTaskEndpoint> scheduledTasks = new ArrayList<>();
         List<AsyncMethodEndpoint> asyncMethods = new ArrayList<>();
         AtomicBoolean enableScheduling = new AtomicBoolean(false);
         AtomicBoolean enableAsync = new AtomicBoolean(false);
 
-        try (Stream<Path> paths = Files.walk(sourceRoot)) {
-            paths.filter(p -> p.toString().endsWith(".java"))
-                    .forEach(
-                            file -> {
-                                try {
-                                    javaParser
-                                            .parse(file)
-                                            .ifSuccessful(
-                                                    cu -> {
-                                                        String relativePath =
-                                                                repositoryRoot
-                                                                        .relativize(file)
-                                                                        .toString()
-                                                                        .replace('\\', '/');
-                                                        collectFromCompilationUnit(
-                                                                cu,
-                                                                relativePath,
-                                                                scheduledTasks,
-                                                                asyncMethods,
-                                                                enableScheduling,
-                                                                enableAsync);
-                                                    });
-                                } catch (IOException ignored) {
-                                }
-                            });
-        } catch (IOException e) {
-            return SchedulingAnalysis.empty();
+        for (JavaSources.JavaFile file : sources.files()) {
+            if (file.compilationUnit() == null) {
+                continue;
+            }
+            collectFromCompilationUnit(
+                    file.compilationUnit(),
+                    file.relativePath(),
+                    scheduledTasks,
+                    asyncMethods,
+                    enableScheduling,
+                    enableAsync);
         }
 
         return new SchedulingAnalysis(
