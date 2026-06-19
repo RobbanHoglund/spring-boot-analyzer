@@ -3,6 +3,7 @@ package com.robbanhoglund.springbootanalyzer.analyzer;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.ArrayCreationExpr;
 import com.github.javaparser.ast.expr.ArrayInitializerExpr;
 import com.github.javaparser.ast.expr.BinaryExpr;
@@ -68,6 +69,12 @@ import org.springframework.stereotype.Component;
  *       {@code Cipher.getInstance(...)}.
  *   <li>{@link FindingRules#SPRING_HARDCODED_ENCRYPTION_KEY} — {@code SecretKeySpec}/
  *       {@code IvParameterSpec} built from a hardcoded value.
+ *   <li>{@link FindingRules#SPRING_NOOP_PASSWORD_ENCODER} — {@code NoOpPasswordEncoder} or the
+ *       deprecated {@code StandardPasswordEncoder} is used to store/compare passwords.
+ *   <li>{@link FindingRules#SPRING_METHOD_SECURITY_NOT_ENABLED} — method-security annotations are
+ *       used anywhere in the project but no {@code @EnableMethodSecurity} enables them.
+ *   <li>{@link FindingRules#SPRING_SECURITY_IGNORING_BROAD_PATH} — {@code WebSecurity#ignoring()}
+ *       matches a broad path, bypassing the Spring Security filter chain.
  * </ul>
  */
 @Component
@@ -75,6 +82,11 @@ public class SecurityPracticeFindingAnalyzer {
 
     private static final Set<String> SECURITY_ANNOTATIONS =
             Set.of("PreAuthorize", "PostAuthorize", "Secured", "RolesAllowed");
+    private static final Set<String> METHOD_SECURITY_ENABLERS =
+            Set.of(
+                    "EnableMethodSecurity",
+                    "EnableGlobalMethodSecurity",
+                    "EnableReactiveMethodSecurity");
 
     /**
      * Analyzes all Java source files under {@code src/main/java} within the given repository root.
@@ -94,12 +106,104 @@ public class SecurityPracticeFindingAnalyzer {
      */
     public List<Finding> analyze(JavaSources sources) {
         List<Finding> findings = new ArrayList<>();
+        // Cross-file signals for SPRING_METHOD_SECURITY_NOT_ENABLED: whether any class enables
+        // method security, and the first place a method-security annotation is actually used.
+        boolean methodSecurityEnabled = false;
+        String usageRelativePath = null;
+        Integer usageLine = null;
+        String usageTarget = null;
         for (JavaSources.JavaFile file : sources.files()) {
-            if (file.compilationUnit() != null) {
-                analyzeSourceFile(file.compilationUnit(), file.relativePath(), findings);
+            CompilationUnit cu = file.compilationUnit();
+            if (cu == null) {
+                continue;
+            }
+            analyzeSourceFile(cu, file.relativePath(), findings);
+
+            for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
+                if (!methodSecurityEnabled && annotatedWithAny(cls, METHOD_SECURITY_ENABLERS)) {
+                    methodSecurityEnabled = true;
+                }
+                if (usageTarget == null && annotatedWithAny(cls, SECURITY_ANNOTATIONS)) {
+                    usageTarget = cls.getNameAsString();
+                    usageLine = cls.getBegin().map(position -> position.line).orElse(null);
+                    usageRelativePath = file.relativePath();
+                }
+                if (usageTarget == null) {
+                    for (MethodDeclaration method : cls.getMethods()) {
+                        if (annotatedWithAny(method, SECURITY_ANNOTATIONS)) {
+                            usageTarget = cls.getNameAsString() + "#" + method.getNameAsString();
+                            usageLine =
+                                    method.getBegin().map(position -> position.line).orElse(null);
+                            usageRelativePath = file.relativePath();
+                            break;
+                        }
+                    }
+                }
             }
         }
+        if (usageTarget != null && !methodSecurityEnabled) {
+            addMethodSecurityNotEnabledFinding(usageRelativePath, usageLine, usageTarget, findings);
+        }
         return findings;
+    }
+
+    private boolean annotatedWithAny(MethodDeclaration method, Set<String> annotationNames) {
+        return annotatedWithAny(method.getAnnotations(), annotationNames);
+    }
+
+    private boolean annotatedWithAny(ClassOrInterfaceDeclaration cls, Set<String> annotationNames) {
+        return annotatedWithAny(cls.getAnnotations(), annotationNames);
+    }
+
+    private boolean annotatedWithAny(
+            List<AnnotationExpr> annotations, Set<String> annotationNames) {
+        return annotations.stream()
+                .anyMatch(
+                        annotation ->
+                                annotationNames.contains(simpleName(annotation.getNameAsString())));
+    }
+
+    private void addMethodSecurityNotEnabledFinding(
+            String relativePath, Integer line, String target, List<Finding> findings) {
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_METHOD_SECURITY_NOT_ENABLED,
+                                FindingConfidence.MEDIUM)
+                        .shortMessage(
+                                "Method-security annotation on "
+                                        + target
+                                        + " is used, but no @EnableMethodSecurity was found —"
+                                        + " the check is silently ignored.")
+                        .whyBadPractice(
+                                "Spring does not enable method security automatically."
+                                    + " @PreAuthorize, @PostAuthorize, @Secured and @RolesAllowed"
+                                    + " only take effect when a configuration class is annotated"
+                                    + " with @EnableMethodSecurity (or the legacy"
+                                    + " @EnableGlobalMethodSecurity). Without it the annotations"
+                                    + " are parsed but never enforced.")
+                        .possibleImpact(
+                                "Endpoints and service methods that look protected are reachable by"
+                                    + " any authenticated (or unauthenticated) caller — a silent"
+                                    + " authorization bypass.")
+                        .recommendation(
+                                "Add @EnableMethodSecurity to a @Configuration class (prePost is"
+                                    + " enabled by default), and verify the annotations actually"
+                                    + " enforce the intended authorities.")
+                        .evidence(
+                                "Method-security annotations are used (first seen on "
+                                        + target
+                                        + " in "
+                                        + relativePath
+                                        + ") but no"
+                                        + " @EnableMethodSecurity/@EnableGlobalMethodSecurity was"
+                                        + " found in src/main/java.")
+                        .limitations(
+                                "Static analysis only sees src/main/java; method security enabled"
+                                        + " via an imported library auto-configuration or a parent"
+                                        + " context is not visible and would be a false positive.")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
     }
 
     // ---------------------------------------------------------------------------
@@ -124,6 +228,8 @@ public class SecurityPracticeFindingAnalyzer {
         detectHardcodedEncryptionKey(cu, relativePath, findings);
         detectLoggingAuthHeader(cu, relativePath, findings);
         detectBcryptLowStrength(cu, relativePath, findings);
+        detectNoOpPasswordEncoder(cu, relativePath, findings);
+        detectSecurityIgnoringBroadPath(cu, relativePath, findings);
 
         for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
             for (MethodDeclaration method : cls.getMethods()) {
@@ -133,6 +239,137 @@ public class SecurityPracticeFindingAnalyzer {
             detectInsecureHostnameVerifier(cls, relativePath, findings);
         }
         detectInsecureHostnameVerifierLambda(cu, relativePath, findings);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_NOOP_PASSWORD_ENCODER
+    // ---------------------------------------------------------------------------
+
+    private void detectNoOpPasswordEncoder(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        Integer line = null;
+        String detail = null;
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            if (call.getScope()
+                    .map(scope -> simpleName(scope.toString()))
+                    .filter("NoOpPasswordEncoder"::equals)
+                    .isPresent()) {
+                line = call.getBegin().map(position -> position.line).orElse(null);
+                detail = "NoOpPasswordEncoder";
+                break;
+            }
+        }
+        if (detail == null) {
+            for (ObjectCreationExpr expr : cu.findAll(ObjectCreationExpr.class)) {
+                String type = simpleName(expr.getType().asString());
+                if (type.equals("NoOpPasswordEncoder") || type.equals("StandardPasswordEncoder")) {
+                    line = expr.getBegin().map(position -> position.line).orElse(null);
+                    detail = type;
+                    break;
+                }
+            }
+        }
+        if (detail == null) {
+            return;
+        }
+        boolean plaintext = detail.equals("NoOpPasswordEncoder");
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_NOOP_PASSWORD_ENCODER, FindingConfidence.HIGH)
+                        .shortMessage(
+                                detail
+                                        + " is used in "
+                                        + relativePath
+                                        + (plaintext
+                                                ? " — passwords are stored and compared in clear"
+                                                        + " text."
+                                                : " — passwords are hashed with a known-weak"
+                                                        + " algorithm."))
+                        .whyBadPractice(
+                                plaintext
+                                        ? "NoOpPasswordEncoder performs no hashing at all: the raw"
+                                              + " password is stored and compared verbatim. Anyone"
+                                              + " with read access to the credential store"
+                                              + " immediately obtains every password."
+                                        : "StandardPasswordEncoder uses a fixed, fast SHA-256-based"
+                                                + " scheme that is deprecated and unsuitable for"
+                                                + " password storage; it is trivial to brute-force"
+                                                + " with modern hardware.")
+                        .possibleImpact(
+                                "A database leak or log exposure reveals usable credentials"
+                                    + " directly, enabling account takeover and credential-stuffing"
+                                    + " against other systems.")
+                        .recommendation(
+                                "Use an adaptive password encoder such as"
+                                    + " PasswordEncoderFactories.createDelegatingPasswordEncoder(),"
+                                    + " or a BCryptPasswordEncoder/Argon2PasswordEncoder with a"
+                                    + " sufficient work factor.")
+                        .evidence(detail + " reference found in " + relativePath + ".")
+                        .limitations(
+                                "Static analysis flags the encoder reference; it cannot confirm it"
+                                    + " is wired as the application's PasswordEncoder bean, though"
+                                    + " that is the usual reason to declare one.")
+                        .source(relativePath, line)
+                        .target(detail)
+                        .build());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_SECURITY_IGNORING_BROAD_PATH
+    // ---------------------------------------------------------------------------
+
+    private void detectSecurityIgnoringBroadPath(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            if (!call.getNameAsString().equals("ignoring")) {
+                continue;
+            }
+            MethodCallExpr root = call;
+            while (root.getParentNode().orElse(null) instanceof MethodCallExpr parent) {
+                root = parent;
+            }
+            String chain = root.toString();
+            if (!chain.contains("\"/**\"") && !chain.contains("anyRequest(")) {
+                continue;
+            }
+            Integer line = call.getName().getBegin().map(position -> position.line).orElse(null);
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_SECURITY_IGNORING_BROAD_PATH,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "WebSecurity.ignoring() matches a broad path in "
+                                            + relativePath
+                                            + " — those URLs bypass Spring Security entirely.")
+                            .whyBadPractice(
+                                    "Paths matched by web.ignoring() are excluded from the Spring"
+                                        + " Security filter chain altogether. Unlike permitAll(),"
+                                        + " which still runs the filters, ignored requests get no"
+                                        + " authentication, no authorization, and no security"
+                                        + " response headers. Using /** (or anyRequest) ignores the"
+                                        + " entire application.")
+                            .possibleImpact(
+                                    "Every endpoint becomes reachable without authentication and"
+                                            + " without CSRF, CORS, or security-header protection —"
+                                            + " effectively disabling Spring Security.")
+                            .recommendation(
+                                    "Restrict ignoring() to genuinely public static resources (e.g."
+                                        + " /css/**, /js/**), and authorize application endpoints"
+                                        + " inside the SecurityFilterChain with"
+                                        + " authorizeHttpRequests instead.")
+                            .evidence(
+                                    "web.ignoring() over a broad matcher found in "
+                                            + relativePath
+                                            + ".")
+                            .limitations(
+                                    "Static analysis matches the ignoring() chain textually; a"
+                                            + " constant or variable holding \"/**\" would not be"
+                                            + " detected.")
+                            .source(relativePath, line)
+                            .target("WebSecurity.ignoring")
+                            .build());
+            return; // one finding per file is sufficient
+        }
     }
 
     // ---------------------------------------------------------------------------

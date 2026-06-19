@@ -522,6 +522,38 @@ public final class FindingRules {
                     FindingCategory.SECURITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
+    /** A {@code NoOpPasswordEncoder} (or the deprecated {@code StandardPasswordEncoder}) is used,
+     *  so passwords are stored and compared in clear text (or with a known-weak hash). */
+    public static final FindingRule SPRING_NOOP_PASSWORD_ENCODER =
+            rule(
+                    "SPRING_NOOP_PASSWORD_ENCODER",
+                    "Password encoder stores passwords without secure hashing",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code @PreAuthorize}/{@code @PostAuthorize}/{@code @Secured}/{@code @RolesAllowed} are used
+     *  but no {@code @EnableMethodSecurity}/{@code @EnableGlobalMethodSecurity} is present, so the
+     *  annotations are silently ignored and the authorization checks never run. */
+    public static final FindingRule SPRING_METHOD_SECURITY_NOT_ENABLED =
+            rule(
+                    "SPRING_METHOD_SECURITY_NOT_ENABLED",
+                    "Method-security annotations are used but method security is not enabled",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code WebSecurity#ignoring()} rule matches a broad path ({@code /**} or every request),
+     *  so those URLs bypass the entire Spring Security filter chain — no authentication,
+     *  authorization, or security headers are applied. */
+    public static final FindingRule SPRING_SECURITY_IGNORING_BROAD_PATH =
+            rule(
+                    "SPRING_SECURITY_IGNORING_BROAD_PATH",
+                    "web.ignoring() bypasses Spring Security for a broad path",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
     /** A sensitive value (password, token, API key, …) is passed as a URL query parameter
      *  or path variable, where it may be logged by proxies, CDNs, or the application itself
      *  as part of the request URL. */

@@ -1118,4 +1118,150 @@ class SecurityPracticeFindingAnalyzerTest {
 
         assertThat(byRule(findings(), "SPRING_BCRYPT_LOW_STRENGTH")).isNull();
     }
+
+    // ── SPRING_NOOP_PASSWORD_ENCODER ──────────────────────────────────────────
+
+    @Test
+    void flagsNoOpPasswordEncoder() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/SecurityConfig.java",
+                """
+                package com.example;
+                import org.springframework.security.crypto.password.NoOpPasswordEncoder;
+                import org.springframework.security.crypto.password.PasswordEncoder;
+                public class SecurityConfig {
+                    public PasswordEncoder passwordEncoder() {
+                        return NoOpPasswordEncoder.getInstance();
+                    }
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_NOOP_PASSWORD_ENCODER");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("NoOpPasswordEncoder");
+    }
+
+    @Test
+    void doesNotFlagBCryptPasswordEncoder() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/SecurityConfig.java",
+                """
+                package com.example;
+                import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+                import org.springframework.security.crypto.password.PasswordEncoder;
+                public class SecurityConfig {
+                    public PasswordEncoder passwordEncoder() {
+                        return new BCryptPasswordEncoder();
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_NOOP_PASSWORD_ENCODER")).isNull();
+    }
+
+    // ── SPRING_SECURITY_IGNORING_BROAD_PATH ───────────────────────────────────
+
+    @Test
+    void flagsWebIgnoringBroadPath() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/SecurityConfig.java",
+                """
+                package com.example;
+                import org.springframework.context.annotation.Bean;
+                import org.springframework.security.config.annotation.web.configuration.WebSecurityCustomizer;
+                public class SecurityConfig {
+                    @Bean
+                    public WebSecurityCustomizer webSecurityCustomizer() {
+                        return (web) -> web.ignoring().requestMatchers("/**");
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_SECURITY_IGNORING_BROAD_PATH")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagWebIgnoringStaticResources() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/SecurityConfig.java",
+                """
+                package com.example;
+                import org.springframework.context.annotation.Bean;
+                import org.springframework.security.config.annotation.web.configuration.WebSecurityCustomizer;
+                public class SecurityConfig {
+                    @Bean
+                    public WebSecurityCustomizer webSecurityCustomizer() {
+                        return (web) -> web.ignoring().requestMatchers("/css/**", "/js/**");
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_SECURITY_IGNORING_BROAD_PATH")).isNull();
+    }
+
+    // ── SPRING_METHOD_SECURITY_NOT_ENABLED ────────────────────────────────────
+
+    @Test
+    void flagsMethodSecurityAnnotationWithoutEnable() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/OrderService.java",
+                """
+                package com.example;
+                import org.springframework.security.access.prepost.PreAuthorize;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class OrderService {
+                    @PreAuthorize("hasRole('ADMIN')")
+                    public void deleteAll() {}
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_METHOD_SECURITY_NOT_ENABLED");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("OrderService");
+    }
+
+    @Test
+    void doesNotFlagMethodSecurityWhenEnabled() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/OrderService.java",
+                """
+                package com.example;
+                import org.springframework.security.access.prepost.PreAuthorize;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class OrderService {
+                    @PreAuthorize("hasRole('ADMIN')")
+                    public void deleteAll() {}
+                }
+                """);
+        writeSourceFile(
+                "src/main/java/com/example/MethodSecurityConfig.java",
+                """
+                package com.example;
+                import org.springframework.context.annotation.Configuration;
+                import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+                @Configuration
+                @EnableMethodSecurity
+                public class MethodSecurityConfig {}
+                """);
+
+        assertThat(byRule(findings(), "SPRING_METHOD_SECURITY_NOT_ENABLED")).isNull();
+    }
+
+    @Test
+    void doesNotFlagMethodSecurityWhenNoAnnotationsUsed() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/OrderService.java",
+                """
+                package com.example;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class OrderService {
+                    public void deleteAll() {}
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_METHOD_SECURITY_NOT_ENABLED")).isNull();
+    }
 }
