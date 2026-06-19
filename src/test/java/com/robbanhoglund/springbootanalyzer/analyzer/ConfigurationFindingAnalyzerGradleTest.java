@@ -5,8 +5,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildTool;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ApplicationProperty;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ConfigurationSummary;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertyKind;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleAnalysisStatus;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleModelAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradlePluginResolutionBridgeResult;
@@ -295,6 +297,113 @@ class ConfigurationFindingAnalyzerGradleTest {
         Finding duplicate = byRule(result, "SPRING_FLYWAY_DUPLICATE_VERSION");
         assertThat(duplicate).isNotNull();
         assertThat(duplicate.message()).contains("1");
+    }
+
+    @Test
+    void doesNotFlagMissingMigrationsForCustomClasspathLocation() throws IOException {
+        Path dir = Files.createDirectories(repoRoot.resolve("src/main/resources/db/changelog"));
+        Files.writeString(dir.resolve("V1__init.sql"), "create table t (id int);");
+
+        List<Finding> result =
+                analyzer.analyze(
+                        repoRoot,
+                        flywayBuild(),
+                        configWithFlywayLocations("classpath:db/changelog"),
+                        buildGradleNone());
+        assertThat(byRule(result, "SPRING_FLYWAY_MISSING_MIGRATIONS")).isNull();
+    }
+
+    @Test
+    void flagsMissingMigrationsForCustomLocationWhenFilesAreElsewhere() throws IOException {
+        // Files live in the DEFAULT db/migration dir, but spring.flyway.locations points at a
+        // custom dir — Flyway would not find them there, so the warning is correct and must name
+        // the configured location rather than the default.
+        Path dir = Files.createDirectories(repoRoot.resolve("src/main/resources/db/migration"));
+        Files.writeString(dir.resolve("V1__init.sql"), "create table t (id int);");
+
+        List<Finding> result =
+                analyzer.analyze(
+                        repoRoot,
+                        flywayBuild(),
+                        configWithFlywayLocations("classpath:db/changelog"),
+                        buildGradleNone());
+        Finding f = byRule(result, "SPRING_FLYWAY_MISSING_MIGRATIONS");
+        assertThat(f).isNotNull();
+        assertThat(f.evidence()).contains("db/changelog");
+        assertThat(f.evidence()).doesNotContain("db/migration");
+    }
+
+    @Test
+    void resolvesFilesystemFlywayLocationRelativeToRepo() throws IOException {
+        Path dir = Files.createDirectories(repoRoot.resolve("db/migration"));
+        Files.writeString(dir.resolve("V1__init.sql"), "create table t (id int);");
+
+        List<Finding> result =
+                analyzer.analyze(
+                        repoRoot,
+                        flywayBuild(),
+                        configWithFlywayLocations("filesystem:db/migration"),
+                        buildGradleNone());
+        assertThat(byRule(result, "SPRING_FLYWAY_MISSING_MIGRATIONS")).isNull();
+    }
+
+    @Test
+    void doesNotFlagWhenFlywayLocationIsAbsoluteAndOutsideRepository() {
+        // An absolute filesystem location cannot be inspected in a cloned repo; suppress rather
+        // than emit a false "missing migrations" finding.
+        List<Finding> result =
+                analyzer.analyze(
+                        repoRoot,
+                        flywayBuild(),
+                        configWithFlywayLocations("filesystem:/var/lib/db/migration"),
+                        buildGradleNone());
+        assertThat(byRule(result, "SPRING_FLYWAY_MISSING_MIGRATIONS")).isNull();
+    }
+
+    @Test
+    void honoursMultipleConfiguredFlywayLocations() throws IOException {
+        Path dir = Files.createDirectories(repoRoot.resolve("src/main/resources/db/extra"));
+        Files.writeString(dir.resolve("V1__init.sql"), "create table t (id int);");
+
+        List<Finding> result =
+                analyzer.analyze(
+                        repoRoot,
+                        flywayBuild(),
+                        configWithFlywayLocations("classpath:db/migration,classpath:db/extra"),
+                        buildGradleNone());
+        assertThat(byRule(result, "SPRING_FLYWAY_MISSING_MIGRATIONS")).isNull();
+    }
+
+    private static BuildInfo flywayBuild() {
+        return new BuildInfo(
+                BuildTool.GRADLE,
+                true,
+                "17",
+                List.of("org.flywaydb:flyway-core"),
+                "3.5.1",
+                "Gradle plugins",
+                "HIGH");
+    }
+
+    private static ConfigurationAnalysis configWithFlywayLocations(String value) {
+        ApplicationProperty property =
+                new ApplicationProperty(
+                        "spring.flyway.locations",
+                        value,
+                        false,
+                        false,
+                        "src/main/resources/application.properties",
+                        1,
+                        "default",
+                        PropertyKind.SPRING_BOOT,
+                        null,
+                        List.of());
+        return new ConfigurationAnalysis(
+                List.of(),
+                List.of(property),
+                List.of(),
+                List.of(),
+                new ConfigurationSummary(0, 0, 0, 0, 0, 0, List.of()));
     }
 
     private static GradleModelAnalysis buildGradleNone() {

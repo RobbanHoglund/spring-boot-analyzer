@@ -1078,7 +1078,15 @@ public class ConfigurationFindingAnalyzer {
                             .target("schema management")
                             .build());
         }
-        List<Path> migrations = migrationFiles(repositoryRoot);
+        List<Path> migrationRoots = flywayMigrationRoots(repositoryRoot, configurationAnalysis);
+        if (flywayLocationsConfigured(configurationAnalysis) && migrationRoots.isEmpty()) {
+            // spring.flyway.locations points only at filesystem/absolute paths outside the cloned
+            // repository (or an unresolvable placeholder), so the migration files cannot be seen
+            // statically — don't emit a likely-false "missing migrations" finding.
+            return;
+        }
+        String scannedLocations = describeRoots(repositoryRoot, migrationRoots);
+        List<Path> migrations = migrationFiles(migrationRoots);
         if (migrations.isEmpty()) {
             findings.add(
                     FindingFactory.builder(
@@ -1086,7 +1094,9 @@ public class ConfigurationFindingAnalyzer {
                                     FindingConfidence.MEDIUM)
                             .shortMessage(
                                     "Flyway appears to be enabled, but no migration files were"
-                                            + " found under db/migration.")
+                                            + " found in "
+                                            + scannedLocations
+                                            + ".")
                             .whyBadPractice(
                                     "Schema migration tooling is most useful when migration files"
                                             + " are versioned alongside the application.")
@@ -1098,13 +1108,16 @@ public class ConfigurationFindingAnalyzer {
                                             + " keep schema changes explicit in version control.")
                             .evidence(
                                     flywayLabel
-                                            + " configuration or dependencies were detected,"
-                                            + " but no V__ migration files were found in"
-                                            + " src/main/resources/db/migration.")
+                                            + " configuration or dependencies were detected, but no"
+                                            + " versioned migration files (V…__….sql) were found in"
+                                            + " "
+                                            + scannedLocations
+                                            + ".")
                             .limitations(
-                                    "Static analysis looks in the conventional migration folder and"
-                                            + " may miss custom locations configured elsewhere.")
-                            .location("db/migration")
+                                    "Static analysis resolves classpath: and filesystem: Flyway"
+                                            + " locations within the repository; locations outside"
+                                            + " the cloned project cannot be inspected.")
+                            .location(firstRootRelative(repositoryRoot, migrationRoots))
                             .target("flyway migrations")
                             .build());
         } else {
@@ -1557,22 +1570,146 @@ public class ConfigurationFindingAnalyzer {
         return inBuildInfo || inGradleModel;
     }
 
-    private List<Path> migrationFiles(Path repositoryRoot) {
-        Path migrationRoot = repositoryRoot.resolve("src/main/resources/db/migration");
-        if (Files.notExists(migrationRoot)) {
-            return List.of();
+    private List<Path> migrationFiles(List<Path> migrationRoots) {
+        List<Path> migrations = new ArrayList<>();
+        for (Path migrationRoot : migrationRoots) {
+            if (Files.notExists(migrationRoot)) {
+                continue;
+            }
+            try (Stream<Path> files = Files.walk(migrationRoot)) {
+                files.filter(Files::isRegularFile)
+                        .filter(
+                                path ->
+                                        FLYWAY_MIGRATION_PATTERN
+                                                .matcher(path.getFileName().toString())
+                                                .matches())
+                        .forEach(migrations::add);
+            } catch (IOException exception) {
+                // Best-effort — skip an unreadable migration tree.
+            }
         }
-        try (Stream<Path> files = Files.walk(migrationRoot)) {
-            return files.filter(Files::isRegularFile)
-                    .filter(
-                            path ->
-                                    FLYWAY_MIGRATION_PATTERN
-                                            .matcher(path.getFileName().toString())
-                                            .matches())
-                    .sorted()
-                    .toList();
-        } catch (IOException exception) {
-            return List.of();
+        return migrations.stream().distinct().sorted().toList();
+    }
+
+    /** Returns the configured {@code spring.flyway.locations} value, or null when unset/blank. */
+    private String flywayLocationsValue(ConfigurationAnalysis configurationAnalysis) {
+        ApplicationProperty property =
+                findProperty(configurationAnalysis, "spring.flyway.locations");
+        if (property == null || property.value() == null) {
+            return null;
+        }
+        String value = property.value().trim();
+        // An unresolvable placeholder (e.g. ${FLYWAY_LOCATIONS}) cannot be mapped statically.
+        if (value.isEmpty() || value.contains("${")) {
+            return null;
+        }
+        return value;
+    }
+
+    private boolean flywayLocationsConfigured(ConfigurationAnalysis configurationAnalysis) {
+        return flywayLocationsValue(configurationAnalysis) != null;
+    }
+
+    /**
+     * Resolves the directories Flyway would scan for migrations. When {@code spring.flyway.locations}
+     * is not set, falls back to the Spring Boot default ({@code classpath:db/migration} →
+     * {@code src/main/resources/db/migration}). Configured {@code classpath:} and {@code filesystem:}
+     * locations are mapped to repository paths; locations resolving outside the repository (e.g.
+     * absolute filesystem paths) are dropped because they cannot be inspected statically.
+     */
+    private List<Path> flywayMigrationRoots(
+            Path repositoryRoot, ConfigurationAnalysis configurationAnalysis) {
+        String configured = flywayLocationsValue(configurationAnalysis);
+        if (configured == null) {
+            return List.of(repositoryRoot.resolve("src/main/resources/db/migration").normalize());
+        }
+        Path repoBoundary = repositoryRoot.normalize();
+        List<Path> roots = new ArrayList<>();
+        for (String rawLocation : configured.split(",")) {
+            Path resolved = resolveFlywayLocation(repositoryRoot, repoBoundary, rawLocation);
+            if (resolved != null && !roots.contains(resolved)) {
+                roots.add(resolved);
+            }
+        }
+        return roots;
+    }
+
+    private Path resolveFlywayLocation(Path repositoryRoot, Path repoBoundary, String rawLocation) {
+        String location = rawLocation.trim();
+        if (location.isEmpty()) {
+            return null;
+        }
+        String lower = location.toLowerCase(Locale.ROOT);
+        String relative;
+        Path base;
+        if (lower.startsWith("filesystem:")) {
+            relative = location.substring("filesystem:".length()).trim();
+            // An absolute filesystem path points outside the cloned repo and cannot be inspected.
+            if (isAbsolutePath(relative)) {
+                return null;
+            }
+            // filesystem: locations are otherwise resolved relative to the project root.
+            base = repositoryRoot;
+        } else if (lower.startsWith("classpath:")) {
+            relative = location.substring("classpath:".length()).trim();
+            base = repositoryRoot.resolve("src/main/resources");
+        } else {
+            // No prefix — Flyway treats it as a classpath location.
+            relative = location;
+            base = repositoryRoot.resolve("src/main/resources");
+        }
+        relative = relative.replace('\\', '/');
+        while (relative.startsWith("./")) {
+            relative = relative.substring(2);
+        }
+        while (relative.startsWith("/")) {
+            relative = relative.substring(1);
+        }
+        // Drop a {vendor}/{...} placeholder segment; Files.walk recurses into any subdirectory.
+        int placeholder = relative.indexOf('{');
+        if (placeholder >= 0) {
+            relative = relative.substring(0, placeholder);
+        }
+        while (relative.endsWith("/")) {
+            relative = relative.substring(0, relative.length() - 1);
+        }
+        if (relative.isEmpty()) {
+            return null;
+        }
+        Path resolved = base.resolve(relative).normalize();
+        if (!resolved.startsWith(repoBoundary)) {
+            // Resolved outside the cloned repository (e.g. via "..") — cannot scan.
+            return null;
+        }
+        return resolved;
+    }
+
+    private static boolean isAbsolutePath(String path) {
+        return path.startsWith("/") || path.startsWith("\\") || path.matches("^[A-Za-z]:[\\\\/].*");
+    }
+
+    private String describeRoots(Path repositoryRoot, List<Path> roots) {
+        if (roots.isEmpty()) {
+            return "the configured Flyway locations";
+        }
+        Path base = repositoryRoot.normalize();
+        return roots.stream()
+                .map(root -> relativizeWithinRepo(base, root))
+                .collect(Collectors.joining(", "));
+    }
+
+    private String firstRootRelative(Path repositoryRoot, List<Path> roots) {
+        if (roots.isEmpty()) {
+            return "db/migration";
+        }
+        return relativizeWithinRepo(repositoryRoot.normalize(), roots.get(0));
+    }
+
+    private static String relativizeWithinRepo(Path base, Path target) {
+        try {
+            return base.relativize(target).toString().replace('\\', '/');
+        } catch (IllegalArgumentException exception) {
+            return target.toString().replace('\\', '/');
         }
     }
 
