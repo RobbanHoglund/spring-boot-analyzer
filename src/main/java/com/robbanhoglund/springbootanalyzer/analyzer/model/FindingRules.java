@@ -289,6 +289,17 @@ public final class FindingRules {
                     FindingCategory.SECURITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
+    /** Two or more {@code @ExceptionHandler} methods in the same {@code @Controller}/
+     *  {@code @ControllerAdvice} class map the same exception type. Spring rejects this with an
+     *  {@code IllegalStateException} ("Ambiguous @ExceptionHandler method mapped") at startup. */
+    public static final FindingRule SPRING_DUPLICATE_EXCEPTION_HANDLER =
+            rule(
+                    "SPRING_DUPLICATE_EXCEPTION_HANDLER",
+                    "Multiple @ExceptionHandler methods map the same exception type",
+                    FindingSeverity.ERROR,
+                    FindingCategory.EXCEPTION_HANDLING,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
     /** A {@code @ControllerAdvice} or {@code @ExceptionHandler} method catches
      *  {@code Exception} or broader and returns a generic response, suppressing
      *  more specific handlers that might be registered lower in the chain. */
@@ -373,6 +384,18 @@ public final class FindingRules {
                     "SPRING_JPA_MANYTOONE_EAGER_DEFAULT",
                     "@ManyToOne or @OneToOne uses eager loading by default",
                     FindingSeverity.INFO,
+                    FindingCategory.PERSISTENCE,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @OneToMany} or {@code @ManyToMany} collection explicitly sets
+     *  {@code fetch = FetchType.EAGER}. Collections default to lazy, so eager fetching is a
+     *  deliberate choice that loads the whole collection on every parent query and is a common
+     *  source of N+1 queries and Cartesian-product joins. */
+    public static final FindingRule SPRING_JPA_COLLECTION_EAGER_FETCH =
+            rule(
+                    "SPRING_JPA_COLLECTION_EAGER_FETCH",
+                    "@OneToMany or @ManyToMany collection uses eager fetching",
+                    FindingSeverity.WARNING,
                     FindingCategory.PERSISTENCE,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
@@ -472,6 +495,29 @@ public final class FindingRules {
             rule(
                     "SPRING_CORS_ALLOW_ALL",
                     "CORS configuration allows all origins",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @CrossOrigin} annotation on a controller class or handler method allows all
+     *  origins — either explicitly ({@code origins = "*"}) or by omission (a bare
+     *  {@code @CrossOrigin} defaults to allowing every origin). Per-controller CORS rules are
+     *  easy to forget and frequently ship a wildcard to production. */
+    public static final FindingRule SPRING_CROSS_ORIGIN_WILDCARD =
+            rule(
+                    "SPRING_CROSS_ORIGIN_WILDCARD",
+                    "@CrossOrigin allows all origins",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code spring-boot-starter-data-rest} is on the classpath. With the default detection
+     *  strategy, Spring Data REST auto-exposes full CRUD HTTP endpoints for every public Spring
+     *  Data repository, often exposing internal data that was never meant to be reachable. */
+    public static final FindingRule SPRING_DATA_REST_REPOSITORIES_EXPOSED =
+            rule(
+                    "SPRING_DATA_REST_REPOSITORIES_EXPOSED",
+                    "Spring Data REST auto-exposes repositories over HTTP",
                     FindingSeverity.WARNING,
                     FindingCategory.SECURITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);

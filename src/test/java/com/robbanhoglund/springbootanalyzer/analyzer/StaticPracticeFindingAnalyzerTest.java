@@ -4675,4 +4675,232 @@ interface InventoryClient {
                 .extracting(Finding::ruleId)
                 .doesNotContain(FindingRules.SPRING_MODEL_ATTRIBUTE_NO_VALID.ruleId());
     }
+
+    // ── SPRING_CROSS_ORIGIN_WILDCARD ──────────────────────────────────────────
+
+    @Test
+    void flagsCrossOriginWildcardOnControllerMethod() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ApiController.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.web.bind.annotation.CrossOrigin;
+                import org.springframework.web.bind.annotation.GetMapping;
+                import org.springframework.web.bind.annotation.RestController;
+
+                @RestController
+                public class ApiController {
+                    @CrossOrigin(origins = "*")
+                    @GetMapping("/data")
+                    public String data() {
+                        return "data";
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_CROSS_ORIGIN_WILDCARD.ruleId());
+    }
+
+    @Test
+    void flagsBareCrossOriginAsAllowingAllOrigins() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ApiController.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.web.bind.annotation.CrossOrigin;
+                import org.springframework.web.bind.annotation.RestController;
+
+                @CrossOrigin
+                @RestController
+                public class ApiController {}
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_CROSS_ORIGIN_WILDCARD.ruleId());
+    }
+
+    @Test
+    void doesNotFlagCrossOriginWithExplicitOrigin() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ApiController.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.web.bind.annotation.CrossOrigin;
+                import org.springframework.web.bind.annotation.GetMapping;
+                import org.springframework.web.bind.annotation.RestController;
+
+                @RestController
+                public class ApiController {
+                    @CrossOrigin(origins = "https://app.example.com")
+                    @GetMapping("/data")
+                    public String data() {
+                        return "data";
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_CROSS_ORIGIN_WILDCARD.ruleId());
+    }
+
+    // ── SPRING_DUPLICATE_EXCEPTION_HANDLER ────────────────────────────────────
+
+    @Test
+    void flagsDuplicateExceptionHandlerForSameType() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("GlobalExceptionHandler.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.web.bind.annotation.ControllerAdvice;
+                import org.springframework.web.bind.annotation.ExceptionHandler;
+
+                @ControllerAdvice
+                public class GlobalExceptionHandler {
+                    @ExceptionHandler(IllegalArgumentException.class)
+                    public String handleOne(IllegalArgumentException ex) {
+                        return "one";
+                    }
+
+                    @ExceptionHandler(IllegalArgumentException.class)
+                    public String handleTwo(IllegalArgumentException ex) {
+                        return "two";
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        Finding f =
+                findings.stream()
+                        .filter(
+                                finding ->
+                                        FindingRules.SPRING_DUPLICATE_EXCEPTION_HANDLER
+                                                .ruleId()
+                                                .equals(finding.ruleId()))
+                        .findFirst()
+                        .orElse(null);
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("IllegalArgumentException");
+        assertThat(f.message()).contains("handleOne");
+        assertThat(f.message()).contains("handleTwo");
+    }
+
+    @Test
+    void doesNotFlagDistinctExceptionHandlers() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("GlobalExceptionHandler.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.web.bind.annotation.ControllerAdvice;
+                import org.springframework.web.bind.annotation.ExceptionHandler;
+
+                @ControllerAdvice
+                public class GlobalExceptionHandler {
+                    @ExceptionHandler(IllegalArgumentException.class)
+                    public String handleIllegalArg(IllegalArgumentException ex) {
+                        return "one";
+                    }
+
+                    @ExceptionHandler(IllegalStateException.class)
+                    public String handleIllegalState(IllegalStateException ex) {
+                        return "two";
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_DUPLICATE_EXCEPTION_HANDLER.ruleId());
+    }
+
+    // ── SPRING_JPA_COLLECTION_EAGER_FETCH ─────────────────────────────────────
+
+    @Test
+    void flagsOneToManyEagerFetch() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Order.java"),
+                """
+                package com.example.demo;
+
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.FetchType;
+                import jakarta.persistence.OneToMany;
+                import java.util.List;
+
+                @Entity
+                public class Order {
+                    @OneToMany(mappedBy = "order", fetch = FetchType.EAGER)
+                    private List<OrderLine> lines;
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_JPA_COLLECTION_EAGER_FETCH.ruleId());
+    }
+
+    @Test
+    void doesNotFlagOneToManyDefaultLazyFetch() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Order.java"),
+                """
+                package com.example.demo;
+
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.OneToMany;
+                import java.util.List;
+
+                @Entity
+                public class Order {
+                    @OneToMany(mappedBy = "order")
+                    private List<OrderLine> lines;
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_JPA_COLLECTION_EAGER_FETCH.ruleId());
+    }
 }

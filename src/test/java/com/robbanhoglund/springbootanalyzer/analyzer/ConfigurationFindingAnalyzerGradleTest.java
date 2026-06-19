@@ -374,6 +374,67 @@ class ConfigurationFindingAnalyzerGradleTest {
         assertThat(byRule(result, "SPRING_FLYWAY_MISSING_MIGRATIONS")).isNull();
     }
 
+    @Test
+    void flagsDataRestRepositoriesExposed() {
+        assertThat(
+                        byRule(
+                                findings(dataRestBuild(), buildGradleNone()),
+                                "SPRING_DATA_REST_REPOSITORIES_EXPOSED"))
+                .isNotNull();
+    }
+
+    @Test
+    void doesNotFlagDataRestWhenDetectionStrategyAnnotated() {
+        List<Finding> result =
+                analyzer.analyze(
+                        repoRoot,
+                        dataRestBuild(),
+                        configWithProperty("spring.data.rest.detection-strategy", "annotated"),
+                        buildGradleNone());
+        assertThat(byRule(result, "SPRING_DATA_REST_REPOSITORIES_EXPOSED")).isNull();
+    }
+
+    @Test
+    void doesNotFlagDataRestWhenDependencyAbsent() {
+        assertThat(
+                        byRule(
+                                findings(buildInfoBoot3, buildGradleNone()),
+                                "SPRING_DATA_REST_REPOSITORIES_EXPOSED"))
+                .isNull();
+    }
+
+    private static BuildInfo dataRestBuild() {
+        return new BuildInfo(
+                BuildTool.GRADLE,
+                true,
+                "17",
+                List.of("org.springframework.boot:spring-boot-starter-data-rest"),
+                "3.5.1",
+                "Gradle plugins",
+                "HIGH");
+    }
+
+    private static ConfigurationAnalysis configWithProperty(String name, String value) {
+        ApplicationProperty property =
+                new ApplicationProperty(
+                        name,
+                        value,
+                        false,
+                        false,
+                        "src/main/resources/application.properties",
+                        1,
+                        "default",
+                        PropertyKind.SPRING_BOOT,
+                        null,
+                        List.of());
+        return new ConfigurationAnalysis(
+                List.of(),
+                List.of(property),
+                List.of(),
+                List.of(),
+                new ConfigurationSummary(0, 0, 0, 0, 0, 0, List.of()));
+    }
+
     private static BuildInfo flywayBuild() {
         return new BuildInfo(
                 BuildTool.GRADLE,
