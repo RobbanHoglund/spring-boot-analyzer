@@ -554,6 +554,28 @@ public final class FindingRules {
                     FindingCategory.SECURITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
+    /** A JWT is parsed without verifying its signature — jjwt {@code parseClaimsJwt}/
+     *  {@code parsePlaintextJwt}/{@code parseUnsecuredClaims}, or the {@code none} algorithm
+     *  ({@code SignatureAlgorithm.NONE}) — so forged tokens are accepted as genuine. */
+    public static final FindingRule SPRING_JWT_SIGNATURE_NOT_VERIFIED =
+            rule(
+                    "SPRING_JWT_SIGNATURE_NOT_VERIFIED",
+                    "JWT is parsed without verifying its signature",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A CORS configuration combines a wildcard origin ({@code allowedOriginPatterns("*")} or
+     *  {@code allowedOrigins("*")}) with {@code allowCredentials(true)}, reflecting any origin
+     *  while sending credentials — a cross-origin data-exfiltration risk. */
+    public static final FindingRule SPRING_CORS_CREDENTIALS_WILDCARD =
+            rule(
+                    "SPRING_CORS_CREDENTIALS_WILDCARD",
+                    "CORS allows credentials with a wildcard origin",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
     /** A sensitive value (password, token, API key, …) is passed as a URL query parameter
      *  or path variable, where it may be logged by proxies, CDNs, or the application itself
      *  as part of the request URL. */

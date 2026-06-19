@@ -568,6 +568,7 @@ public class StaticPracticeFindingAnalyzer {
 
         detectCsrfDisabled(relativePath, declaration, findings);
         detectCorsAllowAll(relativePath, declaration, findings);
+        detectCorsCredentialsWildcard(relativePath, declaration, findings);
         detectCrossOriginAnnotation(relativePath, declaration, findings);
         detectDuplicateExceptionHandlers(relativePath, declaration, findings);
         detectFeignClientRisks(relativePath, declaration, findings);
@@ -2098,6 +2099,84 @@ public class StaticPracticeFindingAnalyzer {
                     return;
                 }
             }
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_CORS_CREDENTIALS_WILDCARD
+    // ---------------------------------------------------------------------------
+
+    private void detectCorsCredentialsWildcard(
+            String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
+        for (MethodDeclaration method : declaration.getMethods()) {
+            boolean wildcardOrigin = false;
+            boolean allowCredentials = false;
+            Integer line = null;
+            for (MethodCallExpr call : method.findAll(MethodCallExpr.class)) {
+                String name = call.getNameAsString();
+                if ((name.equals("allowedOrigins")
+                                || name.equals("setAllowedOrigins")
+                                || name.equals("allowedOriginPatterns")
+                                || name.equals("setAllowedOriginPatterns"))
+                        && call.getArguments().stream()
+                                .anyMatch(arg -> arg.toString().contains("\"*\""))) {
+                    wildcardOrigin = true;
+                    if (line == null) {
+                        line =
+                                call.getName()
+                                        .getBegin()
+                                        .map(position -> position.line)
+                                        .orElse(null);
+                    }
+                }
+                if ((name.equals("allowCredentials") || name.equals("setAllowCredentials"))
+                        && call.getArguments().stream()
+                                .anyMatch(
+                                        arg ->
+                                                arg instanceof BooleanLiteralExpr bool
+                                                        && bool.getValue())) {
+                    allowCredentials = true;
+                }
+            }
+            if (!wildcardOrigin || !allowCredentials) {
+                continue;
+            }
+            String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_CORS_CREDENTIALS_WILDCARD,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "CORS allows credentials with a wildcard origin in "
+                                            + target
+                                            + ".")
+                            .whyBadPractice(
+                                    "Combining a wildcard origin (allowedOriginPatterns(\"*\") or"
+                                        + " allowedOrigins(\"*\")) with allowCredentials(true)"
+                                        + " makes Spring reflect the caller's Origin back and send"
+                                        + " cookies / Authorization headers to it. Any site can"
+                                        + " then make authenticated cross-origin requests and read"
+                                        + " the responses.")
+                            .possibleImpact(
+                                    "Cross-origin credential theft and data exfiltration: a"
+                                        + " malicious page can call the API as the logged-in user"
+                                        + " and read protected responses.")
+                            .recommendation(
+                                    "Never combine a wildcard origin with allowCredentials(true)."
+                                            + " Enumerate the exact trusted origins, or drop"
+                                            + " allowCredentials if the API is genuinely public.")
+                            .evidence(
+                                    "A wildcard CORS origin and allowCredentials(true) were found"
+                                            + " together in "
+                                            + target
+                                            + ".")
+                            .limitations(
+                                    "Static analysis correlates the calls within a single method;"
+                                        + " configuration split across helper methods may not be"
+                                        + " detected.")
+                            .source(relativePath, line)
+                            .target(target)
+                            .build());
         }
     }
 

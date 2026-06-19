@@ -1264,4 +1264,100 @@ class SecurityPracticeFindingAnalyzerTest {
 
         assertThat(byRule(findings(), "SPRING_METHOD_SECURITY_NOT_ENABLED")).isNull();
     }
+
+    // ── SPRING_JWT_SIGNATURE_NOT_VERIFIED ─────────────────────────────────────
+
+    @Test
+    void flagsUnsignedJwtParsing() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/JwtService.java",
+                """
+                package com.example;
+                import io.jsonwebtoken.Jwts;
+                public class JwtService {
+                    public Object parse(String token) {
+                        return Jwts.parser().build().parseClaimsJwt(token);
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_JWT_SIGNATURE_NOT_VERIFIED")).isNotNull();
+    }
+
+    @Test
+    void flagsNoneSignatureAlgorithm() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/JwtService.java",
+                """
+                package com.example;
+                import io.jsonwebtoken.Jwts;
+                import io.jsonwebtoken.SignatureAlgorithm;
+                public class JwtService {
+                    public String issue() {
+                        return Jwts.builder().signWith(null, SignatureAlgorithm.NONE).compact();
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_JWT_SIGNATURE_NOT_VERIFIED")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagSignedJwtParsing() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/JwtService.java",
+                """
+                package com.example;
+                import io.jsonwebtoken.Jwts;
+                public class JwtService {
+                    public Object parse(String token, javax.crypto.SecretKey key) {
+                        return Jwts.parser().verifyWith(key).build().parseSignedClaims(token);
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_JWT_SIGNATURE_NOT_VERIFIED")).isNull();
+    }
+
+    // ── SPRING_INSECURE_TRUST_MANAGER (library trust-all / no-op shortcuts) ────
+
+    @Test
+    void flagsNoopHostnameVerifier() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/HttpClientConfig.java",
+                """
+                package com.example;
+                import org.apache.http.conn.ssl.NoopHostnameVerifier;
+                import org.apache.http.impl.client.HttpClients;
+                public class HttpClientConfig {
+                    public Object client() {
+                        return HttpClients.custom()
+                                .setSSLHostnameVerifier(NoopHostnameVerifier.INSTANCE)
+                                .build();
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_INSECURE_TRUST_MANAGER")).isNotNull();
+    }
+
+    @Test
+    void flagsTrustAllStrategy() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/HttpClientConfig.java",
+                """
+                package com.example;
+                import org.apache.http.ssl.SSLContextBuilder;
+                import org.apache.http.conn.ssl.TrustAllStrategy;
+                public class HttpClientConfig {
+                    public Object sslContext() throws Exception {
+                        return new SSLContextBuilder()
+                                .loadTrustMaterial(null, new TrustAllStrategy())
+                                .build();
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_INSECURE_TRUST_MANAGER")).isNotNull();
+    }
 }

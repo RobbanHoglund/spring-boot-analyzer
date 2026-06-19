@@ -4903,4 +4903,66 @@ interface InventoryClient {
                 .extracting(Finding::ruleId)
                 .doesNotContain(FindingRules.SPRING_JPA_COLLECTION_EAGER_FETCH.ruleId());
     }
+
+    // ── SPRING_CORS_CREDENTIALS_WILDCARD ──────────────────────────────────────
+
+    @Test
+    void flagsCorsCredentialsWithWildcardOrigin() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("CorsConfig.java"),
+                """
+                package com.example.demo;
+
+                import java.util.List;
+                import org.springframework.web.cors.CorsConfiguration;
+
+                public class CorsConfig {
+                    public CorsConfiguration cors() {
+                        CorsConfiguration config = new CorsConfiguration();
+                        config.setAllowedOriginPatterns(List.of("*"));
+                        config.setAllowCredentials(true);
+                        return config;
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_CORS_CREDENTIALS_WILDCARD.ruleId());
+    }
+
+    @Test
+    void doesNotFlagCorsCredentialsWithExplicitOrigins() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("CorsConfig.java"),
+                """
+                package com.example.demo;
+
+                import java.util.List;
+                import org.springframework.web.cors.CorsConfiguration;
+
+                public class CorsConfig {
+                    public CorsConfiguration cors() {
+                        CorsConfiguration config = new CorsConfiguration();
+                        config.setAllowedOrigins(List.of("https://app.example.com"));
+                        config.setAllowCredentials(true);
+                        return config;
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_CORS_CREDENTIALS_WILDCARD.ruleId());
+    }
 }

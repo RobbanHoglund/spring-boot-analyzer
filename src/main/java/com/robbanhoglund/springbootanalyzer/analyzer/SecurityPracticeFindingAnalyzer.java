@@ -42,8 +42,10 @@ import org.springframework.stereotype.Component;
  *       with {@code "MD5"}, {@code "SHA-1"}, or {@code "SHA-256"} — algorithms that are too fast
  *       for safe password hashing.
  *   <li>{@link FindingRules#SPRING_INSECURE_TRUST_MANAGER} — {@code X509TrustManager} with an
- *       empty {@code checkServerTrusted}/{@code checkClientTrusted} body, or {@code
- *       HostnameVerifier} whose {@code verify} returns {@code true} unconditionally.
+ *       empty {@code checkServerTrusted}/{@code checkClientTrusted} body, a {@code
+ *       HostnameVerifier} whose {@code verify} returns {@code true} unconditionally, or a library
+ *       trust-all/no-op shortcut ({@code NoopHostnameVerifier}, {@code TrustAllStrategy},
+ *       {@code TrustSelfSignedStrategy}).
  *   <li>{@link FindingRules#SPRING_XXE_VULNERABLE_PARSER} — XML parser factory created without
  *       any {@code setFeature}/{@code setProperty} call disabling external entities.
  *   <li>{@link FindingRules#SPRING_INSECURE_DESERIALIZATION} — Jackson default-typing,
@@ -75,6 +77,9 @@ import org.springframework.stereotype.Component;
  *       used anywhere in the project but no {@code @EnableMethodSecurity} enables them.
  *   <li>{@link FindingRules#SPRING_SECURITY_IGNORING_BROAD_PATH} — {@code WebSecurity#ignoring()}
  *       matches a broad path, bypassing the Spring Security filter chain.
+ *   <li>{@link FindingRules#SPRING_JWT_SIGNATURE_NOT_VERIFIED} — a JWT is parsed without verifying
+ *       its signature (jjwt {@code parseClaimsJwt}/{@code parsePlaintextJwt}, or {@code
+ *       SignatureAlgorithm.NONE}).
  * </ul>
  */
 @Component
@@ -87,6 +92,14 @@ public class SecurityPracticeFindingAnalyzer {
                     "EnableMethodSecurity",
                     "EnableGlobalMethodSecurity",
                     "EnableReactiveMethodSecurity");
+    private static final Set<String> UNSIGNED_JWT_PARSE_METHODS =
+            Set.of(
+                    "parseClaimsJwt",
+                    "parsePlaintextJwt",
+                    "parseUnsecuredClaims",
+                    "parseUnsecuredContent");
+    private static final Set<String> INSECURE_TLS_TYPES =
+            Set.of("NoopHostnameVerifier", "TrustAllStrategy", "TrustSelfSignedStrategy");
 
     /**
      * Analyzes all Java source files under {@code src/main/java} within the given repository root.
@@ -230,6 +243,8 @@ public class SecurityPracticeFindingAnalyzer {
         detectBcryptLowStrength(cu, relativePath, findings);
         detectNoOpPasswordEncoder(cu, relativePath, findings);
         detectSecurityIgnoringBroadPath(cu, relativePath, findings);
+        detectJwtSignatureNotVerified(cu, relativePath, findings);
+        detectInsecureTlsBypass(cu, relativePath, findings);
 
         for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
             for (MethodDeclaration method : cls.getMethods()) {
@@ -370,6 +385,135 @@ public class SecurityPracticeFindingAnalyzer {
                             .build());
             return; // one finding per file is sufficient
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_JWT_SIGNATURE_NOT_VERIFIED
+    // ---------------------------------------------------------------------------
+
+    private void detectJwtSignatureNotVerified(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        Integer line = null;
+        String detail = null;
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            if (UNSIGNED_JWT_PARSE_METHODS.contains(call.getNameAsString())) {
+                line = call.getName().getBegin().map(position -> position.line).orElse(null);
+                detail =
+                        call.getNameAsString()
+                                + "(...) parses a JWT without verifying its signature";
+                break;
+            }
+        }
+        if (detail == null) {
+            for (FieldAccessExpr field : cu.findAll(FieldAccessExpr.class)) {
+                if (field.getNameAsString().equals("NONE")
+                        && simpleName(field.getScope().toString()).equals("SignatureAlgorithm")) {
+                    line = field.getBegin().map(position -> position.line).orElse(null);
+                    detail = "SignatureAlgorithm.NONE produces or accepts an unsigned JWT";
+                    break;
+                }
+            }
+        }
+        if (detail == null) {
+            return;
+        }
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_JWT_SIGNATURE_NOT_VERIFIED,
+                                FindingConfidence.HIGH)
+                        .shortMessage(detail + " in " + relativePath + ".")
+                        .whyBadPractice(
+                                "Reading a JWT without verifying its signature — jjwt"
+                                    + " parseClaimsJwt/parsePlaintextJwt/parseUnsecuredClaims, or"
+                                    + " the 'none' algorithm — trusts the token's claims with no"
+                                    + " proof of integrity. An attacker can mint a token with any"
+                                    + " claims, including elevated roles or another user's"
+                                    + " identity.")
+                        .possibleImpact(
+                                "Full authentication/authorization bypass: forged tokens are"
+                                        + " accepted as if issued by the server.")
+                        .recommendation(
+                                "Verify the signature with the expected key (parseSignedClaims /"
+                                    + " parseClaimsJws), reject the 'none' algorithm, and pin the"
+                                    + " accepted signature algorithm(s).")
+                        .evidence(detail + " found in " + relativePath + ".")
+                        .limitations(
+                                "Static analysis flags unsigned-parse APIs and the 'none'"
+                                    + " algorithm; it cannot confirm the parsed token is used for"
+                                    + " authentication.")
+                        .source(relativePath, line)
+                        .target("JWT verification")
+                        .build());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_INSECURE_TRUST_MANAGER (library trust-all / no-op verifier shortcuts)
+    // ---------------------------------------------------------------------------
+
+    private void detectInsecureTlsBypass(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        Integer line = null;
+        String detail = null;
+        for (ObjectCreationExpr expr : cu.findAll(ObjectCreationExpr.class)) {
+            String type = simpleName(expr.getType().asString());
+            if (INSECURE_TLS_TYPES.contains(type)) {
+                line = expr.getBegin().map(position -> position.line).orElse(null);
+                detail = type;
+                break;
+            }
+        }
+        if (detail == null) {
+            for (FieldAccessExpr field : cu.findAll(FieldAccessExpr.class)) {
+                String type = simpleName(field.getScope().toString());
+                if (INSECURE_TLS_TYPES.contains(type)) {
+                    line = field.getBegin().map(position -> position.line).orElse(null);
+                    detail = type;
+                    break;
+                }
+            }
+        }
+        if (detail == null) {
+            return;
+        }
+        boolean hostname = detail.equals("NoopHostnameVerifier");
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_INSECURE_TRUST_MANAGER, FindingConfidence.HIGH)
+                        .shortMessage(
+                                (hostname
+                                                ? "NoopHostnameVerifier disables hostname"
+                                                        + " verification"
+                                                : detail
+                                                        + " trusts all (or any self-signed)"
+                                                        + " certificates")
+                                        + " in "
+                                        + relativePath
+                                        + ".")
+                        .whyBadPractice(
+                                hostname
+                                        ? "NoopHostnameVerifier accepts a certificate regardless of"
+                                              + " which host it was issued for, disabling hostname"
+                                              + " verification on the TLS connection."
+                                        : "TrustAllStrategy/TrustSelfSignedStrategy make the client"
+                                                + " accept certificates that do not chain to a"
+                                                + " trusted CA, so the server's identity is never"
+                                                + " verified.")
+                        .possibleImpact(
+                                "A man-in-the-middle attacker can present any certificate and"
+                                    + " transparently intercept or modify traffic the application"
+                                    + " believes is secure.")
+                        .recommendation(
+                                "Remove the trust-all/no-op shortcut and rely on the default"
+                                    + " verification. If an internal CA or specific host must be"
+                                    + " trusted, load that CA into a truststore or pin the exact"
+                                    + " host rather than trusting everything.")
+                        .evidence(detail + " reference found in " + relativePath + ".")
+                        .limitations(
+                                "High confidence — these APIs exist only to bypass certificate or"
+                                        + " hostname verification.")
+                        .source(relativePath, line)
+                        .target(detail)
+                        .build());
     }
 
     // ---------------------------------------------------------------------------
