@@ -96,8 +96,12 @@ public class ConfigurationFindingAnalyzer {
                     "input-tokens",
                     "input-token-budget",
                     "output-token-budget");
+    // Flyway versioned migration filename: V<version>__<description>.sql, where <version> is one or
+    // more numeric segments separated by '.' or '_' (e.g. V1, V1.0, V2_1, V20230101). The version
+    // is intentionally allowed to be a single digit — the common V1__init.sql form.
     private static final Pattern FLYWAY_MIGRATION_PATTERN =
-            Pattern.compile("V(?<version>[0-9][^_]+)__.+\\.sql", Pattern.CASE_INSENSITIVE);
+            Pattern.compile(
+                    "V(?<version>[0-9]+(?:[._][0-9]+)*)__.+\\.sql", Pattern.CASE_INSENSITIVE);
 
     /**
      * Runs all configuration-based detections and returns the combined findings list.

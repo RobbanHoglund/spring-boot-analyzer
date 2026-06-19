@@ -31,6 +31,56 @@ class ConfigurationAnalyzerTest {
     @TempDir Path tempDir;
 
     @Test
+    void readsAllDocumentsInMultiDocumentYamlAndBindsActivationProfile() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.writeString(
+                tempDir.resolve("src/main/resources/application.yml"),
+                """
+                server:
+                  port: 8080
+                ---
+                spring:
+                  config:
+                    activate:
+                      on-profile: prod
+                prod:
+                  only:
+                    flag: true
+                """);
+
+        var analysis =
+                analyzer.analyze(
+                                tempDir,
+                                new BuildInfo(
+                                        BuildTool.GRADLE,
+                                        true,
+                                        "25",
+                                        java.util.List.of(),
+                                        "3.5.13",
+                                        "build.gradle plugin",
+                                        "HIGH"))
+                        .configurationAnalysis();
+
+        // The property in the second document must not be silently dropped.
+        var prodOnly =
+                analysis.properties().stream()
+                        .filter(property -> property.name().equals("prod.only.flag"))
+                        .findFirst()
+                        .orElseThrow();
+        // It must be attributed to the in-file activation profile, not the filename profile.
+        assertThat(prodOnly.profile()).isEqualTo("prod");
+
+        var serverPort =
+                analysis.properties().stream()
+                        .filter(property -> property.name().equals("server.port"))
+                        .findFirst()
+                        .orElseThrow();
+        assertThat(serverPort.profile()).isEqualTo("default");
+
+        assertThat(analysis.summary().profiles()).contains("default", "prod");
+    }
+
+    @Test
     void analyzesConfigurationFilesMetadataCustomPropertiesAndReferences() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources/META-INF"));
         Files.writeString(

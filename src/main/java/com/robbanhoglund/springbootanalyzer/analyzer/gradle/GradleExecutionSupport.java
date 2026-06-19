@@ -925,6 +925,10 @@ gradle.projectsLoaded {
             Path gradleUserHome, AnalyzerProperties.GradleProperties properties)
             throws IOException {
         Properties fileProperties = new Properties();
+        // Disable the Gradle daemon so build-aware (EXTENDED) runs do not leave a long-lived daemon
+        // JVM executing repository-controlled build logic after the analysis returns. With this set
+        // the Tooling API uses a single-use daemon that terminates when the build completes.
+        fileProperties.setProperty("org.gradle.daemon", "false");
         if (properties.copyHostGradleProxyProperties()) {
             Map<String, String> hostProxyProperties = hostGradleProxyProperties();
             fileProperties.putAll(hostProxyProperties);
@@ -948,9 +952,6 @@ gradle.projectsLoaded {
                 fileProperties.setProperty("systemProp.http.proxyPassword", proxy.password());
                 fileProperties.setProperty("systemProp.https.proxyPassword", proxy.password());
             }
-        }
-        if (fileProperties.isEmpty()) {
-            return;
         }
         Path gradlePropertiesFile = gradleUserHome.resolve("gradle.properties");
         try (var outputStream = Files.newOutputStream(gradlePropertiesFile)) {

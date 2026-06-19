@@ -533,6 +533,49 @@ record CreateRequest(@NotBlank String symbol, int quantity) {
     }
 
     @Test
+    void doesNotFlagSelfInvocationForCallOnCollaboratorBean() throws IOException {
+        // A call qualified by an injected collaborator (orders.save()) targets a different bean,
+        // even though this class also declares a @Transactional method named save(). It must not
+        // be reported as self-invocation.
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+
+                @Service
+                class OrderService {
+                    private final OrderRepository orders = null;
+
+                    public void handle() {
+                        orders.save();
+                    }
+
+                    @Transactional
+                    public void save() {}
+                }
+
+                interface OrderRepository {
+                    void save();
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_TRANSACTIONAL_SELF_INVOCATION
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
+    }
+
+    @Test
     void respectsValidRequestBodyAnnotations() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
         Path sourceRoot =

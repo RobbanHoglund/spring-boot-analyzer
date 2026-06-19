@@ -22,10 +22,14 @@ import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 @Component
 public class PropertyReferenceAnalyzer {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(PropertyReferenceAnalyzer.class);
 
     private static final Pattern VALUE_PATTERN = Pattern.compile("\\$\\{([^}:]+)(?::([^}]*))?}");
     private final JavaParser javaParser;
@@ -53,8 +57,10 @@ public class PropertyReferenceAnalyzer {
                     .sorted(Comparator.naturalOrder())
                     .forEach(path -> analyzeSourceFile(repositoryRoot, path, references));
         } catch (IOException exception) {
-            throw new IllegalStateException(
-                    "Failed to scan property references under " + sourceRoot, exception);
+            LOGGER.warn(
+                    "Failed to fully scan property references under {}; returning partial results",
+                    sourceRoot,
+                    exception);
         }
         return List.copyOf(references);
     }
@@ -93,7 +99,8 @@ public class PropertyReferenceAnalyzer {
                 }
             }
         } catch (IOException exception) {
-            throw new IllegalStateException("Failed to read source file: " + sourceFile, exception);
+            // Skip an individual unreadable file rather than aborting the scan.
+            LOGGER.debug("Failed to read source file {}; skipping", sourceFile, exception);
         }
     }
 

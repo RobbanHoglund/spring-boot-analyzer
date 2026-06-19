@@ -32,10 +32,15 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Stream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 @Component
 public class RuntimeStackAnalyzer {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(RuntimeStackAnalyzer.class);
+
     private final JavaParser javaParser =
             new JavaParser(
                     new ParserConfiguration()
@@ -161,8 +166,10 @@ public class RuntimeStackAnalyzer {
                 }
             }
         } catch (IOException exception) {
-            throw new IllegalStateException(
-                    "Failed to scan source files for runtime stack analysis", exception);
+            LOGGER.warn(
+                    "Failed to fully scan source files for runtime stack analysis;"
+                            + " using partial evidence",
+                    exception);
         }
 
         boolean controllerDetected =
@@ -189,8 +196,10 @@ public class RuntimeStackAnalyzer {
         try {
             return javaParser.parse(file).getResult().orElse(null);
         } catch (IOException exception) {
-            throw new IllegalStateException(
-                    "Failed to parse Java source for runtime stack analysis: " + file, exception);
+            // Skip an individual unreadable file rather than aborting runtime stack analysis.
+            LOGGER.debug(
+                    "Failed to parse {} for runtime stack analysis; skipping", file, exception);
+            return null;
         }
     }
 

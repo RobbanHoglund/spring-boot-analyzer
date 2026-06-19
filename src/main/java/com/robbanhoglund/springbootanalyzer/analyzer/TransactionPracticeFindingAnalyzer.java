@@ -1,7 +1,5 @@
 package com.robbanhoglund.springbootanalyzer.analyzer;
 
-import com.github.javaparser.JavaParser;
-import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
@@ -9,14 +7,10 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
-import java.util.stream.Stream;
 import org.springframework.stereotype.Component;
 
 /**
@@ -37,16 +31,6 @@ import org.springframework.stereotype.Component;
 @Component
 public class TransactionPracticeFindingAnalyzer {
 
-    private final JavaParser javaParser;
-
-    public TransactionPracticeFindingAnalyzer() {
-        this.javaParser =
-                new JavaParser(
-                        new ParserConfiguration()
-                                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                                .setCharacterEncoding(StandardCharsets.UTF_8));
-    }
-
     /**
      * Analyzes all Java source files under {@code src/main/java} within the given repository root.
      *
@@ -54,21 +38,22 @@ public class TransactionPracticeFindingAnalyzer {
      * @return list of findings; never null
      */
     public List<Finding> analyze(Path repositoryRoot) {
+        return analyze(JavaSources.from(repositoryRoot));
+    }
+
+    /**
+     * Analyzes the {@code src/main/java} sources parsed once and shared across the pipeline.
+     *
+     * @param sources the source tree parsed once for this analysis
+     * @return list of findings; never null
+     */
+    public List<Finding> analyze(JavaSources sources) {
         List<Finding> findings = new ArrayList<>();
-        Path sourceRoot = repositoryRoot.resolve("src/main/java");
-        if (Files.notExists(sourceRoot)) {
-            return findings;
-        }
-        try (Stream<Path> files = Files.walk(sourceRoot)) {
-            for (Path sourceFile :
-                    files.filter(Files::isRegularFile)
-                            .filter(p -> p.toString().endsWith(".java"))
-                            .sorted(Comparator.naturalOrder())
-                            .toList()) {
-                analyzeSourceFile(repositoryRoot, sourceFile, findings);
+        for (JavaSources.JavaFile file : sources.files()) {
+            if (file.compilationUnit() == null) {
+                continue;
             }
-        } catch (IOException e) {
-            // Best-effort — skip unreadable files
+            analyzeSourceFile(file.compilationUnit(), file.relativePath(), findings);
         }
         return findings;
     }
@@ -77,15 +62,8 @@ public class TransactionPracticeFindingAnalyzer {
     // Per-file analysis
     // ---------------------------------------------------------------------------
 
-    private void analyzeSourceFile(Path repositoryRoot, Path sourceFile, List<Finding> findings)
-            throws IOException {
-        var parseResult = javaParser.parse(sourceFile);
-        if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
-            return;
-        }
-        CompilationUnit cu = parseResult.getResult().orElseThrow();
-        String relativePath = repositoryRoot.relativize(sourceFile).toString().replace('\\', '/');
-
+    private void analyzeSourceFile(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
         for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
             for (MethodDeclaration method : cls.getMethods()) {
                 detectAsyncTransactional(cls, method, relativePath, findings);

@@ -10,6 +10,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
@@ -32,6 +34,8 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class BuildFileAnalyzer {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(BuildFileAnalyzer.class);
 
     private static final List<String> SPRING_BOOT_MARKERS =
             List.of("org.springframework.boot", "spring-boot-starter", "spring-boot-maven-plugin");
@@ -173,7 +177,10 @@ public class BuildFileAnalyzer {
         try {
             return Files.readString(path);
         } catch (IOException exception) {
-            throw new IllegalStateException("Failed to read build file: " + path, exception);
+            // Per the class contract, an individual unreadable build file is skipped rather than
+            // aborting the whole analysis.
+            LOGGER.debug("Failed to read build file {}; skipping", path, exception);
+            return "";
         }
     }
 

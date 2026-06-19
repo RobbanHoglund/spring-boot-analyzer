@@ -1,7 +1,5 @@
 package com.robbanhoglund.springbootanalyzer.analyzer;
 
-import com.github.javaparser.JavaParser;
-import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.NodeList;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
@@ -11,15 +9,11 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.RuntimeStackAnalysis;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
-import java.util.stream.Stream;
 import org.springframework.stereotype.Component;
 
 /**
@@ -51,16 +45,6 @@ public class ObservabilityFindingAnalyzer {
     private static final Set<String> MESSAGING_LISTENER_ANNOTATIONS =
             Set.of("KafkaListener", "RabbitListener", "JmsListener", "SqsListener");
 
-    private final JavaParser javaParser;
-
-    public ObservabilityFindingAnalyzer() {
-        this.javaParser =
-                new JavaParser(
-                        new ParserConfiguration()
-                                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                                .setCharacterEncoding(StandardCharsets.UTF_8));
-    }
-
     /**
      * Walks every {@code .java} file under {@code <repositoryRoot>/src/main/java} and
      * returns all observability-gap findings.
@@ -74,54 +58,39 @@ public class ObservabilityFindingAnalyzer {
      * @return all detected observability-gap findings; never null, may be empty
      */
     public List<Finding> analyze(Path repositoryRoot, RuntimeStackAnalysis runtimeStackAnalysis) {
-        List<Finding> findings = new ArrayList<>();
-        detectObservabilityGaps(repositoryRoot, runtimeStackAnalysis, findings);
-        return findings;
+        return analyze(JavaSources.from(repositoryRoot), runtimeStackAnalysis);
     }
 
-    private void detectObservabilityGaps(
-            Path repositoryRoot,
-            RuntimeStackAnalysis runtimeStackAnalysis,
-            List<Finding> findings) {
-        Path sourceRoot = repositoryRoot.resolve("src/main/java");
-        if (Files.notExists(sourceRoot)) {
-            return;
-        }
+    /**
+     * Analyzes the {@code src/main/java} sources parsed once and shared across the pipeline.
+     *
+     * @param sources the source tree parsed once for this analysis
+     * @param runtimeStackAnalysis the detected runtime stacks; used for version gating
+     * @return all detected observability-gap findings; never null, may be empty
+     */
+    public List<Finding> analyze(JavaSources sources, RuntimeStackAnalysis runtimeStackAnalysis) {
+        List<Finding> findings = new ArrayList<>();
         boolean springBoot3Plus = isSpringBoot3Plus(runtimeStackAnalysis);
-        try (Stream<Path> files = Files.walk(sourceRoot)) {
-            for (Path file :
-                    files.filter(Files::isRegularFile)
-                            .filter(path -> path.toString().endsWith(".java"))
-                            .sorted(Comparator.naturalOrder())
-                            .toList()) {
-                try {
-                    javaParser
-                            .parse(file)
-                            .ifSuccessful(
-                                    cu -> {
-                                        String relativePath =
-                                                repositoryRoot
-                                                        .relativize(file)
-                                                        .toString()
-                                                        .replace('\\', '/');
-                                        cu.findAll(ClassOrInterfaceDeclaration.class)
-                                                .forEach(
-                                                        cls ->
-                                                                cls.getMethods()
-                                                                        .forEach(
-                                                                                method ->
-                                                                                        detectObservabilityOnMethod(
-                                                                                                relativePath,
-                                                                                                cls,
-                                                                                                method,
-                                                                                                springBoot3Plus,
-                                                                                                findings)));
-                                    });
-                } catch (IOException ignored) {
-                }
+        for (JavaSources.JavaFile file : sources.files()) {
+            if (file.compilationUnit() == null) {
+                continue;
             }
-        } catch (IOException ignored) {
+            String relativePath = file.relativePath();
+            file.compilationUnit()
+                    .findAll(ClassOrInterfaceDeclaration.class)
+                    .forEach(
+                            cls ->
+                                    cls.getMethods()
+                                            .forEach(
+                                                    method ->
+                                                            detectObservabilityOnMethod(
+                                                                    relativePath,
+                                                                    cls,
+                                                                    method,
+                                                                    springBoot3Plus,
+                                                                    findings)));
         }
+        return findings;
     }
 
     private void detectObservabilityOnMethod(

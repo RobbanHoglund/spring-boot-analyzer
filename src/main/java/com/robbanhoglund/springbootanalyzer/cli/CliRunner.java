@@ -178,7 +178,7 @@ public class CliRunner implements ApplicationRunner, Callable<Integer> {
 
         int code = computeExitCode(response);
         if (code == 1) {
-            int count = response.findings() == null ? 0 : response.findings().size();
+            long count = countAtOrAboveThreshold(response);
             progress(
                     count
                             + " finding"
@@ -214,15 +214,16 @@ public class CliRunner implements ApplicationRunner, Callable<Integer> {
 
     private int computeExitCode(AnalyzeRepositoryResponse response) {
         if (failOn == FailOn.never) return 0;
+        return countAtOrAboveThreshold(response) > 0 ? 1 : 0;
+    }
+
+    private long countAtOrAboveThreshold(AnalyzeRepositoryResponse response) {
+        if (failOn == FailOn.never) return 0;
         List<com.robbanhoglund.springbootanalyzer.analyzer.model.Finding> findings =
                 response.findings() == null ? List.of() : response.findings();
-        boolean hasThresholdFinding =
-                findings.stream()
-                        .anyMatch(
-                                f ->
-                                        f.severity() != null
-                                                && rank(f.severity()) >= rank(failOn.severity));
-        return hasThresholdFinding ? 1 : 0;
+        return findings.stream()
+                .filter(f -> f.severity() != null && rank(f.severity()) >= rank(failOn.severity))
+                .count();
     }
 
     private static int rank(FindingSeverity severity) {

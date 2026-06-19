@@ -868,17 +868,6 @@ public final class FindingRules {
 
     // ── Security practices ────────────────────────────────────────────────────
 
-    /** CSRF protection is explicitly disabled in a Spring Security {@code SecurityFilterChain}
-     *  configuration method. Detected as {@code .csrf().disable()} or
-     *  {@code csrf(AbstractHttpConfigurer::disable)}. */
-    public static final FindingRule SPRING_CSRF_DISABLED_CODE =
-            rule(
-                    "SPRING_CSRF_DISABLED_CODE",
-                    "CSRF protection disabled in Spring Security configuration",
-                    FindingSeverity.WARNING,
-                    FindingCategory.SECURITY,
-                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
-
     /** A private method is annotated with {@code @PreAuthorize}, {@code @PostAuthorize},
      *  {@code @Secured}, or {@code @RolesAllowed}. Spring Security's AOP proxy cannot
      *  intercept private methods; the authorization check is silently skipped. */

@@ -13,6 +13,7 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.SpringComponentType;
 import com.robbanhoglund.springbootanalyzer.analyzer.runtime.RuntimeStackAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.scheduling.SchedulingAnalyzer;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import com.robbanhoglund.springbootanalyzer.config.AnalyzerProperties;
 import com.robbanhoglund.springbootanalyzer.git.GitRepositoryReference;
 import java.nio.file.Path;
@@ -151,6 +152,9 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
     public AnalysisResult analyze(
             GitRepositoryReference repositoryReference, Path repositoryRoot, String workspaceId) {
         BuildInfo buildInfo = buildFileAnalyzer.analyze(repositoryRoot);
+        // Parse the Java source tree once and share it across the finding analyzers below, instead
+        // of each analyzer walking and re-parsing src/main/java independently.
+        JavaSources javaSources = JavaSources.from(repositoryRoot);
         SourceAnalysis sourceAnalysis = javaSourceAnalyzer.analyze(repositoryRoot);
         ConfigurationAnalyzer.Result configurationResult =
                 configurationAnalyzer.analyze(repositoryRoot, buildInfo);
@@ -207,16 +211,16 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
                         gradleResult.gradleModelAnalysis()));
         findings.addAll(
                 observabilityFindingAnalyzer.analyze(
-                        repositoryRoot, runtimeResult.runtimeStackAnalysis()));
+                        javaSources, runtimeResult.runtimeStackAnalysis()));
         findings.addAll(testingPracticeFindingAnalyzer.analyze(repositoryRoot));
-        findings.addAll(cachingPracticeFindingAnalyzer.analyze(repositoryRoot));
-        findings.addAll(observabilityGapFindingAnalyzer.analyze(repositoryRoot));
-        findings.addAll(transactionPracticeFindingAnalyzer.analyze(repositoryRoot));
-        findings.addAll(securityPracticeFindingAnalyzer.analyze(repositoryRoot));
-        findings.addAll(scalabilityPracticeFindingAnalyzer.analyze(repositoryRoot));
+        findings.addAll(cachingPracticeFindingAnalyzer.analyze(javaSources));
+        findings.addAll(observabilityGapFindingAnalyzer.analyze(javaSources));
+        findings.addAll(transactionPracticeFindingAnalyzer.analyze(javaSources));
+        findings.addAll(securityPracticeFindingAnalyzer.analyze(javaSources));
+        findings.addAll(scalabilityPracticeFindingAnalyzer.analyze(javaSources));
         findings.addAll(
                 migrationPracticeFindingAnalyzer.analyze(
-                        repositoryRoot, runtimeResult.runtimeStackAnalysis()));
+                        javaSources, runtimeResult.runtimeStackAnalysis()));
 
         return new AnalysisResult(
                 repositoryReference.repositoryUrl(),
@@ -232,8 +236,8 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
                 runtimeResult.runtimeStackAnalysis(),
                 httpResult.httpSurfaceAnalysis(),
                 gradleResult.gradleModelAnalysis(),
-                schedulingAnalyzer.analyze(repositoryRoot),
-                messagingAnalyzer.analyze(repositoryRoot));
+                schedulingAnalyzer.analyze(javaSources),
+                messagingAnalyzer.analyze(javaSources));
     }
 
     private void addApplicationStructureFindings(

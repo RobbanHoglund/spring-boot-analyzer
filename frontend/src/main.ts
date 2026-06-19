@@ -17,8 +17,6 @@ import {
   addOrUpdateTokenProfile,
   deleteTokenProfile,
   findMatchingTokenProfile,
-  findTokenProfileById,
-  inferRepositoryHost,
   loadTokenProfiles,
   maskToken
 } from './tokenStore';
@@ -29,7 +27,6 @@ import type {
   ApplicationProperty,
   DetectedClass,
   Finding,
-  FindingOccurrence,
   HighlightRange,
   RepositoryProfile,
   RuleInfo,

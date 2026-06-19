@@ -391,6 +391,24 @@ class ObservabilityGapFindingAnalyzerTest {
     }
 
     @Test
+    void doesNotFlagAsyncMethodReturningFullyQualifiedCompletableFuture() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ReportService.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.Async;
+                public class ReportService {
+                    @Async
+                    public java.util.concurrent.CompletableFuture<String> generateReport() {
+                        return java.util.concurrent.CompletableFuture.completedFuture("report");
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_ASYNC_NON_FUTURE_RETURN")).isNull();
+    }
+
+    @Test
     void doesNotFlagAsyncMethodReturningFuture() throws IOException {
         writeSourceFile(
                 "src/main/java/com/example/ReportService.java",

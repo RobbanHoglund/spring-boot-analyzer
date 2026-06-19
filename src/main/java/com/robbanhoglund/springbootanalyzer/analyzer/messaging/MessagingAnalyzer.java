@@ -1,7 +1,5 @@
 package com.robbanhoglund.springbootanalyzer.analyzer.messaging;
 
-import com.github.javaparser.JavaParser;
-import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
@@ -11,14 +9,11 @@ import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.MemberValuePair;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.messaging.MessageListenerEndpoint;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.messaging.MessagingAnalysis;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Stream;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -39,48 +34,18 @@ public class MessagingAnalyzer {
                     "JmsListener", "destination",
                     "SqsListener", "value");
 
-    private final JavaParser javaParser;
-
-    public MessagingAnalyzer() {
-        this.javaParser =
-                new JavaParser(
-                        new ParserConfiguration()
-                                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                                .setCharacterEncoding(StandardCharsets.UTF_8));
+    public MessagingAnalysis analyze(Path repositoryRoot) {
+        return analyze(JavaSources.from(repositoryRoot));
     }
 
-    public MessagingAnalysis analyze(Path repositoryRoot) {
-        Path sourceRoot = repositoryRoot.resolve("src/main/java");
-        if (!Files.isDirectory(sourceRoot)) {
-            return MessagingAnalysis.empty();
-        }
-
+    public MessagingAnalysis analyze(JavaSources sources) {
         List<MessageListenerEndpoint> listeners = new ArrayList<>();
-
-        try (Stream<Path> paths = Files.walk(sourceRoot)) {
-            paths.filter(p -> p.toString().endsWith(".java"))
-                    .forEach(
-                            file -> {
-                                try {
-                                    javaParser
-                                            .parse(file)
-                                            .ifSuccessful(
-                                                    cu -> {
-                                                        String relativePath =
-                                                                repositoryRoot
-                                                                        .relativize(file)
-                                                                        .toString()
-                                                                        .replace('\\', '/');
-                                                        collectFromCompilationUnit(
-                                                                cu, relativePath, listeners);
-                                                    });
-                                } catch (IOException ignored) {
-                                }
-                            });
-        } catch (IOException e) {
-            return MessagingAnalysis.empty();
+        for (JavaSources.JavaFile file : sources.files()) {
+            if (file.compilationUnit() == null) {
+                continue;
+            }
+            collectFromCompilationUnit(file.compilationUnit(), file.relativePath(), listeners);
         }
-
         return new MessagingAnalysis(List.copyOf(listeners));
     }
 

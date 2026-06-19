@@ -1,7 +1,5 @@
 package com.robbanhoglund.springbootanalyzer.analyzer;
 
-import com.github.javaparser.JavaParser;
-import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
@@ -11,15 +9,11 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
-import java.util.stream.Stream;
 import org.springframework.stereotype.Component;
 
 /**
@@ -54,16 +48,6 @@ public class ObservabilityGapFindingAnalyzer {
     private static final Set<String> ASYNC_ALLOWED_RETURN_TYPES =
             Set.of("Future", "CompletableFuture", "ListenableFuture", "Mono", "Flux");
 
-    private final JavaParser javaParser;
-
-    public ObservabilityGapFindingAnalyzer() {
-        this.javaParser =
-                new JavaParser(
-                        new ParserConfiguration()
-                                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                                .setCharacterEncoding(StandardCharsets.UTF_8));
-    }
-
     /**
      * Analyzes all Java source files under {@code src/main/java}.
      *
@@ -71,21 +55,21 @@ public class ObservabilityGapFindingAnalyzer {
      * @return list of findings; never null
      */
     public List<Finding> analyze(Path repositoryRoot) {
+        return analyze(JavaSources.from(repositoryRoot));
+    }
+
+    /**
+     * Analyzes the {@code src/main/java} sources parsed once and shared across the pipeline.
+     *
+     * @param sources the source tree parsed once for this analysis
+     * @return list of findings; never null
+     */
+    public List<Finding> analyze(JavaSources sources) {
         List<Finding> findings = new ArrayList<>();
-        Path sourceRoot = repositoryRoot.resolve("src/main/java");
-        if (Files.notExists(sourceRoot)) {
-            return findings;
-        }
-        try (Stream<Path> files = Files.walk(sourceRoot)) {
-            for (Path sourceFile :
-                    files.filter(Files::isRegularFile)
-                            .filter(p -> p.toString().endsWith(".java"))
-                            .sorted(Comparator.naturalOrder())
-                            .toList()) {
-                analyzeSourceFile(repositoryRoot, sourceFile, findings);
+        for (JavaSources.JavaFile file : sources.files()) {
+            if (file.compilationUnit() != null) {
+                analyzeSourceFile(file.compilationUnit(), file.relativePath(), findings);
             }
-        } catch (IOException e) {
-            // Best-effort — skip unreadable files
         }
         return findings;
     }
@@ -94,15 +78,8 @@ public class ObservabilityGapFindingAnalyzer {
     // Per-file analysis
     // ---------------------------------------------------------------------------
 
-    private void analyzeSourceFile(Path repositoryRoot, Path sourceFile, List<Finding> findings)
-            throws IOException {
-        var parseResult = javaParser.parse(sourceFile);
-        if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
-            return;
-        }
-        CompilationUnit cu = parseResult.getResult().orElseThrow();
-        String relativePath = repositoryRoot.relativize(sourceFile).toString().replace('\\', '/');
-
+    private void analyzeSourceFile(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
         detectWebClientManualConstruction(cu, relativePath, findings);
 
         for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
@@ -444,7 +421,11 @@ public class ObservabilityGapFindingAnalyzer {
             return;
         }
         String rawType = rawTypeName(method.getType().asString());
-        if (ASYNC_ALLOWED_RETURN_TYPES.contains(rawType)) {
+        // ASYNC_ALLOWED_RETURN_TYPES holds simple names, so compare against the simple name to
+        // avoid a false positive when the method declares a fully-qualified return type
+        // (e.g. java.util.concurrent.CompletableFuture<T>).
+        String simpleType = rawType.substring(rawType.lastIndexOf('.') + 1);
+        if (ASYNC_ALLOWED_RETURN_TYPES.contains(simpleType)) {
             return;
         }
         Integer line = method.getBegin().map(p -> p.line).orElse(null);

@@ -751,7 +751,7 @@ function renderSecurityPostureCard(result: AnalyzeRepositoryResponse, actions: R
     securityConfigDetected ? 'Detected' : 'Not confirmed statically',
     securityConfigDetected ? 'positive' : 'muted',
     secCfgSourceFile
-      ? { kind: 'click', label: `Open ${secCfgSourceFile}`, onClick: () => actions.onOpenHttpSource(secCfgSourceFile, undefined, secCfgLabel, `sec-cfg-${Math.random().toString(36).slice(2, 7)}`) }
+      ? { kind: 'click', label: `Open ${secCfgSourceFile}`, onClick: (triggerId) => actions.onOpenHttpSource(secCfgSourceFile, undefined, secCfgLabel, triggerId) }
       : undefined));
 
   list.appendChild(renderDetailRow('Inbound endpoints',
@@ -784,7 +784,7 @@ function renderSecurityPostureCard(result: AnalyzeRepositoryResponse, actions: R
     healthDetailsExposed ? 'warning' : 'neutral',
     healthDetailsExposed
       ? (healthSourceFile
-          ? { kind: 'click', label: `Open ${healthSourceFile}`, onClick: () => actions.onOpenHttpSource(healthSourceFile, healthFinding?.line ?? undefined, 'Health details config', `hd-${Math.random().toString(36).slice(2, 7)}`) }
+          ? { kind: 'click', label: `Open ${healthSourceFile}`, onClick: (triggerId) => actions.onOpenHttpSource(healthSourceFile, healthFinding?.line ?? undefined, 'Health details config', triggerId) }
           : { kind: 'href', href: '#results-findings', label: 'View findings' })
       : undefined));
 
@@ -865,7 +865,7 @@ function renderPersistenceSummaryCard(result: AnalyzeRepositoryResponse, actions
     runtimeDatabase ?? 'Not confirmed statically',
     runtimeDatabase ? 'positive' : 'muted',
     runtimeDatasourceProp?.sourceFile
-      ? { kind: 'click', label: `Open ${runtimeDatasourceProp.sourceFile}`, onClick: () => actions.onOpenHttpSource(runtimeDatasourceProp.sourceFile!, runtimeDatasourceProp.line ?? undefined, 'spring.datasource.url', `ds-${Math.random().toString(36).slice(2, 7)}`) }
+      ? { kind: 'click', label: `Open ${runtimeDatasourceProp.sourceFile}`, onClick: (triggerId) => actions.onOpenHttpSource(runtimeDatasourceProp.sourceFile!, runtimeDatasourceProp.line ?? undefined, 'spring.datasource.url', triggerId) }
       : runtimeDatabase ? { kind: 'href', href: '#results-configuration', label: 'View configuration' } : undefined));
 
   list.appendChild(renderDetailRow('Test database',
@@ -1269,7 +1269,7 @@ function renderSchedulingSection(result: AnalyzeRepositoryResponse, actions: Res
     for (const task of tasks) {
       const row = tbody.insertRow();
       row.className = 'data-row';
-      const srcId = `sched-src-${Math.random().toString(36).slice(2, 9)}`;
+      const srcId = stableTriggerId('sched-src', task.className, task.methodName, task.sourceFile, task.line);
       appendCells(row, [
         badgeCell(task.scheduleType ?? 'UNKNOWN', 'badge badge-runtime'),
         truncateCell(task.scheduleValue ?? '—', 'http-cell-path'),
@@ -1290,7 +1290,7 @@ function renderSchedulingSection(result: AnalyzeRepositoryResponse, actions: Res
     for (const m of asyncMethods) {
       const row = tbody.insertRow();
       row.className = 'data-row';
-      const srcId = `async-src-${Math.random().toString(36).slice(2, 9)}`;
+      const srcId = stableTriggerId('async-src', m.className, m.methodName, m.sourceFile, m.line);
       appendCells(row, [
         technicalClampCell(m.className ?? '?', undefined, 'http-cell-controller'),
         truncateCell(m.methodName ?? '?', 'http-cell-handler'),
@@ -1308,7 +1308,7 @@ function renderSchedulingSection(result: AnalyzeRepositoryResponse, actions: Res
     for (const listener of listeners) {
       const row = tbody.insertRow();
       row.className = 'data-row';
-      const srcId = `msg-src-${Math.random().toString(36).slice(2, 9)}`;
+      const srcId = stableTriggerId('msg-src', listener.className, listener.methodName, listener.sourceFile, listener.line);
       appendCells(row, [
         badgeCell(listener.listenerType ?? '?', 'badge badge-category'),
         truncateCell((listener.destinations ?? []).join(', ') || '—', 'http-cell-path'),
@@ -1351,7 +1351,7 @@ function renderInboundEndpointsTable(
   for (const endpoint of visible) {
     const row = tbody.insertRow();
     row.className = 'data-row';
-    const srcId = `inbound-src-${Math.random().toString(36).slice(2, 9)}`;
+    const srcId = stableTriggerId('inbound-src', endpoint.controllerClass, endpoint.handlerMethod, endpoint.sourceFile, endpoint.line);
     appendCells(row, [
       badgeCell(endpoint.httpMethod ?? 'ANY', `badge badge-http`),
       truncateCell(endpoint.path ?? '/', 'http-cell-path'),
@@ -1400,7 +1400,7 @@ function renderOutboundEndpointsTable(
   for (const endpoint of visible) {
     const row = tbody.insertRow();
     row.className = 'data-row';
-    const srcId = `outbound-src-${Math.random().toString(36).slice(2, 9)}`;
+    const srcId = stableTriggerId('outbound-src', endpoint.clientType, endpoint.host, endpoint.urlOrTemplate, endpoint.sourceFile, endpoint.line);
     appendCells(row, [
       truncateCell(endpoint.clientType ?? 'HTTP client', 'http-cell-client'),
       truncateCell(endpoint.method ?? 'REQUEST', 'http-cell-method'),
@@ -1449,7 +1449,7 @@ function renderConfiguredUrlsTable(
   for (const item of visible) {
     const row = tbody.insertRow();
     row.className = 'data-row';
-    const srcId = `configured-url-src-${Math.random().toString(36).slice(2, 9)}`;
+    const srcId = stableTriggerId('configured-url-src', item.propertyName, item.profile, item.sourceFile, item.line);
     appendCells(row, [
       technicalClampCell(item.propertyName ?? 'Unknown', undefined, 'http-cell-property'),
       technicalClampCell(
@@ -1492,7 +1492,7 @@ function renderActuatorTable(
   for (const exposure of visible) {
     const row = tbody.insertRow();
     row.className = 'data-row';
-    const srcId = `actuator-src-${Math.random().toString(36).slice(2, 9)}`;
+    const srcId = stableTriggerId('actuator-src', exposure.propertyName, exposure.profile, exposure.sourceFile, exposure.line);
     appendCells(row, [
       technicalClampCell(exposure.propertyName ?? 'Unknown', undefined, 'http-cell-property'),
       truncateCell(exposure.value ?? '—', 'http-cell-value-short'),
@@ -2985,7 +2985,7 @@ function insightCardBody(card: HTMLElement, content: HTMLElement, footer?: { hre
 type DetailValueTone = 'positive' | 'warning' | 'error' | 'muted' | 'neutral';
 type DetailRowAction =
   | { kind: 'href'; href: string; label: string }
-  | { kind: 'click'; onClick: () => void; label: string };
+  | { kind: 'click'; onClick: (triggerId: string) => void; label: string };
 
 function renderDetailRow(
   label: string,
@@ -3007,13 +3007,13 @@ function renderDetailRow(
       });
       valueCell.appendChild(link);
     } else {
-      const triggerId = `dra-${Math.random().toString(36).slice(2, 8)}`;
+      const triggerId = stableTriggerId('dra', label, value);
       const btn = element('button', {
         className: 'detail-row-action',
         text: 'View →',
         attributes: { id: triggerId, type: 'button', title: action.label }
       });
-      btn.addEventListener('click', action.onClick);
+      btn.addEventListener('click', () => action.onClick(triggerId));
       valueCell.appendChild(btn);
     }
   }
@@ -5269,6 +5269,17 @@ function hashString(value: string): string {
     hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
   }
   return hash.toString(36);
+}
+
+/**
+ * Builds a DOM id that is stable across re-renders by deriving it from the content's identity.
+ * Source-link buttons pass their id as the modal's return-focus target, so the id must survive
+ * the re-render triggered when the modal closes — a random id would leave focus stranded on
+ * <body>. Two rows with identical identity collapse to the same id, which is acceptable for
+ * focus restoration.
+ */
+function stableTriggerId(prefix: string, ...parts: Array<string | number | null | undefined>): string {
+  return `${prefix}-${hashString(parts.map((part) => part ?? '').join('#'))}`;
 }
 
 function groupFindings(findings: Finding[]): GroupedPresentedFinding[] {

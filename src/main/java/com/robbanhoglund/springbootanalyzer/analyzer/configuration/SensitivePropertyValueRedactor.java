@@ -61,9 +61,7 @@ public class SensitivePropertyValueRedactor {
     }
 
     public String redact(String value) {
-        if (value == null || value.isBlank()) {
-            return "[redacted]";
-        }
+        // Sensitive values are always fully redacted regardless of their content.
         return "[redacted]";
     }
 }

@@ -1,7 +1,5 @@
 package com.robbanhoglund.springbootanalyzer.analyzer;
 
-import com.github.javaparser.JavaParser;
-import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
@@ -13,12 +11,11 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -77,16 +74,6 @@ public class CachingPracticeFindingAnalyzer {
                     "Queue",
                     "PriorityQueue");
 
-    private final JavaParser javaParser;
-
-    public CachingPracticeFindingAnalyzer() {
-        this.javaParser =
-                new JavaParser(
-                        new ParserConfiguration()
-                                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                                .setCharacterEncoding(StandardCharsets.UTF_8));
-    }
-
     /**
      * Analyzes all Java source files under {@code src/main/java} within the given repository root.
      *
@@ -94,41 +81,28 @@ public class CachingPracticeFindingAnalyzer {
      * @return list of findings; never null
      */
     public List<Finding> analyze(Path repositoryRoot) {
+        return analyze(JavaSources.from(repositoryRoot));
+    }
+
+    /**
+     * Analyzes the {@code src/main/java} sources parsed once and shared across the pipeline.
+     *
+     * @param sources the source tree parsed once for this analysis
+     * @return list of findings; never null
+     */
+    public List<Finding> analyze(JavaSources sources) {
         List<Finding> findings = new ArrayList<>();
-        Path sourceRoot = repositoryRoot.resolve("src/main/java");
-        if (Files.notExists(sourceRoot)) {
-            return findings;
-        }
-        boolean[] cacheableFound = {false};
-        try (Stream<Path> files = Files.walk(sourceRoot)) {
-            for (Path sourceFile :
-                    files.filter(Files::isRegularFile)
-                            .filter(p -> p.toString().endsWith(".java"))
-                            .sorted(Comparator.naturalOrder())
-                            .toList()) {
-                int before = findings.size();
-                analyzeSourceFile(repositoryRoot, sourceFile, findings);
-                // Track whether any @Cacheable was found (by checking if new findings appeared
-                // from SPRING_CACHEABLE_* rules, or by scanning the file content for the
-                // annotation)
-                if (!cacheableFound[0]) {
-                    try {
-                        String content =
-                                java.nio.file.Files.readString(
-                                        sourceFile, java.nio.charset.StandardCharsets.UTF_8);
-                        if (content.contains("@Cacheable")) {
-                            cacheableFound[0] = true;
-                        }
-                    } catch (IOException ignored) {
-                        // skip
-                    }
-                }
+        boolean cacheableFound = false;
+        for (JavaSources.JavaFile file : sources.files()) {
+            if (file.compilationUnit() != null) {
+                analyzeSourceFile(file.compilationUnit(), file.relativePath(), findings);
             }
-        } catch (IOException e) {
-            // Best-effort — skip unreadable files
+            if (!cacheableFound && file.content().contains("@Cacheable")) {
+                cacheableFound = true;
+            }
         }
-        if (cacheableFound[0]) {
-            detectCacheableNoTtlProvider(repositoryRoot, findings);
+        if (cacheableFound) {
+            detectCacheableNoTtlProvider(sources, findings);
         }
         return findings;
     }
@@ -137,15 +111,8 @@ public class CachingPracticeFindingAnalyzer {
     // Per-file analysis
     // ---------------------------------------------------------------------------
 
-    private void analyzeSourceFile(Path repositoryRoot, Path sourceFile, List<Finding> findings)
-            throws IOException {
-        var parseResult = javaParser.parse(sourceFile);
-        if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
-            return;
-        }
-        CompilationUnit cu = parseResult.getResult().orElseThrow();
-        String relativePath = repositoryRoot.relativize(sourceFile).toString().replace('\\', '/');
-
+    private void analyzeSourceFile(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
         for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
             analyzeClass(cls, relativePath, findings);
         }
@@ -766,10 +733,10 @@ public class CachingPracticeFindingAnalyzer {
                     "caffeine",
                     "com.github.ben-manes.caffeine");
 
-    private void detectCacheableNoTtlProvider(Path repositoryRoot, List<Finding> findings) {
+    private void detectCacheableNoTtlProvider(JavaSources sources, List<Finding> findings) {
         // Scan config files for TTL-capable provider indicators
         boolean providerConfigured = false;
-        Path resourceRoot = repositoryRoot.resolve("src/main/resources");
+        Path resourceRoot = sources.repositoryRoot().resolve("src/main/resources");
         if (Files.exists(resourceRoot)) {
             try (Stream<java.nio.file.Path> files = Files.walk(resourceRoot)) {
                 for (java.nio.file.Path file :
@@ -805,32 +772,15 @@ public class CachingPracticeFindingAnalyzer {
         }
         // Also scan Java source for CacheManager bean declarations
         if (!providerConfigured) {
-            Path sourceRoot = repositoryRoot.resolve("src/main/java");
-            if (Files.exists(sourceRoot)) {
-                try (Stream<java.nio.file.Path> files = Files.walk(sourceRoot)) {
-                    for (java.nio.file.Path file :
-                            files.filter(Files::isRegularFile)
-                                    .filter(p -> p.toString().endsWith(".java"))
-                                    .toList()) {
-                        try {
-                            String content =
-                                    java.nio.file.Files.readString(
-                                            file, java.nio.charset.StandardCharsets.UTF_8);
-                            for (String indicator : TTL_PROVIDER_INDICATORS) {
-                                if (content.contains(indicator)) {
-                                    providerConfigured = true;
-                                    break;
-                                }
-                            }
-                        } catch (IOException ignored) {
-                            // skip
-                        }
-                        if (providerConfigured) {
-                            break;
-                        }
+            for (JavaSources.JavaFile file : sources.files()) {
+                for (String indicator : TTL_PROVIDER_INDICATORS) {
+                    if (file.content().contains(indicator)) {
+                        providerConfigured = true;
+                        break;
                     }
-                } catch (IOException ignored) {
-                    // best-effort
+                }
+                if (providerConfigured) {
+                    break;
                 }
             }
         }

@@ -379,6 +379,11 @@ public class GradlePluginResolutionBridge {
     private RawPomModel parsePom(Path pomFile) throws Exception {
         DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
         factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+        // POMs are fetched from remote repositories (untrusted in EXTENDED mode) and never need a
+        // DOCTYPE, so reject them outright to harden against XXE / entity-expansion attacks.
+        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+        factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
         factory.setExpandEntityReferences(false);
         Document document;
         try (InputStream inputStream = Files.newInputStream(pomFile)) {
@@ -806,6 +811,11 @@ public class GradlePluginResolutionBridge {
 
     ArtifactCoordinates parseCoordinates(String coordinates) {
         String[] parts = coordinates.split(":");
+        if (parts.length < 3) {
+            throw new IllegalArgumentException(
+                    "Malformed artifact coordinates (expected group:artifact:version): "
+                            + coordinates);
+        }
         return new ArtifactCoordinates(parts[0], parts[1], parts[2]);
     }
 }
