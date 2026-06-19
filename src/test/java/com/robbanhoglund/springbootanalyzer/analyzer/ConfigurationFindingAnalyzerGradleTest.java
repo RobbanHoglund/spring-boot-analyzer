@@ -11,6 +11,8 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleAnalysis
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleModelAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradlePluginResolutionBridgeResult;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleResolvedDependencyModel;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -242,5 +244,61 @@ class ConfigurationFindingAnalyzerGradleTest {
         assertThat(f).isNotNull();
         assertThat(f.evidence()).startsWith("Flyway ");
         assertThat(f.evidence()).doesNotContain("Flyway 1"); // no version number
+    }
+
+    @Test
+    void doesNotFlagMissingMigrationsWhenSingleDigitVersionedFilesExist() throws IOException {
+        // The conventional V1__init.sql / V2__... naming (single-digit version directly followed by
+        // the "__" separator) must be recognised. A regex requiring two or more version characters
+        // previously missed these and produced a false "missing migrations" warning.
+        Path migrationDir =
+                Files.createDirectories(repoRoot.resolve("src/main/resources/db/migration"));
+        Files.writeString(migrationDir.resolve("V1__init.sql"), "create table t (id int);");
+        Files.writeString(
+                migrationDir.resolve("V2__add_users.sql"), "create table users (id int);");
+
+        BuildInfo buildWithFlyway =
+                new BuildInfo(
+                        BuildTool.GRADLE,
+                        true,
+                        "17",
+                        List.of("org.flywaydb:flyway-core"),
+                        "3.5.1",
+                        "Gradle plugins",
+                        "HIGH");
+
+        List<Finding> result =
+                analyzer.analyze(repoRoot, buildWithFlyway, emptyConfig(), buildGradleNone());
+        assertThat(byRule(result, "SPRING_FLYWAY_MISSING_MIGRATIONS")).isNull();
+    }
+
+    @Test
+    void flagsDuplicateSingleDigitMigrationVersions() throws IOException {
+        Path migrationDir =
+                Files.createDirectories(repoRoot.resolve("src/main/resources/db/migration"));
+        Files.writeString(migrationDir.resolve("V1__init.sql"), "create table t (id int);");
+        Files.writeString(migrationDir.resolve("V1__also_one.sql"), "create table u (id int);");
+
+        BuildInfo buildWithFlyway =
+                new BuildInfo(
+                        BuildTool.GRADLE,
+                        true,
+                        "17",
+                        List.of("org.flywaydb:flyway-core"),
+                        "3.5.1",
+                        "Gradle plugins",
+                        "HIGH");
+
+        List<Finding> result =
+                analyzer.analyze(repoRoot, buildWithFlyway, emptyConfig(), buildGradleNone());
+        assertThat(byRule(result, "SPRING_FLYWAY_MISSING_MIGRATIONS")).isNull();
+        Finding duplicate = byRule(result, "SPRING_FLYWAY_DUPLICATE_VERSION");
+        assertThat(duplicate).isNotNull();
+        assertThat(duplicate.message()).contains("1");
+    }
+
+    private static GradleModelAnalysis buildGradleNone() {
+        return GradleModelAnalysis.empty(
+                GradleAnalysisStatus.NOT_REQUESTED, "TOOLING_API", List.of());
     }
 }
