@@ -16,6 +16,7 @@ import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.AssignExpr;
 import com.github.javaparser.ast.expr.BinaryExpr;
 import com.github.javaparser.ast.expr.BooleanLiteralExpr;
+import com.github.javaparser.ast.expr.ClassExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.LiteralStringValueExpr;
@@ -567,6 +568,8 @@ public class StaticPracticeFindingAnalyzer {
 
         detectCsrfDisabled(relativePath, declaration, findings);
         detectCorsAllowAll(relativePath, declaration, findings);
+        detectCrossOriginAnnotation(relativePath, declaration, findings);
+        detectDuplicateExceptionHandlers(relativePath, declaration, findings);
         detectFeignClientRisks(relativePath, declaration, findings);
         detectRestTemplateNoStatusHandler(relativePath, declaration, findings);
         detectSqlInjectionInQueries(relativePath, declaration, findings);
@@ -1452,6 +1455,8 @@ public class StaticPracticeFindingAnalyzer {
                                         .target(target)
                                         .build());
                     }
+                    detectCollectionEagerFetch(
+                            relativePath, annotation, annotationName, target, line, findings);
                 } else {
                     boolean hasFetchType =
                             annotation.isNormalAnnotationExpr()
@@ -2094,6 +2099,260 @@ public class StaticPracticeFindingAnalyzer {
                 }
             }
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_CROSS_ORIGIN_WILDCARD
+    // ---------------------------------------------------------------------------
+
+    private void detectCrossOriginAnnotation(
+            String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
+        String className = declaration.getNameAsString();
+        checkCrossOriginAnnotation(
+                relativePath,
+                declaration.getAnnotations(),
+                className,
+                declaration.getBegin().map(position -> position.line).orElse(null),
+                findings);
+        for (MethodDeclaration method : declaration.getMethods()) {
+            checkCrossOriginAnnotation(
+                    relativePath,
+                    method.getAnnotations(),
+                    className + "#" + method.getNameAsString(),
+                    method.getBegin().map(position -> position.line).orElse(null),
+                    findings);
+        }
+    }
+
+    private void checkCrossOriginAnnotation(
+            String relativePath,
+            NodeList<AnnotationExpr> annotations,
+            String target,
+            Integer line,
+            List<Finding> findings) {
+        for (AnnotationExpr annotation : annotations) {
+            if (!simpleName(annotation.getNameAsString()).equals("CrossOrigin")
+                    || !crossOriginAllowsAllOrigins(annotation)) {
+                continue;
+            }
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_CROSS_ORIGIN_WILDCARD,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage("@CrossOrigin on " + target + " allows all origins.")
+                            .whyBadPractice(
+                                    "A bare @CrossOrigin, or one with origins set to \"*\", permits"
+                                        + " cross-origin requests from any site. Declaring CORS per"
+                                        + " controller also scatters the policy across the"
+                                        + " codebase, making it easy to ship a wildcard to"
+                                        + " production.")
+                            .possibleImpact(
+                                    "Any website can call the annotated endpoint on behalf of a"
+                                        + " user; combined with cookie-based authentication this"
+                                        + " can expose user data to third-party origins.")
+                            .recommendation(
+                                    "Restrict origins to an explicit allowlist, and prefer a"
+                                        + " central CorsConfigurationSource / WebMvcConfigurer over"
+                                        + " per-controller @CrossOrigin so the policy is reviewed"
+                                        + " in one place.")
+                            .evidence("@CrossOrigin on " + target + " in " + relativePath + ".")
+                            .limitations(
+                                    "Static analysis cannot tell whether the endpoint is public and"
+                                            + " stateless, which can make a wildcard acceptable.")
+                            .source(relativePath, line)
+                            .target(target)
+                            .build());
+            return; // one finding per annotated element is sufficient
+        }
+    }
+
+    private boolean crossOriginAllowsAllOrigins(AnnotationExpr annotation) {
+        if (annotation.isMarkerAnnotationExpr()) {
+            return true; // a bare @CrossOrigin defaults to allowing every origin
+        }
+        if (annotation.isSingleMemberAnnotationExpr()) {
+            return annotation
+                    .asSingleMemberAnnotationExpr()
+                    .getMemberValue()
+                    .toString()
+                    .contains("\"*\"");
+        }
+        if (annotation.isNormalAnnotationExpr()) {
+            Optional<MemberValuePair> originsPair =
+                    annotation.asNormalAnnotationExpr().getPairs().stream()
+                            .filter(
+                                    pair ->
+                                            pair.getNameAsString().equals("origins")
+                                                    || pair.getNameAsString()
+                                                            .equals("originPatterns"))
+                            .findFirst();
+            if (originsPair.isEmpty()) {
+                return true; // no origins attribute → defaults to all origins
+            }
+            return originsPair.get().getValue().toString().contains("\"*\"");
+        }
+        return false;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_DUPLICATE_EXCEPTION_HANDLER
+    // ---------------------------------------------------------------------------
+
+    private void detectDuplicateExceptionHandlers(
+            String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
+        Map<String, List<String>> handlersByException = new LinkedHashMap<>();
+        for (MethodDeclaration method : declaration.getMethods()) {
+            if (!hasAnnotation(method.getAnnotations(), "ExceptionHandler")) {
+                continue;
+            }
+            for (String exceptionType : exceptionTypesHandledBy(method)) {
+                handlersByException
+                        .computeIfAbsent(exceptionType, key -> new ArrayList<>())
+                        .add(method.getNameAsString());
+            }
+        }
+        String className = declaration.getNameAsString();
+        Integer line = declaration.getBegin().map(position -> position.line).orElse(null);
+        for (Map.Entry<String, List<String>> entry : handlersByException.entrySet()) {
+            List<String> methods = entry.getValue();
+            if (methods.size() < 2) {
+                continue;
+            }
+            String exceptionType = entry.getKey();
+            String methodList = String.join(", ", methods);
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_DUPLICATE_EXCEPTION_HANDLER,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "Multiple @ExceptionHandler methods in "
+                                            + className
+                                            + " handle "
+                                            + exceptionType
+                                            + ": "
+                                            + methodList
+                                            + ".")
+                            .whyBadPractice(
+                                    "Spring permits only one @ExceptionHandler per exception type"
+                                            + " within a @Controller/@ControllerAdvice bean. Two"
+                                            + " methods mapping the same exception class make the"
+                                            + " mapping ambiguous.")
+                            .possibleImpact(
+                                    "Spring throws IllegalStateException (\"Ambiguous"
+                                        + " @ExceptionHandler method mapped\") while building the"
+                                        + " handler mappings, preventing the application from"
+                                        + " starting.")
+                            .recommendation(
+                                    "Keep a single @ExceptionHandler per exception type — merge the"
+                                        + " duplicate handlers, or narrow one to a more specific"
+                                        + " exception subclass.")
+                            .evidence(
+                                    "@ExceptionHandler for "
+                                            + exceptionType
+                                            + " appears on methods "
+                                            + methodList
+                                            + " in "
+                                            + className
+                                            + ".")
+                            .limitations(
+                                    "Exception types are matched by simple name. Handlers split"
+                                        + " across separate @ControllerAdvice beans are resolved by"
+                                        + " @Order at runtime and are not flagged.")
+                            .source(relativePath, line)
+                            .target(className)
+                            .build());
+        }
+    }
+
+    private Set<String> exceptionTypesHandledBy(MethodDeclaration method) {
+        Set<String> types = new LinkedHashSet<>();
+        method.getAnnotationByName("ExceptionHandler")
+                .ifPresent(
+                        annotation ->
+                                annotation
+                                        .findAll(ClassExpr.class)
+                                        .forEach(
+                                                classExpr ->
+                                                        types.add(
+                                                                simpleName(
+                                                                        classExpr
+                                                                                .getType()
+                                                                                .asString()))));
+        if (types.isEmpty()) {
+            // No explicit value — Spring infers the handled types from the method's parameters.
+            for (Parameter parameter : method.getParameters()) {
+                String parameterType = simpleName(parameter.getType().asString());
+                if (parameterType.endsWith("Exception")
+                        || parameterType.endsWith("Error")
+                        || parameterType.equals("Throwable")) {
+                    types.add(parameterType);
+                }
+            }
+        }
+        return types;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_JPA_COLLECTION_EAGER_FETCH
+    // ---------------------------------------------------------------------------
+
+    private void detectCollectionEagerFetch(
+            String relativePath,
+            AnnotationExpr annotation,
+            String annotationName,
+            String target,
+            Integer line,
+            List<Finding> findings) {
+        boolean explicitEager =
+                annotation.isNormalAnnotationExpr()
+                        && annotation.asNormalAnnotationExpr().getPairs().stream()
+                                .anyMatch(
+                                        pair ->
+                                                pair.getNameAsString().equals("fetch")
+                                                        && pair.getValue()
+                                                                .toString()
+                                                                .contains("EAGER"));
+        if (!explicitEager) {
+            return;
+        }
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_JPA_COLLECTION_EAGER_FETCH,
+                                FindingConfidence.HIGH)
+                        .shortMessage(
+                                "@"
+                                        + annotationName
+                                        + " on "
+                                        + target
+                                        + " uses fetch = FetchType.EAGER.")
+                        .whyBadPractice(
+                                "Collections default to lazy loading; setting EAGER forces the"
+                                    + " whole collection to load on every query for the owning"
+                                    + " entity, even when it is not used. With more than one eager"
+                                    + " collection Hibernate also produces Cartesian-product"
+                                    + " joins.")
+                        .possibleImpact(
+                                "N+1 queries and large result sets degrade database and heap"
+                                        + " performance, often only under production-scale data.")
+                        .recommendation(
+                                "Use fetch = FetchType.LAZY (the default) and load the collection"
+                                    + " on demand with JOIN FETCH or an entity graph where it is"
+                                    + " actually needed.")
+                        .evidence(
+                                "@"
+                                        + annotationName
+                                        + " on "
+                                        + target
+                                        + " in "
+                                        + relativePath
+                                        + " sets fetch = FetchType.EAGER.")
+                        .limitations(
+                                "Static analysis cannot confirm the collection is large or"
+                                        + " frequently loaded; small, always-needed collections may"
+                                        + " justify eager fetching.")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
     }
 
     private void detectSchedulingRisks(

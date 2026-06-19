@@ -154,7 +154,70 @@ public class ConfigurationFindingAnalyzer {
         detectDefaultUserPasswordLiteral(configurationAnalysis, findings);
         detectDeprecatedSpringProfiles(configurationAnalysis, findings);
         detectActuatorHttptraceRenamed(configurationAnalysis, findings);
+        detectDataRestExposedRepositories(
+                buildInfo, configurationAnalysis, gradleModelAnalysis, findings);
         return findings;
+    }
+
+    private void detectDataRestExposedRepositories(
+            BuildInfo buildInfo,
+            ConfigurationAnalysis configurationAnalysis,
+            GradleModelAnalysis gradleModelAnalysis,
+            List<Finding> findings) {
+        boolean dataRestPresent =
+                dependencyPresent(
+                                buildInfo,
+                                gradleModelAnalysis,
+                                "org.springframework.boot",
+                                "spring-boot-starter-data-rest")
+                        || dependencyPresent(
+                                buildInfo,
+                                gradleModelAnalysis,
+                                "org.springframework.data",
+                                "spring-data-rest-core");
+        if (!dataRestPresent) {
+            return;
+        }
+        // detection-strategy=annotated only exports repositories explicitly opted in via
+        // @RepositoryRestResource, so the blanket auto-exposure risk does not apply.
+        ApplicationProperty strategy =
+                findProperty(configurationAnalysis, "spring.data.rest.detection-strategy");
+        if (strategy != null
+                && strategy.value() != null
+                && "annotated".equalsIgnoreCase(strategy.value().trim())) {
+            return;
+        }
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_DATA_REST_REPOSITORIES_EXPOSED,
+                                FindingConfidence.MEDIUM)
+                        .shortMessage(
+                                "Spring Data REST is on the classpath; public repositories are"
+                                        + " auto-exposed as HTTP CRUD endpoints.")
+                        .whyBadPractice(
+                                "With the default detection strategy, Spring Data REST maps full"
+                                        + " CRUD HTTP endpoints at /<repository> for every public"
+                                        + " Spring Data repository — including internal ones never"
+                                        + " intended to be reachable over HTTP.")
+                        .possibleImpact(
+                                "Internal entities can be read and modified over HTTP without any"
+                                    + " explicit controller, frequently unnoticed until a security"
+                                    + " review or an incident.")
+                        .recommendation(
+                                "Set spring.data.rest.detection-strategy=annotated and export only"
+                                    + " intended repositories with @RepositoryRestResource, or mark"
+                                    + " sensitive repositories @RepositoryRestResource(exported ="
+                                    + " false). Ensure Spring Security protects the base path.")
+                        .evidence(
+                                "spring-boot-starter-data-rest / spring-data-rest-core was detected"
+                                        + " and spring.data.rest.detection-strategy is not set to"
+                                        + " 'annotated'.")
+                        .limitations(
+                                "Static analysis flags the dependency's default behaviour;"
+                                    + " per-repository @RepositoryRestResource(exported = false)"
+                                    + " overrides are not individually verified.")
+                        .target("spring-data-rest")
+                        .build());
     }
 
     private void detectJdbcUrlEmbeddedCredentials(
