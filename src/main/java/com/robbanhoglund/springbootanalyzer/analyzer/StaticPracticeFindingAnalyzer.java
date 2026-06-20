@@ -17,6 +17,7 @@ import com.github.javaparser.ast.expr.AssignExpr;
 import com.github.javaparser.ast.expr.BinaryExpr;
 import com.github.javaparser.ast.expr.BooleanLiteralExpr;
 import com.github.javaparser.ast.expr.ClassExpr;
+import com.github.javaparser.ast.expr.DoubleLiteralExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.LiteralStringValueExpr;
@@ -119,6 +120,19 @@ public class StaticPracticeFindingAnalyzer {
                     "persist",
                     "merge",
                     "flush");
+    private static final Set<String> PROXY_ANNOTATIONS =
+            Set.of(
+                    "Transactional",
+                    "Cacheable",
+                    "CacheEvict",
+                    "CachePut",
+                    "Caching",
+                    "Async",
+                    "PreAuthorize",
+                    "PostAuthorize",
+                    "Secured",
+                    "RolesAllowed",
+                    "Observed");
     private static final Set<String> IGNORE_VARIABLE_NAMES =
             Set.of("ignored", "ignore", "expected", "intentionallyignored");
     private static final Set<String> BENIGN_IGNORE_COMMENT_MARKERS =
@@ -584,6 +598,8 @@ public class StaticPracticeFindingAnalyzer {
             detectRepositoryInController(relativePath, declaration, findings);
         }
         detectJpaLazyLoadingOutsideTransaction(relativePath, declaration, findings);
+        detectProxyAnnotationOnFinalMethod(relativePath, declaration, findings);
+        detectBigDecimalDoubleConstructor(relativePath, declaration, findings);
     }
 
     private void detectExceptionHandlingInConstructor(
@@ -1457,6 +1473,8 @@ public class StaticPracticeFindingAnalyzer {
                                         .build());
                     }
                     detectCollectionEagerFetch(
+                            relativePath, annotation, annotationName, target, line, findings);
+                    detectManyToManyCascadeRemove(
                             relativePath, annotation, annotationName, target, line, findings);
                 } else {
                     boolean hasFetchType =
@@ -2375,6 +2393,172 @@ public class StaticPracticeFindingAnalyzer {
     // Rule: SPRING_JPA_COLLECTION_EAGER_FETCH
     // ---------------------------------------------------------------------------
 
+    private void detectManyToManyCascadeRemove(
+            String relativePath,
+            AnnotationExpr annotation,
+            String annotationName,
+            String target,
+            Integer line,
+            List<Finding> findings) {
+        if (!annotationName.equals("ManyToMany") || !annotation.isNormalAnnotationExpr()) {
+            return;
+        }
+        boolean cascadeRemove =
+                annotation.asNormalAnnotationExpr().getPairs().stream()
+                        .anyMatch(
+                                pair ->
+                                        pair.getNameAsString().equals("cascade")
+                                                && (pair.getValue().toString().contains("REMOVE")
+                                                        || pair.getValue()
+                                                                .toString()
+                                                                .contains("ALL")));
+        if (!cascadeRemove) {
+            return;
+        }
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_JPA_MANYTOMANY_CASCADE_REMOVE,
+                                FindingConfidence.HIGH)
+                        .shortMessage(
+                                "@ManyToMany on " + target + " cascades remove to shared entities.")
+                        .whyBadPractice(
+                                "CascadeType.REMOVE/ALL on a @ManyToMany cascades deletes across"
+                                    + " the join table to the entities on the other side, which are"
+                                    + " typically shared with other parents.")
+                        .possibleImpact(
+                                "Deleting one entity also deletes shared rows that other entities"
+                                        + " still reference — irreversible data loss.")
+                        .recommendation(
+                                "Remove CascadeType.REMOVE/ALL from the @ManyToMany; cascade only"
+                                        + " PERSIST/MERGE if needed and remove join-table links"
+                                        + " explicitly.")
+                        .evidence(
+                                "@ManyToMany on "
+                                        + target
+                                        + " in "
+                                        + relativePath
+                                        + " declares cascade = REMOVE/ALL.")
+                        .limitations(
+                                "The cascade member is matched textually; cascade on an owned,"
+                                        + " non-shared association would be a false positive.")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+    }
+
+    private void detectProxyAnnotationOnFinalMethod(
+            String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
+        if (declaration.isInterface()) {
+            return;
+        }
+        for (MethodDeclaration method : declaration.getMethods()) {
+            if (!method.isFinal() || method.isStatic() || method.isPrivate()) {
+                continue;
+            }
+            String proxyAnnotation =
+                    method.getAnnotations().stream()
+                            .map(annotation -> simpleName(annotation.getNameAsString()))
+                            .filter(PROXY_ANNOTATIONS::contains)
+                            .findFirst()
+                            .orElse(null);
+            if (proxyAnnotation == null) {
+                continue;
+            }
+            Integer line = method.getBegin().map(position -> position.line).orElse(null);
+            String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_PROXY_ANNOTATION_ON_FINAL_METHOD,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    "@"
+                                            + proxyAnnotation
+                                            + " on final method "
+                                            + target
+                                            + " is silently skipped by the CGLIB proxy.")
+                            .whyBadPractice(
+                                    "Spring's CGLIB proxy subclasses the bean and overrides advised"
+                                        + " methods. A final method cannot be overridden, so the @"
+                                            + proxyAnnotation
+                                            + " advice (transaction, cache, async, security,"
+                                            + " observation) is never applied.")
+                            .possibleImpact(
+                                    "The method runs with none of the behavior the annotation"
+                                        + " implies — no transaction, no caching, no authorization"
+                                        + " — with no error at startup.")
+                            .recommendation(
+                                    "Remove final from the method (and the class, if final), or"
+                                            + " move the annotation to a non-final method invoked"
+                                            + " through the proxy.")
+                            .evidence(
+                                    "@"
+                                            + proxyAnnotation
+                                            + " on final method "
+                                            + target
+                                            + " in "
+                                            + relativePath
+                                            + ".")
+                            .limitations(
+                                    "Interface-based JDK-proxy beans tolerate final methods on the"
+                                        + " implementation; this is most relevant for class-proxied"
+                                        + " @Component/@Service beans.")
+                            .source(relativePath, line)
+                            .target(target)
+                            .build());
+        }
+    }
+
+    private void detectBigDecimalDoubleConstructor(
+            String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
+        for (ObjectCreationExpr expr : declaration.findAll(ObjectCreationExpr.class)) {
+            if (!simpleName(expr.getType().asString()).equals("BigDecimal")
+                    || expr.getArguments().size() != 1) {
+                continue;
+            }
+            Expression argument = expr.getArguments().get(0);
+            if (!(argument instanceof DoubleLiteralExpr)) {
+                continue;
+            }
+            Integer line = expr.getBegin().map(position -> position.line).orElse(null);
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_BIGDECIMAL_DOUBLE_CONSTRUCTOR,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "new BigDecimal("
+                                            + argument
+                                            + ") uses the double constructor in "
+                                            + relativePath
+                                            + ".")
+                            .whyBadPractice(
+                                    "new BigDecimal(double) stores the exact binary value of the"
+                                        + " double, which cannot represent most decimal fractions —"
+                                        + " new BigDecimal(0.1) becomes"
+                                        + " 0.1000000000000000055511151231257827021181583404541015625.")
+                            .possibleImpact(
+                                    "Monetary and other precise calculations are silently off by"
+                                            + " tiny amounts that accumulate into reconciliation"
+                                            + " failures and off-by-a-cent bugs.")
+                            .recommendation(
+                                    "Use BigDecimal.valueOf(double), or the String constructor:"
+                                            + " new BigDecimal(\"0.1\").")
+                            .evidence(
+                                    "new BigDecimal("
+                                            + argument
+                                            + ") found in "
+                                            + relativePath
+                                            + ".")
+                            .limitations(
+                                    "Only the floating-point literal form is flagged; a"
+                                        + " double-typed variable argument is not detected to avoid"
+                                        + " false positives.")
+                            .source(relativePath, line)
+                            .target("BigDecimal")
+                            .build());
+            return; // one finding per class is sufficient
+        }
+    }
+
     private void detectCollectionEagerFetch(
             String relativePath,
             AnnotationExpr annotation,
@@ -2628,6 +2812,36 @@ public class StaticPracticeFindingAnalyzer {
                         });
     }
 
+    private boolean isReadOnlyTransactional(
+            MethodDeclaration method, ClassOrInterfaceDeclaration declaration) {
+        if (readOnlyTrue(method.getAnnotationByName("Transactional").orElse(null))) {
+            return true;
+        }
+        // Inherit a class-level readOnly only when the method has no own @Transactional override.
+        return !hasAnnotation(method.getAnnotations(), "Transactional")
+                && readOnlyTrue(declaration.getAnnotationByName("Transactional").orElse(null));
+    }
+
+    private boolean readOnlyTrue(AnnotationExpr annotation) {
+        if (annotation == null || !annotation.isNormalAnnotationExpr()) {
+            return false;
+        }
+        return annotation.asNormalAnnotationExpr().getPairs().stream()
+                .anyMatch(
+                        pair ->
+                                pair.getNameAsString().equals("readOnly")
+                                        && pair.getValue() instanceof BooleanLiteralExpr bool
+                                        && bool.getValue());
+    }
+
+    private boolean methodHasPersistenceWriteCall(MethodDeclaration method) {
+        return method.findAll(MethodCallExpr.class).stream()
+                .anyMatch(
+                        call ->
+                                call.getScope().isPresent()
+                                        && WRITE_CALL_MARKERS.contains(call.getNameAsString()));
+    }
+
     private void detectTransactionRisks(
             String relativePath,
             ClassOrInterfaceDeclaration declaration,
@@ -2673,6 +2887,71 @@ public class StaticPracticeFindingAnalyzer {
                                     "Static analysis cannot prove the exact proxying strategy or"
                                         + " whether AspectJ weaving is used instead of proxy-based"
                                         + " interception.")
+                            .source(relativePath, line)
+                            .target(declaration.getNameAsString() + "#" + method.getNameAsString())
+                            .build());
+        }
+        if (hasAnnotation(method.getAnnotations(), "Transactional")
+                && !method.isPublic()
+                && !method.isPrivate()
+                && !declaration.isInterface()) {
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_TRANSACTIONAL_NON_PUBLIC_METHOD,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    "@Transactional was found on a non-public method: "
+                                            + declaration.getNameAsString()
+                                            + "#"
+                                            + method.getNameAsString())
+                            .whyBadPractice(
+                                    "Spring's proxy applies transaction advice only to public"
+                                        + " methods. On a protected or package-private method the"
+                                        + " annotation is silently ignored and no transaction is"
+                                        + " started.")
+                            .possibleImpact(
+                                    "Multi-statement writes run without a transaction, so a failure"
+                                            + " leaves partially-applied changes with no rollback.")
+                            .recommendation(
+                                    "Make the method public, or move the @Transactional boundary to"
+                                            + " a public method invoked through the proxy.")
+                            .limitations(
+                                    "Static analysis cannot prove the proxying strategy; AspectJ"
+                                            + " weaving (mode=ASPECTJ) would advise non-public"
+                                            + " methods.")
+                            .source(relativePath, line)
+                            .target(declaration.getNameAsString() + "#" + method.getNameAsString())
+                            .build());
+        }
+        if (transactional
+                && isReadOnlyTransactional(method, declaration)
+                && methodHasPersistenceWriteCall(method)) {
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_TRANSACTIONAL_READONLY_WITH_WRITES,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    "Writes inside a readOnly=true transaction in "
+                                            + declaration.getNameAsString()
+                                            + "#"
+                                            + method.getNameAsString()
+                                            + " are silently dropped.")
+                            .whyBadPractice(
+                                    "@Transactional(readOnly = true) sets the Hibernate flush mode"
+                                        + " to MANUAL, so dirty-checked entity changes are never"
+                                        + " flushed. Explicit writes either vanish silently or fail"
+                                        + " late on a read-only JDBC connection.")
+                            .possibleImpact(
+                                    "Updates appear to succeed but are never persisted — a silent"
+                                            + " data-loss bug that is hard to trace.")
+                            .recommendation(
+                                    "Remove readOnly = true from methods that write, or split the"
+                                            + " read and write work into separate transactions.")
+                            .limitations(
+                                    "Write calls are matched by name"
+                                            + " (save/update/delete/persist/merge/flush/...); a"
+                                            + " same-named non-persistence call could be a false"
+                                            + " positive.")
                             .source(relativePath, line)
                             .target(declaration.getNameAsString() + "#" + method.getNameAsString())
                             .build());

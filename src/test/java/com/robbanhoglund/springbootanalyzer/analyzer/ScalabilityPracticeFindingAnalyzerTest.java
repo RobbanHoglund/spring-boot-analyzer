@@ -843,4 +843,38 @@ class ScalabilityPracticeFindingAnalyzerTest {
 
         assertThat(byRule(findings(), "SPRING_REQUIRES_NEW_IN_LOOP")).isNull();
     }
+
+    // ── SPRING_EXECUTORS_UNBOUNDED_THREAD_POOL ────────────────────────────────
+
+    @Test
+    void flagsCachedThreadPool() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/PoolConfig.java",
+                """
+                package com.example;
+                import java.util.concurrent.ExecutorService;
+                import java.util.concurrent.Executors;
+                public class PoolConfig {
+                    private final ExecutorService pool = Executors.newCachedThreadPool();
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_EXECUTORS_UNBOUNDED_THREAD_POOL")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagFixedThreadPool() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/PoolConfig.java",
+                """
+                package com.example;
+                import java.util.concurrent.ExecutorService;
+                import java.util.concurrent.Executors;
+                public class PoolConfig {
+                    private final ExecutorService pool = Executors.newFixedThreadPool(8);
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_EXECUTORS_UNBOUNDED_THREAD_POOL")).isNull();
+    }
 }

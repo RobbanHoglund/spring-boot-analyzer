@@ -176,6 +176,7 @@ public class ScalabilityPracticeFindingAnalyzer {
         detectHardcodedFilePaths(cu, relativePath, findings);
         detectRestTemplateNoTimeout(cu, relativePath, findings);
         detectWebFluxBlockingCalls(cu, relativePath, findings);
+        detectUnboundedThreadPool(cu, relativePath, findings);
         detectUnboundedFindAll(cu, relativePath, findings);
         detectRestTemplateNewPerRequest(cu, relativePath, findings);
         detectJpaQueryNoPagination(cu, relativePath, findings);
@@ -197,6 +198,58 @@ public class ScalabilityPracticeFindingAnalyzer {
     // ---------------------------------------------------------------------------
     // Rule: SPRING_HARDCODED_FILE_PATH
     // ---------------------------------------------------------------------------
+
+    private void detectUnboundedThreadPool(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            if (!"newCachedThreadPool".equals(call.getNameAsString())) {
+                continue;
+            }
+            boolean onExecutors =
+                    call.getScope()
+                            .map(scope -> simpleName(scope.toString()))
+                            .filter("Executors"::equals)
+                            .isPresent();
+            if (!onExecutors) {
+                continue;
+            }
+            Integer line = call.getName().getBegin().map(position -> position.line).orElse(null);
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_EXECUTORS_UNBOUNDED_THREAD_POOL,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "Executors.newCachedThreadPool() creates an unbounded thread"
+                                            + " pool in "
+                                            + relativePath
+                                            + ".")
+                            .whyBadPractice(
+                                    "newCachedThreadPool() has no upper bound on thread count and"
+                                        + " hands tasks to a SynchronousQueue, so it spawns a new"
+                                        + " thread for every task that cannot start immediately.")
+                            .possibleImpact(
+                                    "Under load or a downstream slowdown the pool spawns threads"
+                                        + " without limit until the JVM dies with OutOfMemoryError:"
+                                        + " unable to create new native thread.")
+                            .recommendation(
+                                    "Use a bounded pool — new ThreadPoolExecutor with a fixed max"
+                                        + " size and a bounded queue, or inject a Spring"
+                                        + " ThreadPoolTaskExecutor — and apply a rejection policy.")
+                            .evidence(
+                                    "Executors.newCachedThreadPool() found in "
+                                            + relativePath
+                                            + ".")
+                            .limitations(
+                                    "Bounded factory methods"
+                                        + " (newFixedThreadPool/newScheduledThreadPool) are not"
+                                        + " flagged even though their task queue is unbounded by"
+                                        + " default.")
+                            .source(relativePath, line)
+                            .target("Executors.newCachedThreadPool")
+                            .build());
+            return; // one finding per file is sufficient
+        }
+    }
 
     private void detectHardcodedFilePaths(
             CompilationUnit cu, String relativePath, List<Finding> findings) {

@@ -343,6 +343,40 @@ public final class FindingRules {
                     FindingCategory.MAINTAINABILITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
+    /** A proxy-driven annotation ({@code @Transactional}, {@code @Cacheable}/{@code @CacheEvict}/
+     *  {@code @CachePut}, {@code @Async}, {@code @PreAuthorize}/{@code @Secured}, {@code @Observed})
+     *  is placed on a {@code final} method of a Spring bean. Spring's CGLIB proxy cannot override a
+     *  final method, so the advice is silently skipped. */
+    public static final FindingRule SPRING_PROXY_ANNOTATION_ON_FINAL_METHOD =
+            rule(
+                    "SPRING_PROXY_ANNOTATION_ON_FINAL_METHOD",
+                    "Proxy-driven annotation on a final method is silently skipped",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code new BigDecimal(double)} is constructed from a floating-point literal. The double's
+     *  binary value is stored exactly (e.g. {@code new BigDecimal(0.1)} is
+     *  0.1000000000000000055...), silently corrupting monetary/precise calculations. */
+    public static final FindingRule SPRING_BIGDECIMAL_DOUBLE_CONSTRUCTOR =
+            rule(
+                    "SPRING_BIGDECIMAL_DOUBLE_CONSTRUCTOR",
+                    "new BigDecimal(double) introduces floating-point precision errors",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code Executors.newCachedThreadPool()} is used. Its thread count is unbounded and tasks
+     *  are handed to a {@code SynchronousQueue}, so a burst of work spawns threads until the JVM
+     *  fails with {@code OutOfMemoryError: unable to create new native thread}. */
+    public static final FindingRule SPRING_EXECUTORS_UNBOUNDED_THREAD_POOL =
+            rule(
+                    "SPRING_EXECUTORS_UNBOUNDED_THREAD_POOL",
+                    "Executors.newCachedThreadPool() creates an unbounded thread pool",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
     /** An {@code @Async void} method has no try/catch and no
      *  {@code AsyncUncaughtExceptionHandler} configured. Exceptions thrown asynchronously
      *  are silently discarded by the default executor. */
@@ -395,6 +429,18 @@ public final class FindingRules {
             rule(
                     "SPRING_JPA_COLLECTION_EAGER_FETCH",
                     "@OneToMany or @ManyToMany collection uses eager fetching",
+                    FindingSeverity.WARNING,
+                    FindingCategory.PERSISTENCE,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @ManyToMany} association declares {@code cascade = CascadeType.REMOVE} (or
+     *  {@code ALL}). Deleting one side then cascades the delete across the join table to the
+     *  shared entities on the other side — which usually still belong to other parents — causing
+     *  irreversible data loss. */
+    public static final FindingRule SPRING_JPA_MANYTOMANY_CASCADE_REMOVE =
+            rule(
+                    "SPRING_JPA_MANYTOMANY_CASCADE_REMOVE",
+                    "@ManyToMany with CascadeType.REMOVE/ALL deletes shared entities",
                     FindingSeverity.WARNING,
                     FindingCategory.PERSISTENCE,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
@@ -941,6 +987,29 @@ public final class FindingRules {
                     "SPRING_TRANSACTIONAL_ON_PRIVATE_METHOD",
                     "@Transactional on private method is silently ignored by Spring's proxy",
                     FindingSeverity.ERROR,
+                    FindingCategory.TRANSACTION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code @Transactional} appears on a {@code protected} or package-private method. Spring's
+     *  proxy applies transaction advice only to {@code public} methods, so the annotation is
+     *  silently ignored and no transaction is started — exactly like the private-method case. */
+    public static final FindingRule SPRING_TRANSACTIONAL_NON_PUBLIC_METHOD =
+            rule(
+                    "SPRING_TRANSACTIONAL_NON_PUBLIC_METHOD",
+                    "@Transactional on a non-public method is silently ignored by Spring's proxy",
+                    FindingSeverity.ERROR,
+                    FindingCategory.TRANSACTION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @Transactional(readOnly = true)} method (or a method inheriting a class-level
+     *  read-only transaction) performs persistence writes. Read-only transactions set the
+     *  Hibernate flush mode to MANUAL, so dirty-checked updates are never flushed — the writes are
+     *  silently lost (or fail late on a read-only connection). */
+    public static final FindingRule SPRING_TRANSACTIONAL_READONLY_WITH_WRITES =
+            rule(
+                    "SPRING_TRANSACTIONAL_READONLY_WITH_WRITES",
+                    "Writes inside a readOnly=true transaction are silently dropped",
+                    FindingSeverity.WARNING,
                     FindingCategory.TRANSACTION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
