@@ -877,4 +877,72 @@ class ScalabilityPracticeFindingAnalyzerTest {
 
         assertThat(byRule(findings(), "SPRING_EXECUTORS_UNBOUNDED_THREAD_POOL")).isNull();
     }
+
+    // ── SPRING_EXECUTOR_NO_SHUTDOWN ───────────────────────────────────────────
+
+    @Test
+    void flagsExecutorFieldWithoutShutdown() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Worker.java",
+                """
+                package com.example;
+                import java.util.concurrent.ExecutorService;
+                import java.util.concurrent.Executors;
+                import org.springframework.stereotype.Service;
+
+                @Service
+                public class Worker {
+                    private final ExecutorService pool = Executors.newFixedThreadPool(4);
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_EXECUTOR_NO_SHUTDOWN")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagExecutorWithPreDestroyShutdown() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Worker.java",
+                """
+                package com.example;
+                import jakarta.annotation.PreDestroy;
+                import java.util.concurrent.ExecutorService;
+                import java.util.concurrent.Executors;
+                import org.springframework.stereotype.Service;
+
+                @Service
+                public class Worker {
+                    private final ExecutorService pool = Executors.newFixedThreadPool(4);
+
+                    @PreDestroy
+                    public void close() {
+                        pool.shutdown();
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_EXECUTOR_NO_SHUTDOWN")).isNull();
+    }
+
+    @Test
+    void doesNotFlagInjectedExecutor() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Worker.java",
+                """
+                package com.example;
+                import java.util.concurrent.ExecutorService;
+                import org.springframework.stereotype.Service;
+
+                @Service
+                public class Worker {
+                    private final ExecutorService pool;
+
+                    public Worker(ExecutorService pool) {
+                        this.pool = pool;
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_EXECUTOR_NO_SHUTDOWN")).isNull();
+    }
 }

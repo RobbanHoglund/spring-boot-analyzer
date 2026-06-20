@@ -377,6 +377,17 @@ public final class FindingRules {
                     FindingCategory.MAINTAINABILITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
+    /** A Spring-managed component constructs an {@code ExecutorService}/{@code Executors.*} as a
+     *  field but never shuts it down ({@code @PreDestroy} / {@code shutdown()}). The pool's
+     *  non-daemon threads leak on every context refresh/redeploy and block clean JVM shutdown. */
+    public static final FindingRule SPRING_EXECUTOR_NO_SHUTDOWN =
+            rule(
+                    "SPRING_EXECUTOR_NO_SHUTDOWN",
+                    "ExecutorService created in a bean is never shut down",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
     /** An {@code @Async void} method has no try/catch and no
      *  {@code AsyncUncaughtExceptionHandler} configured. Exceptions thrown asynchronously
      *  are silently discarded by the default executor. */
@@ -1009,6 +1020,30 @@ public final class FindingRules {
             rule(
                     "SPRING_TRANSACTIONAL_READONLY_WITH_WRITES",
                     "Writes inside a readOnly=true transaction are silently dropped",
+                    FindingSeverity.WARNING,
+                    FindingCategory.TRANSACTION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @TransactionalEventListener} that runs after the transaction commits (the default
+     *  {@code AFTER_COMMIT} phase, or {@code AFTER_COMPLETION}) performs persistence writes without
+     *  {@code @Transactional(propagation = REQUIRES_NEW)}. There is no active transaction at that
+     *  point, so the writes are silently never flushed. */
+    public static final FindingRule SPRING_TX_EVENT_LISTENER_WRITE_LOST =
+            rule(
+                    "SPRING_TX_EVENT_LISTENER_WRITE_LOST",
+                    "Writes in an after-commit @TransactionalEventListener are silently lost",
+                    FindingSeverity.ERROR,
+                    FindingCategory.TRANSACTION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @Transactional} method declares a checked exception in its {@code throws} clause
+     *  but the annotation has no {@code rollbackFor}. Spring rolls back only on
+     *  {@code RuntimeException}/{@code Error} by default, so a thrown checked exception commits the
+     *  partial transaction. */
+    public static final FindingRule SPRING_TRANSACTIONAL_CHECKED_EXCEPTION_NO_ROLLBACK =
+            rule(
+                    "SPRING_TRANSACTIONAL_CHECKED_EXCEPTION_NO_ROLLBACK",
+                    "@Transactional commits on a checked exception without rollbackFor",
                     FindingSeverity.WARNING,
                     FindingCategory.TRANSACTION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);

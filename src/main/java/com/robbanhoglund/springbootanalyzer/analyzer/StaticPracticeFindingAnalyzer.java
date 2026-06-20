@@ -133,6 +133,21 @@ public class StaticPracticeFindingAnalyzer {
                     "Secured",
                     "RolesAllowed",
                     "Observed");
+    private static final Set<String> KNOWN_RUNTIME_EXCEPTIONS =
+            Set.of(
+                    "RuntimeException",
+                    "IllegalArgumentException",
+                    "IllegalStateException",
+                    "NullPointerException",
+                    "UnsupportedOperationException",
+                    "IndexOutOfBoundsException",
+                    "ArrayIndexOutOfBoundsException",
+                    "ClassCastException",
+                    "ArithmeticException",
+                    "NumberFormatException",
+                    "ConcurrentModificationException",
+                    "NoSuchElementException",
+                    "DataAccessException");
     private static final Set<String> IGNORE_VARIABLE_NAMES =
             Set.of("ignored", "ignore", "expected", "intentionallyignored");
     private static final Set<String> BENIGN_IGNORE_COMMENT_MARKERS =
@@ -600,6 +615,7 @@ public class StaticPracticeFindingAnalyzer {
         detectJpaLazyLoadingOutsideTransaction(relativePath, declaration, findings);
         detectProxyAnnotationOnFinalMethod(relativePath, declaration, findings);
         detectBigDecimalDoubleConstructor(relativePath, declaration, findings);
+        detectTransactionalEventListenerWriteLost(relativePath, declaration, findings);
     }
 
     private void detectExceptionHandlingInConstructor(
@@ -2842,6 +2858,116 @@ public class StaticPracticeFindingAnalyzer {
                                         && WRITE_CALL_MARKERS.contains(call.getNameAsString()));
     }
 
+    private String firstCheckedThrownException(MethodDeclaration method) {
+        for (var thrown : method.getThrownExceptions()) {
+            String name = simpleName(thrown.asString());
+            if (isCheckedExceptionName(name)) {
+                return name;
+            }
+        }
+        return null;
+    }
+
+    private boolean isCheckedExceptionName(String name) {
+        if (KNOWN_RUNTIME_EXCEPTIONS.contains(name) || name.endsWith("RuntimeException")) {
+            return false;
+        }
+        return name.equals("Throwable") || name.endsWith("Exception");
+    }
+
+    private boolean transactionalRollbackForPresent(
+            MethodDeclaration method, ClassOrInterfaceDeclaration declaration) {
+        AnnotationExpr annotation =
+                method.getAnnotationByName("Transactional")
+                        .or(() -> declaration.getAnnotationByName("Transactional"))
+                        .orElse(null);
+        if (annotation == null || !annotation.isNormalAnnotationExpr()) {
+            return false;
+        }
+        return annotation.asNormalAnnotationExpr().getPairs().stream()
+                .anyMatch(
+                        pair ->
+                                pair.getNameAsString().equals("rollbackFor")
+                                        || pair.getNameAsString().equals("rollbackForClassName"));
+    }
+
+    private void detectTransactionalEventListenerWriteLost(
+            String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
+        for (MethodDeclaration method : declaration.getMethods()) {
+            AnnotationExpr listener =
+                    method.getAnnotationByName("TransactionalEventListener").orElse(null);
+            if (listener == null
+                    || !isAfterCommitPhase(listener)
+                    || !methodHasPersistenceWriteCall(method)
+                    || runsInRequiresNewTransaction(method, declaration)) {
+                continue;
+            }
+            Integer line = method.getBegin().map(position -> position.line).orElse(null);
+            String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_TX_EVENT_LISTENER_WRITE_LOST,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    "After-commit @TransactionalEventListener "
+                                            + target
+                                            + " writes to the database with no active transaction.")
+                            .whyBadPractice(
+                                    "A @TransactionalEventListener runs after the original"
+                                        + " transaction has committed (the default AFTER_COMMIT"
+                                        + " phase), so there is no active transaction. Persistence"
+                                        + " writes are not flushed unless the listener opens its"
+                                        + " own transaction.")
+                            .possibleImpact(
+                                    "The listener appears to run but its writes are silently lost —"
+                                            + " a classic outbox/audit data-loss bug.")
+                            .recommendation(
+                                    "Annotate the listener with @Transactional(propagation ="
+                                        + " Propagation.REQUIRES_NEW) so its writes run in a new"
+                                        + " transaction.")
+                            .evidence(
+                                    "After-commit @TransactionalEventListener "
+                                            + target
+                                            + " performs a persistence write without REQUIRES_NEW"
+                                            + " in "
+                                            + relativePath
+                                            + ".")
+                            .limitations(
+                                    "Write calls are matched by name; a REQUIRES_NEW transaction"
+                                            + " opened in a called collaborator is not detected.")
+                            .source(relativePath, line)
+                            .target(target)
+                            .build());
+        }
+    }
+
+    private boolean isAfterCommitPhase(AnnotationExpr listener) {
+        if (!listener.isNormalAnnotationExpr()) {
+            return true; // no phase member → default AFTER_COMMIT
+        }
+        var phasePair =
+                listener.asNormalAnnotationExpr().getPairs().stream()
+                        .filter(pair -> pair.getNameAsString().equals("phase"))
+                        .findFirst()
+                        .orElse(null);
+        if (phasePair == null) {
+            return true; // default AFTER_COMMIT
+        }
+        String phase = phasePair.getValue().toString();
+        return phase.contains("AFTER_COMMIT")
+                || phase.contains("AFTER_COMPLETION")
+                || phase.contains("AFTER_ROLLBACK");
+    }
+
+    private boolean runsInRequiresNewTransaction(
+            MethodDeclaration method, ClassOrInterfaceDeclaration declaration) {
+        AnnotationExpr annotation =
+                method.getAnnotationByName("Transactional")
+                        .or(() -> declaration.getAnnotationByName("Transactional"))
+                        .orElse(null);
+        return annotation != null && annotation.toString().contains("REQUIRES_NEW");
+    }
+
     private void detectTransactionRisks(
             String relativePath,
             ClassOrInterfaceDeclaration declaration,
@@ -2955,6 +3081,48 @@ public class StaticPracticeFindingAnalyzer {
                             .source(relativePath, line)
                             .target(declaration.getNameAsString() + "#" + method.getNameAsString())
                             .build());
+        }
+        if (transactional) {
+            String checkedException = firstCheckedThrownException(method);
+            if (checkedException != null && !transactionalRollbackForPresent(method, declaration)) {
+                findings.add(
+                        FindingFactory.builder(
+                                        FindingRules
+                                                .SPRING_TRANSACTIONAL_CHECKED_EXCEPTION_NO_ROLLBACK,
+                                        FindingConfidence.MEDIUM)
+                                .shortMessage(
+                                        declaration.getNameAsString()
+                                                + "#"
+                                                + method.getNameAsString()
+                                                + " declares checked exception "
+                                                + checkedException
+                                                + " but @Transactional has no rollbackFor.")
+                                .whyBadPractice(
+                                        "Spring's default rollback policy only rolls back on"
+                                            + " RuntimeException and Error. A checked exception"
+                                            + " propagating out of a @Transactional method commits"
+                                            + " the partially-applied transaction instead of"
+                                            + " rolling it back.")
+                                .possibleImpact(
+                                        "On a checked failure the database is left in a"
+                                                + " partially-updated, inconsistent state with no"
+                                                + " rollback.")
+                                .recommendation(
+                                        "Add rollbackFor (e.g. @Transactional(rollbackFor ="
+                                            + " Exception.class)), or wrap the checked exception in"
+                                            + " a RuntimeException.")
+                                .limitations(
+                                        "Checked vs unchecked is inferred from the declared type"
+                                                + " name without resolution; a custom unchecked"
+                                                + " exception listed in throws would be a false"
+                                                + " positive.")
+                                .source(relativePath, line)
+                                .target(
+                                        declaration.getNameAsString()
+                                                + "#"
+                                                + method.getNameAsString())
+                                .build());
+            }
         }
         if (!transactionalMethods.isEmpty()) {
             method.findAll(MethodCallExpr.class)

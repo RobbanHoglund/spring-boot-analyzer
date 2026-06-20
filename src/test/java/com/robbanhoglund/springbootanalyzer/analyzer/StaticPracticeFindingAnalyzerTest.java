@@ -5263,4 +5263,206 @@ interface InventoryClient {
                 .extracting(Finding::ruleId)
                 .doesNotContain(FindingRules.SPRING_BIGDECIMAL_DOUBLE_CONSTRUCTOR.ruleId());
     }
+
+    // ── SPRING_TX_EVENT_LISTENER_WRITE_LOST ───────────────────────────────────
+
+    @Test
+    void flagsAfterCommitEventListenerWrite() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderEventHandler.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Component;
+                import org.springframework.transaction.event.TransactionalEventListener;
+
+                @Component
+                public class OrderEventHandler {
+                    private final AuditRepository repository = null;
+
+                    @TransactionalEventListener
+                    public void onOrderPlaced(OrderPlacedEvent event) {
+                        repository.save(event);
+                    }
+                }
+
+                interface AuditRepository {
+                    Object save(Object event);
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_TX_EVENT_LISTENER_WRITE_LOST.ruleId());
+    }
+
+    @Test
+    void doesNotFlagAfterCommitEventListenerWithRequiresNew() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderEventHandler.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Component;
+                import org.springframework.transaction.annotation.Propagation;
+                import org.springframework.transaction.annotation.Transactional;
+                import org.springframework.transaction.event.TransactionalEventListener;
+
+                @Component
+                public class OrderEventHandler {
+                    private final AuditRepository repository = null;
+
+                    @TransactionalEventListener
+                    @Transactional(propagation = Propagation.REQUIRES_NEW)
+                    public void onOrderPlaced(OrderPlacedEvent event) {
+                        repository.save(event);
+                    }
+                }
+
+                interface AuditRepository {
+                    Object save(Object event);
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_TX_EVENT_LISTENER_WRITE_LOST.ruleId());
+    }
+
+    @Test
+    void doesNotFlagBeforeCommitEventListenerWrite() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderEventHandler.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Component;
+                import org.springframework.transaction.event.TransactionPhase;
+                import org.springframework.transaction.event.TransactionalEventListener;
+
+                @Component
+                public class OrderEventHandler {
+                    private final AuditRepository repository = null;
+
+                    @TransactionalEventListener(phase = TransactionPhase.BEFORE_COMMIT)
+                    public void onOrderPlaced(OrderPlacedEvent event) {
+                        repository.save(event);
+                    }
+                }
+
+                interface AuditRepository {
+                    Object save(Object event);
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_TX_EVENT_LISTENER_WRITE_LOST.ruleId());
+    }
+
+    // ── SPRING_TRANSACTIONAL_CHECKED_EXCEPTION_NO_ROLLBACK ─────────────────────
+
+    @Test
+    void flagsTransactionalDeclaringCheckedExceptionWithoutRollbackFor() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
+                package com.example.demo;
+
+                import java.io.IOException;
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+
+                @Service
+                public class OrderService {
+                    @Transactional
+                    public void importOrders() throws IOException {
+                        throw new IOException("boom");
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_TRANSACTIONAL_CHECKED_EXCEPTION_NO_ROLLBACK.ruleId());
+    }
+
+    @Test
+    void doesNotFlagTransactionalCheckedExceptionWithRollbackFor() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
+                package com.example.demo;
+
+                import java.io.IOException;
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+
+                @Service
+                public class OrderService {
+                    @Transactional(rollbackFor = Exception.class)
+                    public void importOrders() throws IOException {
+                        throw new IOException("boom");
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(
+                        FindingRules.SPRING_TRANSACTIONAL_CHECKED_EXCEPTION_NO_ROLLBACK.ruleId());
+    }
+
+    @Test
+    void doesNotFlagTransactionalWithoutCheckedException() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+
+                @Service
+                public class OrderService {
+                    @Transactional
+                    public void process() {}
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(
+                        FindingRules.SPRING_TRANSACTIONAL_CHECKED_EXCEPTION_NO_ROLLBACK.ruleId());
+    }
 }
