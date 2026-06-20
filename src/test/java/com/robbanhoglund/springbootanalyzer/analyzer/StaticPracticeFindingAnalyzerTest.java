@@ -4903,4 +4903,566 @@ interface InventoryClient {
                 .extracting(Finding::ruleId)
                 .doesNotContain(FindingRules.SPRING_JPA_COLLECTION_EAGER_FETCH.ruleId());
     }
+
+    // ── SPRING_CORS_CREDENTIALS_WILDCARD ──────────────────────────────────────
+
+    @Test
+    void flagsCorsCredentialsWithWildcardOrigin() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("CorsConfig.java"),
+                """
+                package com.example.demo;
+
+                import java.util.List;
+                import org.springframework.web.cors.CorsConfiguration;
+
+                public class CorsConfig {
+                    public CorsConfiguration cors() {
+                        CorsConfiguration config = new CorsConfiguration();
+                        config.setAllowedOriginPatterns(List.of("*"));
+                        config.setAllowCredentials(true);
+                        return config;
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_CORS_CREDENTIALS_WILDCARD.ruleId());
+    }
+
+    @Test
+    void doesNotFlagCorsCredentialsWithExplicitOrigins() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("CorsConfig.java"),
+                """
+                package com.example.demo;
+
+                import java.util.List;
+                import org.springframework.web.cors.CorsConfiguration;
+
+                public class CorsConfig {
+                    public CorsConfiguration cors() {
+                        CorsConfiguration config = new CorsConfiguration();
+                        config.setAllowedOrigins(List.of("https://app.example.com"));
+                        config.setAllowCredentials(true);
+                        return config;
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_CORS_CREDENTIALS_WILDCARD.ruleId());
+    }
+
+    // ── SPRING_TRANSACTIONAL_NON_PUBLIC_METHOD ────────────────────────────────
+
+    @Test
+    void flagsTransactionalOnProtectedMethod() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+
+                @Service
+                public class OrderService {
+                    @Transactional
+                    protected void save() {}
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_TRANSACTIONAL_NON_PUBLIC_METHOD.ruleId());
+    }
+
+    @Test
+    void doesNotFlagTransactionalOnPublicMethod() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+
+                @Service
+                public class OrderService {
+                    @Transactional
+                    public void save() {}
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_TRANSACTIONAL_NON_PUBLIC_METHOD.ruleId());
+    }
+
+    // ── SPRING_TRANSACTIONAL_READONLY_WITH_WRITES ─────────────────────────────
+
+    @Test
+    void flagsWriteInsideReadOnlyTransaction() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+
+                @Service
+                public class OrderService {
+                    private final OrderRepository repository = null;
+
+                    @Transactional(readOnly = true)
+                    public void update(Order order) {
+                        repository.save(order);
+                    }
+                }
+
+                interface OrderRepository {
+                    Order save(Order order);
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_TRANSACTIONAL_READONLY_WITH_WRITES.ruleId());
+    }
+
+    @Test
+    void doesNotFlagReadOnlyTransactionWithoutWrites() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+
+                @Service
+                public class OrderService {
+                    private final OrderRepository repository = null;
+
+                    @Transactional(readOnly = true)
+                    public Order get(long id) {
+                        return repository.findById(id);
+                    }
+                }
+
+                interface OrderRepository {
+                    Order findById(long id);
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_TRANSACTIONAL_READONLY_WITH_WRITES.ruleId());
+    }
+
+    // ── SPRING_JPA_MANYTOMANY_CASCADE_REMOVE ──────────────────────────────────
+
+    @Test
+    void flagsManyToManyCascadeRemove() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Post.java"),
+                """
+                package com.example.demo;
+
+                import jakarta.persistence.CascadeType;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.ManyToMany;
+                import java.util.Set;
+
+                @Entity
+                public class Post {
+                    @ManyToMany(cascade = CascadeType.REMOVE)
+                    private Set<Tag> tags;
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_JPA_MANYTOMANY_CASCADE_REMOVE.ruleId());
+    }
+
+    @Test
+    void doesNotFlagManyToManyCascadePersist() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Post.java"),
+                """
+                package com.example.demo;
+
+                import jakarta.persistence.CascadeType;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.ManyToMany;
+                import java.util.Set;
+
+                @Entity
+                public class Post {
+                    @ManyToMany(cascade = CascadeType.PERSIST)
+                    private Set<Tag> tags;
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_JPA_MANYTOMANY_CASCADE_REMOVE.ruleId());
+    }
+
+    // ── SPRING_PROXY_ANNOTATION_ON_FINAL_METHOD ───────────────────────────────
+
+    @Test
+    void flagsTransactionalOnFinalMethod() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+
+                @Service
+                public class OrderService {
+                    @Transactional
+                    public final void save() {}
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_PROXY_ANNOTATION_ON_FINAL_METHOD.ruleId());
+    }
+
+    @Test
+    void doesNotFlagTransactionalOnNonFinalMethod() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+
+                @Service
+                public class OrderService {
+                    @Transactional
+                    public void save() {}
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_PROXY_ANNOTATION_ON_FINAL_METHOD.ruleId());
+    }
+
+    // ── SPRING_BIGDECIMAL_DOUBLE_CONSTRUCTOR ──────────────────────────────────
+
+    @Test
+    void flagsBigDecimalDoubleConstructor() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Money.java"),
+                """
+                package com.example.demo;
+
+                import java.math.BigDecimal;
+
+                public class Money {
+                    public BigDecimal rate() {
+                        return new BigDecimal(0.1);
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_BIGDECIMAL_DOUBLE_CONSTRUCTOR.ruleId());
+    }
+
+    @Test
+    void doesNotFlagBigDecimalStringConstructor() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Money.java"),
+                """
+                package com.example.demo;
+
+                import java.math.BigDecimal;
+
+                public class Money {
+                    public BigDecimal rate() {
+                        return new BigDecimal("0.1");
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_BIGDECIMAL_DOUBLE_CONSTRUCTOR.ruleId());
+    }
+
+    // ── SPRING_TX_EVENT_LISTENER_WRITE_LOST ───────────────────────────────────
+
+    @Test
+    void flagsAfterCommitEventListenerWrite() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderEventHandler.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Component;
+                import org.springframework.transaction.event.TransactionalEventListener;
+
+                @Component
+                public class OrderEventHandler {
+                    private final AuditRepository repository = null;
+
+                    @TransactionalEventListener
+                    public void onOrderPlaced(OrderPlacedEvent event) {
+                        repository.save(event);
+                    }
+                }
+
+                interface AuditRepository {
+                    Object save(Object event);
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_TX_EVENT_LISTENER_WRITE_LOST.ruleId());
+    }
+
+    @Test
+    void doesNotFlagAfterCommitEventListenerWithRequiresNew() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderEventHandler.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Component;
+                import org.springframework.transaction.annotation.Propagation;
+                import org.springframework.transaction.annotation.Transactional;
+                import org.springframework.transaction.event.TransactionalEventListener;
+
+                @Component
+                public class OrderEventHandler {
+                    private final AuditRepository repository = null;
+
+                    @TransactionalEventListener
+                    @Transactional(propagation = Propagation.REQUIRES_NEW)
+                    public void onOrderPlaced(OrderPlacedEvent event) {
+                        repository.save(event);
+                    }
+                }
+
+                interface AuditRepository {
+                    Object save(Object event);
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_TX_EVENT_LISTENER_WRITE_LOST.ruleId());
+    }
+
+    @Test
+    void doesNotFlagBeforeCommitEventListenerWrite() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderEventHandler.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Component;
+                import org.springframework.transaction.event.TransactionPhase;
+                import org.springframework.transaction.event.TransactionalEventListener;
+
+                @Component
+                public class OrderEventHandler {
+                    private final AuditRepository repository = null;
+
+                    @TransactionalEventListener(phase = TransactionPhase.BEFORE_COMMIT)
+                    public void onOrderPlaced(OrderPlacedEvent event) {
+                        repository.save(event);
+                    }
+                }
+
+                interface AuditRepository {
+                    Object save(Object event);
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_TX_EVENT_LISTENER_WRITE_LOST.ruleId());
+    }
+
+    // ── SPRING_TRANSACTIONAL_CHECKED_EXCEPTION_NO_ROLLBACK ─────────────────────
+
+    @Test
+    void flagsTransactionalDeclaringCheckedExceptionWithoutRollbackFor() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
+                package com.example.demo;
+
+                import java.io.IOException;
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+
+                @Service
+                public class OrderService {
+                    @Transactional
+                    public void importOrders() throws IOException {
+                        throw new IOException("boom");
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_TRANSACTIONAL_CHECKED_EXCEPTION_NO_ROLLBACK.ruleId());
+    }
+
+    @Test
+    void doesNotFlagTransactionalCheckedExceptionWithRollbackFor() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
+                package com.example.demo;
+
+                import java.io.IOException;
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+
+                @Service
+                public class OrderService {
+                    @Transactional(rollbackFor = Exception.class)
+                    public void importOrders() throws IOException {
+                        throw new IOException("boom");
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(
+                        FindingRules.SPRING_TRANSACTIONAL_CHECKED_EXCEPTION_NO_ROLLBACK.ruleId());
+    }
+
+    @Test
+    void doesNotFlagTransactionalWithoutCheckedException() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+
+                @Service
+                public class OrderService {
+                    @Transactional
+                    public void process() {}
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(
+                        FindingRules.SPRING_TRANSACTIONAL_CHECKED_EXCEPTION_NO_ROLLBACK.ruleId());
+    }
 }

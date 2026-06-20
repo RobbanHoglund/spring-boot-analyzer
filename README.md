@@ -5,7 +5,7 @@
 [![Java](https://img.shields.io/badge/java-25-orange.svg)](build.gradle)
 [![Spring Boot](https://img.shields.io/badge/spring--boot-3.5-brightgreen.svg)](build.gradle)
 
-A static analysis tool for Spring Boot projects. Point it at any Git repository and get a structured report of findings, component inventory, HTTP surface, configuration risks, and anti-patterns — without running the analyzed application. 152 rules across 19 categories out of the box.
+A static analysis tool for Spring Boot projects. Point it at any Git repository and get a structured report of findings, component inventory, HTTP surface, configuration risks, and anti-patterns — without running the analyzed application. 166 rules across 19 categories out of the box.
 
 **Safe by default.** The default `STATIC_ONLY` mode clones the repository into a temporary workspace and performs static analysis only. It does not run Gradle tasks, Maven goals, tests, or the analyzed Spring Boot application. See [SECURITY.md](SECURITY.md) for the full security model.
 
@@ -66,20 +66,20 @@ Detects Spring stereotypes and maps the application's component structure:
 
 ## Findings
 
-The analyzer produces **152 rules** across 19 categories. Each finding includes severity, confidence, why it matters, recommended action, evidence, and — for Gradle-model-backed rules — the exact resolved library versions involved.
+The analyzer produces **166 rules** across 19 categories. Each finding includes severity, confidence, why it matters, recommended action, evidence, and — for Gradle-model-backed rules — the exact resolved library versions involved.
 
 | Category | Rules | Highest severity |
 |----------|------:|-----------------|
-| Security | 12 | WARNING |
+| Security | 17 | ERROR |
 | Configuration | 6 | ERROR |
 | Profile drift | 8 | WARNING |
-| Persistence | 10 | ERROR |
-| Transaction | 8 | ERROR |
+| Persistence | 11 | ERROR |
+| Transaction | 12 | ERROR |
 | Scheduling | 5 | WARNING |
 | HTTP clients | 5 | WARNING |
 | Exception handling | 10 | ERROR |
 | Validation | 3 | INFO |
-| Maintainability | 6 | ERROR |
+| Maintainability | 10 | ERROR |
 | Observability | 9 | WARNING |
 | Caching | 7 | ERROR |
 | Testing practice | 5 | WARNING |
@@ -254,6 +254,17 @@ cd frontend; npm install; npm run build; cd ..
 ```bash
 ./gradlew clean test        # macOS / Linux
 .\gradlew.bat clean test    # Windows
+```
+
+The default `test` task runs the fast, offline unit and component suite. Two
+network-dependent Gradle Tooling API integration tests are tagged `integration`
+and excluded by default — they download a real Gradle distribution and resolve
+dependencies over the network. Run them explicitly when needed (CI runs them
+automatically):
+
+```bash
+./gradlew integrationTest        # macOS / Linux
+.\gradlew.bat integrationTest    # Windows
 ```
 
 **Run frontend tests**

@@ -72,6 +72,7 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
+            /tmp/spring-boot-analyzer-it-gradle-cache
           key: gradle-${{ runner.os }}-${{ hashFiles('build.gradle', 'settings.gradle', 'gradle/libs.versions.toml') }}
           restore-keys: |
             gradle-${{ runner.os }}-
@@ -92,6 +93,12 @@ jobs:
       - name: Test
         run: ./gradlew test --no-daemon --continue
 
+      # Run the network-dependent Gradle Tooling API integration tests, which are
+      # excluded from the default `test` task. CI has reliable network access and
+      # caches the downloaded Gradle distribution between runs (see cache step above).
+      - name: Integration test
+        run: ./gradlew integrationTest --no-daemon --continue
+
       # Verify that all Java sources conform to the Spotless-enforced format.
       # Developers should run ./gradlew spotlessApply locally before pushing.
       - name: Check code formatting
@@ -104,7 +111,9 @@ jobs:
         if: always()
         with:
           name: backend-test-results-java${{ matrix.java }}
-          path: build/reports/tests/test/
+          path: |
+            build/reports/tests/test/
+            build/reports/tests/integrationTest/
           retention-days: 7
 
   # ---------------------------------------------------------------------------

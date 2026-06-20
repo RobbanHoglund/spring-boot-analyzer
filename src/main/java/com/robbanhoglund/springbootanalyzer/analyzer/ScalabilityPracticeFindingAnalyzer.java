@@ -72,6 +72,12 @@ public class ScalabilityPracticeFindingAnalyzer {
                     "RestController",
                     "Repository",
                     "Configuration");
+    private static final Set<String> RAW_EXECUTOR_TYPES =
+            Set.of(
+                    "ExecutorService",
+                    "ScheduledExecutorService",
+                    "ThreadPoolExecutor",
+                    "ScheduledThreadPoolExecutor");
 
     /**
      * Analyzes all Java source files under {@code src/main/java} within the given repository root.
@@ -176,6 +182,7 @@ public class ScalabilityPracticeFindingAnalyzer {
         detectHardcodedFilePaths(cu, relativePath, findings);
         detectRestTemplateNoTimeout(cu, relativePath, findings);
         detectWebFluxBlockingCalls(cu, relativePath, findings);
+        detectUnboundedThreadPool(cu, relativePath, findings);
         detectUnboundedFindAll(cu, relativePath, findings);
         detectRestTemplateNewPerRequest(cu, relativePath, findings);
         detectJpaQueryNoPagination(cu, relativePath, findings);
@@ -188,6 +195,7 @@ public class ScalabilityPracticeFindingAnalyzer {
             detectFilterComponentRegistrationLeak(cls, relativePath, findings);
             detectNonThreadSafeFormatterField(cls, relativePath, findings);
             detectEntityMissingId(cls, relativePath, findings);
+            detectExecutorNoShutdown(cls, relativePath, findings);
             if (!prototypeTypes.isEmpty()) {
                 detectPrototypeBeanInSingleton(cls, relativePath, prototypeTypes, findings);
             }
@@ -197,6 +205,168 @@ public class ScalabilityPracticeFindingAnalyzer {
     // ---------------------------------------------------------------------------
     // Rule: SPRING_HARDCODED_FILE_PATH
     // ---------------------------------------------------------------------------
+
+    private void detectUnboundedThreadPool(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            if (!"newCachedThreadPool".equals(call.getNameAsString())) {
+                continue;
+            }
+            boolean onExecutors =
+                    call.getScope()
+                            .map(scope -> simpleName(scope.toString()))
+                            .filter("Executors"::equals)
+                            .isPresent();
+            if (!onExecutors) {
+                continue;
+            }
+            Integer line = call.getName().getBegin().map(position -> position.line).orElse(null);
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_EXECUTORS_UNBOUNDED_THREAD_POOL,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "Executors.newCachedThreadPool() creates an unbounded thread"
+                                            + " pool in "
+                                            + relativePath
+                                            + ".")
+                            .whyBadPractice(
+                                    "newCachedThreadPool() has no upper bound on thread count and"
+                                        + " hands tasks to a SynchronousQueue, so it spawns a new"
+                                        + " thread for every task that cannot start immediately.")
+                            .possibleImpact(
+                                    "Under load or a downstream slowdown the pool spawns threads"
+                                        + " without limit until the JVM dies with OutOfMemoryError:"
+                                        + " unable to create new native thread.")
+                            .recommendation(
+                                    "Use a bounded pool — new ThreadPoolExecutor with a fixed max"
+                                        + " size and a bounded queue, or inject a Spring"
+                                        + " ThreadPoolTaskExecutor — and apply a rejection policy.")
+                            .evidence(
+                                    "Executors.newCachedThreadPool() found in "
+                                            + relativePath
+                                            + ".")
+                            .limitations(
+                                    "Bounded factory methods"
+                                        + " (newFixedThreadPool/newScheduledThreadPool) are not"
+                                        + " flagged even though their task queue is unbounded by"
+                                        + " default.")
+                            .source(relativePath, line)
+                            .target("Executors.newCachedThreadPool")
+                            .build());
+            return; // one finding per file is sufficient
+        }
+    }
+
+    private void detectExecutorNoShutdown(
+            ClassOrInterfaceDeclaration declaration, String relativePath, List<Finding> findings) {
+        boolean springComponent =
+                declaration.getAnnotations().stream()
+                        .anyMatch(
+                                annotation ->
+                                        SINGLETON_ANNOTATIONS.contains(
+                                                simpleName(annotation.getNameAsString())));
+        if (!springComponent) {
+            return;
+        }
+        FieldDeclaration executorField = null;
+        for (FieldDeclaration field : declaration.getFields()) {
+            if (!RAW_EXECUTOR_TYPES.contains(simpleName(field.getElementType().asString()))) {
+                continue;
+            }
+            boolean constructedInClass =
+                    field.getVariables().stream()
+                            .anyMatch(
+                                    variable ->
+                                            variable.getInitializer()
+                                                    .map(this::isExecutorConstruction)
+                                                    .orElse(false));
+            if (constructedInClass) {
+                executorField = field;
+                break;
+            }
+        }
+        if (executorField == null) {
+            return;
+        }
+        boolean hasPreDestroy =
+                declaration.getMethods().stream()
+                        .anyMatch(
+                                method ->
+                                        method.getAnnotations().stream()
+                                                .anyMatch(
+                                                        annotation ->
+                                                                simpleName(
+                                                                                annotation
+                                                                                        .getNameAsString())
+                                                                        .equals("PreDestroy")));
+        boolean hasShutdownCall =
+                declaration.findAll(MethodCallExpr.class).stream()
+                        .anyMatch(
+                                call ->
+                                        call.getScope().isPresent()
+                                                && (call.getNameAsString().equals("shutdown")
+                                                        || call.getNameAsString()
+                                                                .equals("shutdownNow")
+                                                        || call.getNameAsString().equals("close")));
+        if (hasPreDestroy || hasShutdownCall) {
+            return;
+        }
+        String fieldName =
+                executorField.getVariables().isEmpty()
+                        ? "?"
+                        : executorField.getVariables().get(0).getNameAsString();
+        String target = declaration.getNameAsString() + "." + fieldName;
+        Integer line = executorField.getBegin().map(position -> position.line).orElse(null);
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_EXECUTOR_NO_SHUTDOWN, FindingConfidence.MEDIUM)
+                        .shortMessage(
+                                "ExecutorService field "
+                                        + target
+                                        + " is created in the bean but never shut down.")
+                        .whyBadPractice(
+                                "An ExecutorService built with Executors.* / new ThreadPoolExecutor"
+                                    + " owns non-daemon threads. The bean is a singleton, but on"
+                                    + " context refresh or redeploy it is discarded without the"
+                                    + " pool being shut down, so its threads leak and block clean"
+                                    + " JVM shutdown.")
+                        .possibleImpact(
+                                "Threads accumulate across hot reloads/redeploys and the JVM cannot"
+                                        + " exit cleanly, eventually exhausting resources.")
+                        .recommendation(
+                                "Shut the executor down in an @PreDestroy method"
+                                        + " (executor.shutdown()), or expose it as a @Bean with"
+                                        + " destroyMethod = \"shutdown\" so Spring manages its"
+                                        + " lifecycle.")
+                        .evidence(
+                                "Executor field "
+                                        + target
+                                        + " has no @PreDestroy or shutdown() call in "
+                                        + relativePath
+                                        + ".")
+                        .limitations(
+                                "Only executors constructed in the class are flagged; a shutdown in"
+                                        + " a superclass or via an injected lifecycle helper is not"
+                                        + " detected.")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+    }
+
+    private boolean isExecutorConstruction(Expression initializer) {
+        if (initializer instanceof MethodCallExpr call) {
+            return call.getScope()
+                    .map(scope -> simpleName(scope.toString()))
+                    .filter("Executors"::equals)
+                    .isPresent();
+        }
+        if (initializer instanceof ObjectCreationExpr creation) {
+            String type = simpleName(creation.getType().asString());
+            return type.equals("ThreadPoolExecutor") || type.equals("ScheduledThreadPoolExecutor");
+        }
+        return false;
+    }
 
     private void detectHardcodedFilePaths(
             CompilationUnit cu, String relativePath, List<Finding> findings) {

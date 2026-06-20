@@ -343,6 +343,51 @@ public final class FindingRules {
                     FindingCategory.MAINTAINABILITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
+    /** A proxy-driven annotation ({@code @Transactional}, {@code @Cacheable}/{@code @CacheEvict}/
+     *  {@code @CachePut}, {@code @Async}, {@code @PreAuthorize}/{@code @Secured}, {@code @Observed})
+     *  is placed on a {@code final} method of a Spring bean. Spring's CGLIB proxy cannot override a
+     *  final method, so the advice is silently skipped. */
+    public static final FindingRule SPRING_PROXY_ANNOTATION_ON_FINAL_METHOD =
+            rule(
+                    "SPRING_PROXY_ANNOTATION_ON_FINAL_METHOD",
+                    "Proxy-driven annotation on a final method is silently skipped",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code new BigDecimal(double)} is constructed from a floating-point literal. The double's
+     *  binary value is stored exactly (e.g. {@code new BigDecimal(0.1)} is
+     *  0.1000000000000000055...), silently corrupting monetary/precise calculations. */
+    public static final FindingRule SPRING_BIGDECIMAL_DOUBLE_CONSTRUCTOR =
+            rule(
+                    "SPRING_BIGDECIMAL_DOUBLE_CONSTRUCTOR",
+                    "new BigDecimal(double) introduces floating-point precision errors",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code Executors.newCachedThreadPool()} is used. Its thread count is unbounded and tasks
+     *  are handed to a {@code SynchronousQueue}, so a burst of work spawns threads until the JVM
+     *  fails with {@code OutOfMemoryError: unable to create new native thread}. */
+    public static final FindingRule SPRING_EXECUTORS_UNBOUNDED_THREAD_POOL =
+            rule(
+                    "SPRING_EXECUTORS_UNBOUNDED_THREAD_POOL",
+                    "Executors.newCachedThreadPool() creates an unbounded thread pool",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A Spring-managed component constructs an {@code ExecutorService}/{@code Executors.*} as a
+     *  field but never shuts it down ({@code @PreDestroy} / {@code shutdown()}). The pool's
+     *  non-daemon threads leak on every context refresh/redeploy and block clean JVM shutdown. */
+    public static final FindingRule SPRING_EXECUTOR_NO_SHUTDOWN =
+            rule(
+                    "SPRING_EXECUTOR_NO_SHUTDOWN",
+                    "ExecutorService created in a bean is never shut down",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
     /** An {@code @Async void} method has no try/catch and no
      *  {@code AsyncUncaughtExceptionHandler} configured. Exceptions thrown asynchronously
      *  are silently discarded by the default executor. */
@@ -395,6 +440,18 @@ public final class FindingRules {
             rule(
                     "SPRING_JPA_COLLECTION_EAGER_FETCH",
                     "@OneToMany or @ManyToMany collection uses eager fetching",
+                    FindingSeverity.WARNING,
+                    FindingCategory.PERSISTENCE,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @ManyToMany} association declares {@code cascade = CascadeType.REMOVE} (or
+     *  {@code ALL}). Deleting one side then cascades the delete across the join table to the
+     *  shared entities on the other side — which usually still belong to other parents — causing
+     *  irreversible data loss. */
+    public static final FindingRule SPRING_JPA_MANYTOMANY_CASCADE_REMOVE =
+            rule(
+                    "SPRING_JPA_MANYTOMANY_CASCADE_REMOVE",
+                    "@ManyToMany with CascadeType.REMOVE/ALL deletes shared entities",
                     FindingSeverity.WARNING,
                     FindingCategory.PERSISTENCE,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
@@ -518,6 +575,60 @@ public final class FindingRules {
             rule(
                     "SPRING_DATA_REST_REPOSITORIES_EXPOSED",
                     "Spring Data REST auto-exposes repositories over HTTP",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code NoOpPasswordEncoder} (or the deprecated {@code StandardPasswordEncoder}) is used,
+     *  so passwords are stored and compared in clear text (or with a known-weak hash). */
+    public static final FindingRule SPRING_NOOP_PASSWORD_ENCODER =
+            rule(
+                    "SPRING_NOOP_PASSWORD_ENCODER",
+                    "Password encoder stores passwords without secure hashing",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code @PreAuthorize}/{@code @PostAuthorize}/{@code @Secured}/{@code @RolesAllowed} are used
+     *  but no {@code @EnableMethodSecurity}/{@code @EnableGlobalMethodSecurity} is present, so the
+     *  annotations are silently ignored and the authorization checks never run. */
+    public static final FindingRule SPRING_METHOD_SECURITY_NOT_ENABLED =
+            rule(
+                    "SPRING_METHOD_SECURITY_NOT_ENABLED",
+                    "Method-security annotations are used but method security is not enabled",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code WebSecurity#ignoring()} rule matches a broad path ({@code /**} or every request),
+     *  so those URLs bypass the entire Spring Security filter chain — no authentication,
+     *  authorization, or security headers are applied. */
+    public static final FindingRule SPRING_SECURITY_IGNORING_BROAD_PATH =
+            rule(
+                    "SPRING_SECURITY_IGNORING_BROAD_PATH",
+                    "web.ignoring() bypasses Spring Security for a broad path",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A JWT is parsed without verifying its signature — jjwt {@code parseClaimsJwt}/
+     *  {@code parsePlaintextJwt}/{@code parseUnsecuredClaims}, or the {@code none} algorithm
+     *  ({@code SignatureAlgorithm.NONE}) — so forged tokens are accepted as genuine. */
+    public static final FindingRule SPRING_JWT_SIGNATURE_NOT_VERIFIED =
+            rule(
+                    "SPRING_JWT_SIGNATURE_NOT_VERIFIED",
+                    "JWT is parsed without verifying its signature",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A CORS configuration combines a wildcard origin ({@code allowedOriginPatterns("*")} or
+     *  {@code allowedOrigins("*")}) with {@code allowCredentials(true)}, reflecting any origin
+     *  while sending credentials — a cross-origin data-exfiltration risk. */
+    public static final FindingRule SPRING_CORS_CREDENTIALS_WILDCARD =
+            rule(
+                    "SPRING_CORS_CREDENTIALS_WILDCARD",
+                    "CORS allows credentials with a wildcard origin",
                     FindingSeverity.WARNING,
                     FindingCategory.SECURITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
@@ -887,6 +998,53 @@ public final class FindingRules {
                     "SPRING_TRANSACTIONAL_ON_PRIVATE_METHOD",
                     "@Transactional on private method is silently ignored by Spring's proxy",
                     FindingSeverity.ERROR,
+                    FindingCategory.TRANSACTION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code @Transactional} appears on a {@code protected} or package-private method. Spring's
+     *  proxy applies transaction advice only to {@code public} methods, so the annotation is
+     *  silently ignored and no transaction is started — exactly like the private-method case. */
+    public static final FindingRule SPRING_TRANSACTIONAL_NON_PUBLIC_METHOD =
+            rule(
+                    "SPRING_TRANSACTIONAL_NON_PUBLIC_METHOD",
+                    "@Transactional on a non-public method is silently ignored by Spring's proxy",
+                    FindingSeverity.ERROR,
+                    FindingCategory.TRANSACTION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @Transactional(readOnly = true)} method (or a method inheriting a class-level
+     *  read-only transaction) performs persistence writes. Read-only transactions set the
+     *  Hibernate flush mode to MANUAL, so dirty-checked updates are never flushed — the writes are
+     *  silently lost (or fail late on a read-only connection). */
+    public static final FindingRule SPRING_TRANSACTIONAL_READONLY_WITH_WRITES =
+            rule(
+                    "SPRING_TRANSACTIONAL_READONLY_WITH_WRITES",
+                    "Writes inside a readOnly=true transaction are silently dropped",
+                    FindingSeverity.WARNING,
+                    FindingCategory.TRANSACTION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @TransactionalEventListener} that runs after the transaction commits (the default
+     *  {@code AFTER_COMMIT} phase, or {@code AFTER_COMPLETION}) performs persistence writes without
+     *  {@code @Transactional(propagation = REQUIRES_NEW)}. There is no active transaction at that
+     *  point, so the writes are silently never flushed. */
+    public static final FindingRule SPRING_TX_EVENT_LISTENER_WRITE_LOST =
+            rule(
+                    "SPRING_TX_EVENT_LISTENER_WRITE_LOST",
+                    "Writes in an after-commit @TransactionalEventListener are silently lost",
+                    FindingSeverity.ERROR,
+                    FindingCategory.TRANSACTION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @Transactional} method declares a checked exception in its {@code throws} clause
+     *  but the annotation has no {@code rollbackFor}. Spring rolls back only on
+     *  {@code RuntimeException}/{@code Error} by default, so a thrown checked exception commits the
+     *  partial transaction. */
+    public static final FindingRule SPRING_TRANSACTIONAL_CHECKED_EXCEPTION_NO_ROLLBACK =
+            rule(
+                    "SPRING_TRANSACTIONAL_CHECKED_EXCEPTION_NO_ROLLBACK",
+                    "@Transactional commits on a checked exception without rollbackFor",
+                    FindingSeverity.WARNING,
                     FindingCategory.TRANSACTION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 

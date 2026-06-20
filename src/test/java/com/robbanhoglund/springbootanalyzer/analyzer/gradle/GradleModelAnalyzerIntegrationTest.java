@@ -18,9 +18,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+@Tag("integration")
 class GradleModelAnalyzerIntegrationTest {
 
     @TempDir Path tempDir;
@@ -285,7 +287,7 @@ dependencies {
                         true, Duration.ofDays(7), 4),
                 new AnalyzerProperties.GradleProperties(
                         true,
-                        Duration.ofMinutes(2),
+                        Duration.ofMinutes(10),
                         GradleExecutionMode.TOOLING_API,
                         "9.5.0",
                         sharedGradleCache,
