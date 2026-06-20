@@ -256,6 +256,17 @@ cd frontend; npm install; npm run build; cd ..
 .\gradlew.bat clean test    # Windows
 ```
 
+The default `test` task runs the fast, offline unit and component suite. Two
+network-dependent Gradle Tooling API integration tests are tagged `integration`
+and excluded by default — they download a real Gradle distribution and resolve
+dependencies over the network. Run them explicitly when needed (CI runs them
+automatically):
+
+```bash
+./gradlew integrationTest        # macOS / Linux
+.\gradlew.bat integrationTest    # Windows
+```
+
 **Run frontend tests**
 
 ```bash

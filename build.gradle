@@ -1,3 +1,5 @@
+import java.time.Duration
+
 plugins {
     id 'java'
     id 'org.springframework.boot' version '3.5.13'
@@ -43,7 +45,32 @@ dependencies {
 }
 
 test {
-    useJUnitPlatform()
+    // Network-dependent Gradle Tooling API integration tests are tagged 'integration'
+    // and excluded here so the default build stays fast, deterministic, and runnable
+    // offline. Run them with `./gradlew integrationTest` (see below).
+    useJUnitPlatform {
+        excludeTags 'integration'
+    }
+}
+
+// Opt-in task for the network-dependent Gradle Tooling API integration tests.
+// These download a real Gradle distribution and resolve dependencies over the
+// network, so they are kept out of the default `test` task. CI runs them
+// explicitly where network access is reliable.
+tasks.register('integrationTest', Test) {
+    description = 'Runs network-dependent Gradle Tooling API integration tests (downloads a real Gradle distribution).'
+    group = 'verification'
+    useJUnitPlatform {
+        includeTags 'integration'
+    }
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    shouldRunAfter test
+    // Cold-cache runs download a full Gradle distribution plus dependencies; allow
+    // generous headroom over the in-test Tooling API timeout.
+    timeout = Duration.ofMinutes(15)
+    // Results depend on external network/cache state, so never report UP-TO-DATE.
+    outputs.upToDateWhen { false }
 }
 
 tasks.register('installGitHooks', Copy) {
