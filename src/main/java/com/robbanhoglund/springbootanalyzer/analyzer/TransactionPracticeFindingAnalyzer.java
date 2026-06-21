@@ -67,6 +67,7 @@ public class TransactionPracticeFindingAnalyzer {
         for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
             for (MethodDeclaration method : cls.getMethods()) {
                 detectAsyncTransactional(cls, method, relativePath, findings);
+                detectTransactionalOnPostConstruct(cls, method, relativePath, findings);
             }
         }
     }
@@ -125,6 +126,71 @@ public class TransactionPracticeFindingAnalyzer {
                                 "Method "
                                         + target
                                         + " has both @Async and @Transactional annotations in "
+                                        + relativePath
+                                        + ".")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_TRANSACTIONAL_ON_POSTCONSTRUCT
+    // ---------------------------------------------------------------------------
+
+    /**
+     * Flags methods annotated with both {@code @PostConstruct} and {@code @Transactional}. Spring
+     * invokes {@code @PostConstruct} callbacks while the bean is still being initialized, before the
+     * transactional proxy that would start a transaction is in place. The {@code @Transactional}
+     * annotation therefore has no effect during initialization — the callback runs without a
+     * transaction.
+     */
+    private void detectTransactionalOnPostConstruct(
+            ClassOrInterfaceDeclaration cls,
+            MethodDeclaration method,
+            String relativePath,
+            List<Finding> findings) {
+        if (!hasAnnotation(method, "PostConstruct")) {
+            return;
+        }
+        if (!hasTransactionalAnnotation(method)) {
+            return;
+        }
+        Integer line = method.getBegin().map(p -> p.line).orElse(null);
+        String target = cls.getNameAsString() + "#" + method.getNameAsString();
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_TRANSACTIONAL_ON_POSTCONSTRUCT,
+                                FindingConfidence.HIGH)
+                        .shortMessage(
+                                "Method "
+                                        + target
+                                        + " is annotated with both @PostConstruct and"
+                                        + " @Transactional — no transaction is started during"
+                                        + " initialization.")
+                        .whyBadPractice(
+                                "Spring runs @PostConstruct callbacks as part of bean"
+                                    + " initialization, before the AOP proxy that applies"
+                                    + " @Transactional wraps the bean. The annotation is processed"
+                                    + " for normal (post-initialization) calls but is not in effect"
+                                    + " while the @PostConstruct method itself runs, so the work"
+                                    + " executes with no active transaction.")
+                        .possibleImpact(
+                                "Persistence operations in the callback run without transactional"
+                                    + " guarantees: no rollback on failure, and reads/writes may"
+                                    + " use auto-commit or fail with 'no active transaction'"
+                                    + " depending on the setup. The developer's assumption of"
+                                    + " atomicity is silently false.")
+                        .recommendation(
+                                "Move the transactional work out of @PostConstruct. Delegate to a"
+                                    + " separate @Transactional bean method invoked through the"
+                                    + " proxy, or run initialization on an"
+                                    + " ApplicationReadyEvent/ContextRefreshedEvent listener where"
+                                    + " the proxy is fully in place.")
+                        .evidence(
+                                "Method "
+                                        + target
+                                        + " has both @PostConstruct and @Transactional annotations"
+                                        + " in "
                                         + relativePath
                                         + ".")
                         .source(relativePath, line)

@@ -139,4 +139,47 @@ class TransactionPracticeFindingAnalyzerTest {
 
         assertThat(byRule(findings(), "SPRING_ASYNC_TRANSACTIONAL")).isNull();
     }
+
+    // ── SPRING_TRANSACTIONAL_ON_POSTCONSTRUCT ─────────────────────────────────
+
+    @Test
+    void flagsTransactionalOnPostConstructMethod() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/CacheWarmer.java",
+                """
+                package com.example;
+                import jakarta.annotation.PostConstruct;
+                import org.springframework.transaction.annotation.Transactional;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class CacheWarmer {
+                    @PostConstruct
+                    @Transactional
+                    public void warm() {}
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_TRANSACTIONAL_ON_POSTCONSTRUCT");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("CacheWarmer#warm");
+        assertThat(f.message()).contains("@PostConstruct").contains("@Transactional");
+    }
+
+    @Test
+    void doesNotFlagPostConstructWithoutTransactional() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/CacheWarmer.java",
+                """
+                package com.example;
+                import jakarta.annotation.PostConstruct;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class CacheWarmer {
+                    @PostConstruct
+                    public void warm() {}
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_TRANSACTIONAL_ON_POSTCONSTRUCT")).isNull();
+    }
 }

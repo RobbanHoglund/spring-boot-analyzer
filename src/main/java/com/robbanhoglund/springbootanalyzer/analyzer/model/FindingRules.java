@@ -1939,6 +1939,76 @@ public final class FindingRules {
                     FindingCategory.TRANSACTION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
+    // ── Async / scheduling enablement & proxy semantics ──────────────────────
+
+    /** One or more {@code @Scheduled} methods exist in the project, but no class is annotated with
+     *  {@code @EnableScheduling}. Spring Boot does not enable scheduling automatically, so the
+     *  {@code @Scheduled} triggers are parsed but never registered — the jobs silently never run. */
+    public static final FindingRule SPRING_SCHEDULED_WITHOUT_ENABLE_SCHEDULING =
+            rule(
+                    "SPRING_SCHEDULED_WITHOUT_ENABLE_SCHEDULING",
+                    "@Scheduled is used but @EnableScheduling is missing — jobs never run",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SCHEDULING,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** One or more {@code @Async} methods exist in the project, but no class is annotated with
+     *  {@code @EnableAsync}. Spring Boot does not enable async processing automatically, so the
+     *  annotated methods run synchronously on the caller's thread despite the annotation. */
+    public static final FindingRule SPRING_ASYNC_WITHOUT_ENABLE_ASYNC =
+            rule(
+                    "SPRING_ASYNC_WITHOUT_ENABLE_ASYNC",
+                    "@Async is used but @EnableAsync is missing — methods run synchronously",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SCHEDULING,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @Scheduled} method declares one or more parameters. Spring requires scheduled
+     *  methods to be no-arg and throws {@code IllegalStateException} ("Only no-arg methods may be
+     *  annotated with @Scheduled") while registering the task at startup. */
+    public static final FindingRule SPRING_SCHEDULED_METHOD_INVALID_SIGNATURE =
+            rule(
+                    "SPRING_SCHEDULED_METHOD_INVALID_SIGNATURE",
+                    "@Scheduled method has parameters — startup fails (must be no-arg)",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SCHEDULING,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** An {@code @Async} method is called directly (without an external receiver) from within the
+     *  same class. The self-invocation bypasses Spring's AOP proxy, so the method runs synchronously
+     *  on the caller's thread instead of being dispatched to the async executor. */
+    public static final FindingRule SPRING_ASYNC_SELF_INVOCATION =
+            rule(
+                    "SPRING_ASYNC_SELF_INVOCATION",
+                    "@Async method called via self-invocation — runs synchronously, proxy bypassed",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** An injection annotation ({@code @Autowired}, {@code @Inject}, {@code @Resource}, or
+     *  {@code @Value}) is placed on a {@code static} field of a Spring-managed component. Spring's
+     *  dependency injection operates on instances and cannot populate static fields, so the field
+     *  stays {@code null} (or its initializer value) and the first use throws
+     *  {@code NullPointerException}. */
+    public static final FindingRule SPRING_INJECTION_ON_STATIC_FIELD =
+            rule(
+                    "SPRING_INJECTION_ON_STATIC_FIELD",
+                    "Injection annotation on a static field is silently ignored — field stays null",
+                    FindingSeverity.ERROR,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A method is annotated with both {@code @PostConstruct} and {@code @Transactional}. The
+     *  transactional proxy is not yet in place while the bean's {@code @PostConstruct} callback
+     *  runs, so no transaction is started and the annotation has no effect during initialization. */
+    public static final FindingRule SPRING_TRANSACTIONAL_ON_POSTCONSTRUCT =
+            rule(
+                    "SPRING_TRANSACTIONAL_ON_POSTCONSTRUCT",
+                    "@Transactional on a @PostConstruct method has no effect during initialization",
+                    FindingSeverity.WARNING,
+                    FindingCategory.TRANSACTION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
     private FindingRules() {}
 
     private static FindingRule rule(

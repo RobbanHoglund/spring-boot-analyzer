@@ -92,6 +92,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
     private final SecurityPracticeFindingAnalyzer securityPracticeFindingAnalyzer;
     private final ScalabilityPracticeFindingAnalyzer scalabilityPracticeFindingAnalyzer;
     private final MigrationPracticeFindingAnalyzer migrationPracticeFindingAnalyzer;
+    private final SchedulingPracticeFindingAnalyzer schedulingPracticeFindingAnalyzer;
     private final AnalyzerProperties analyzerProperties;
 
     public SpringBootProjectAnalyzer(
@@ -113,6 +114,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
             SecurityPracticeFindingAnalyzer securityPracticeFindingAnalyzer,
             ScalabilityPracticeFindingAnalyzer scalabilityPracticeFindingAnalyzer,
             MigrationPracticeFindingAnalyzer migrationPracticeFindingAnalyzer,
+            SchedulingPracticeFindingAnalyzer schedulingPracticeFindingAnalyzer,
             AnalyzerProperties analyzerProperties) {
         this.buildFileAnalyzer = buildFileAnalyzer;
         this.javaSourceAnalyzer = javaSourceAnalyzer;
@@ -132,6 +134,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
         this.securityPracticeFindingAnalyzer = securityPracticeFindingAnalyzer;
         this.scalabilityPracticeFindingAnalyzer = scalabilityPracticeFindingAnalyzer;
         this.migrationPracticeFindingAnalyzer = migrationPracticeFindingAnalyzer;
+        this.schedulingPracticeFindingAnalyzer = schedulingPracticeFindingAnalyzer;
         this.analyzerProperties = analyzerProperties;
     }
 
@@ -218,6 +221,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
         findings.addAll(transactionPracticeFindingAnalyzer.analyze(javaSources));
         findings.addAll(securityPracticeFindingAnalyzer.analyze(javaSources));
         findings.addAll(scalabilityPracticeFindingAnalyzer.analyze(javaSources));
+        findings.addAll(schedulingPracticeFindingAnalyzer.analyze(javaSources));
         findings.addAll(
                 migrationPracticeFindingAnalyzer.analyze(
                         javaSources, runtimeResult.runtimeStackAnalysis()));

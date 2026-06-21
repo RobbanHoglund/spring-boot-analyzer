@@ -5465,4 +5465,56 @@ interface InventoryClient {
                 .doesNotContain(
                         FindingRules.SPRING_TRANSACTIONAL_CHECKED_EXCEPTION_NO_ROLLBACK.ruleId());
     }
+
+    // ── SPRING_INJECTION_ON_STATIC_FIELD ──────────────────────────────────────
+
+    @Test
+    void flagsInjectionAnnotationOnStaticField() throws IOException {
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("StaticHolder.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.beans.factory.annotation.Autowired;
+                import org.springframework.stereotype.Service;
+
+                @Service
+                public class StaticHolder {
+                    @Autowired private static Helper helper;
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_INJECTION_ON_STATIC_FIELD.ruleId());
+    }
+
+    @Test
+    void doesNotFlagInjectionOnInstanceField() throws IOException {
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("InstanceHolder.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.beans.factory.annotation.Autowired;
+                import org.springframework.stereotype.Service;
+
+                @Service
+                public class InstanceHolder {
+                    @Autowired private Helper helper;
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_INJECTION_ON_STATIC_FIELD.ruleId());
+    }
 }

@@ -399,6 +399,11 @@ public class StaticPracticeFindingAnalyzer {
                     && !field.isFinal()) {
                 detectStaticMutableField(relativePath, declaration, field, findings);
             }
+            if ((controllerLike || serviceLike || repositoryLike || configurationLike)
+                    && field.isStatic()
+                    && hasAnyAnnotation(field.getAnnotations(), INJECTION_ANNOTATIONS)) {
+                detectInjectionOnStaticField(relativePath, declaration, field, findings);
+            }
         }
 
         for (ConstructorDeclaration constructor : declaration.getConstructors()) {
@@ -1589,6 +1594,70 @@ public class StaticPracticeFindingAnalyzer {
                             .target(target)
                             .build());
         }
+    }
+
+    private static final Set<String> INJECTION_ANNOTATIONS =
+            Set.of("Autowired", "Inject", "Resource", "Value");
+
+    private void detectInjectionOnStaticField(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            FieldDeclaration field,
+            List<Finding> findings) {
+        String fieldName =
+                field.getVariables().isEmpty()
+                        ? "?"
+                        : field.getVariables().get(0).getNameAsString();
+        String annotationName =
+                field.getAnnotations().stream()
+                        .map(annotation -> simpleName(annotation.getNameAsString()))
+                        .filter(INJECTION_ANNOTATIONS::contains)
+                        .findFirst()
+                        .orElse("Autowired");
+        String target = declaration.getNameAsString() + "." + fieldName;
+        Integer line = field.getBegin().map(position -> position.line).orElse(null);
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_INJECTION_ON_STATIC_FIELD,
+                                FindingConfidence.HIGH)
+                        .shortMessage(
+                                "@"
+                                        + annotationName
+                                        + " on static field "
+                                        + target
+                                        + " — Spring cannot inject into static fields.")
+                        .whyBadPractice(
+                                "Spring's dependency injection populates instance fields on the"
+                                    + " bean it creates. A static field belongs to the class, not"
+                                    + " the instance, so the container never assigns it. The"
+                                    + " annotation is silently ignored and the field keeps its"
+                                    + " default value (null for reference types).")
+                        .possibleImpact(
+                                "The first use of the field throws NullPointerException at runtime."
+                                        + " Because the application starts cleanly, the failure"
+                                        + " surfaces only when the code path that reads the field"
+                                        + " executes.")
+                        .recommendation(
+                                "Remove the static modifier and inject the dependency normally"
+                                    + " (constructor injection preferred). If the value genuinely"
+                                    + " must be static, set it from a non-static setter or"
+                                    + " @PostConstruct method that copies an injected instance"
+                                    + " field into the static field.")
+                        .evidence(
+                                "@"
+                                        + annotationName
+                                        + " found on static field "
+                                        + fieldName
+                                        + " in "
+                                        + relativePath
+                                        + ".")
+                        .limitations(
+                                "Some projects deliberately copy an injected instance value into a"
+                                    + " static field via a setter; that pattern is not flagged"
+                                    + " because the annotation is on the setter, not the field.")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
     }
 
     private void detectFieldInjection(
