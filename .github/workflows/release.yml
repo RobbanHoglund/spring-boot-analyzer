@@ -78,13 +78,14 @@ jobs:
         working-directory: frontend
         run: |
           npm ci
+          npm audit --audit-level=moderate
           npm run build
 
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
-      - name: Run backend tests
-        run: ./gradlew test --no-daemon
+      - name: Verify backend
+        run: ./gradlew test integrationTest spotlessCheck --no-daemon
 
       - name: Assemble release jar
         run: ./gradlew bootJar --no-daemon

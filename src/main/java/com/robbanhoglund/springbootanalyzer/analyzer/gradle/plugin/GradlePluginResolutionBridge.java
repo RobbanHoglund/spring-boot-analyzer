@@ -162,7 +162,7 @@ public class GradlePluginResolutionBridge {
                         declaration.version(),
                         markerCoordinates,
                         implementationCoordinates.toCoordinateString(),
-                        localRepository);
+                        fileName(localRepository));
             } catch (Exception exception) {
                 String message = redact(exception.getMessage());
                 GradlePluginBridgeFailure failure =
@@ -817,5 +817,9 @@ public class GradlePluginResolutionBridge {
                             + coordinates);
         }
         return new ArtifactCoordinates(parts[0], parts[1], parts[2]);
+    }
+
+    private String fileName(Path path) {
+        return path == null || path.getFileName() == null ? null : path.getFileName().toString();
     }
 }

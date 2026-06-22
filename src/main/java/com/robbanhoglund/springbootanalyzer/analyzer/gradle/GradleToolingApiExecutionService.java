@@ -77,10 +77,10 @@ public class GradleToolingApiExecutionService {
 
             LOGGER.info(
                     "Executing Gradle diagnostic task via Tooling API: executionMode={},"
-                            + " repositoryRoot={}, reportFile={}, timeout={}, useWrapper={}",
+                            + " workspaceId={}, reportFile={}, timeout={}, useWrapper={}",
                     executionMode,
-                    repositoryRoot,
-                    files.reportFile(),
+                    workspaceId(repositoryRoot),
+                    fileName(files.reportFile()),
                     properties.timeout(),
                     executionMode == GradleExecutionMode.WRAPPER);
 
@@ -368,6 +368,15 @@ public class GradleToolingApiExecutionService {
             thread.setDaemon(true);
             return thread;
         };
+    }
+
+    private String workspaceId(Path repositoryRoot) {
+        Path parent = repositoryRoot == null ? null : repositoryRoot.getParent();
+        return fileName(parent);
+    }
+
+    private String fileName(Path path) {
+        return path == null || path.getFileName() == null ? null : path.getFileName().toString();
     }
 
     private static final class CappedOutputStream extends OutputStream {

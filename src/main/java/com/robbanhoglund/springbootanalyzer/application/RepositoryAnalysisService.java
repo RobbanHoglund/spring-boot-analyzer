@@ -72,10 +72,10 @@ public class RepositoryAnalysisService {
         Workspace workspace = workspaceService.createWorkspace();
         AnalysisResult result = null;
         LOGGER.info(
-                "Starting repository analysis: workspaceId={}, repositoryUrl={}, branch={},"
+                "Starting repository analysis: workspaceId={}, repository={}, branch={},"
                         + " analysisMode={}",
                 workspace.id(),
-                repositoryReference.repositoryUrl(),
+                repositoryReference.logLabel(),
                 repositoryReference.branch(),
                 repositoryReference.analysisMode());
         try {
@@ -84,9 +84,9 @@ public class RepositoryAnalysisService {
                             repositoryReference, workspace.path().resolve("repository"));
             String commitSha = gitCloneService.resolveHeadCommit(clonedRepository).orElse(null);
             LOGGER.info(
-                    "Repository cloned successfully: workspaceId={}, path={}",
+                    "Repository cloned successfully: workspaceId={}, repository={}",
                     workspace.id(),
-                    clonedRepository);
+                    repositoryReference.logLabel());
             result = staticAnalyzer.analyze(repositoryReference, clonedRepository, workspace.id());
             result = enrichAnalysisResult(result, workspace.id(), commitSha, clonedRepository);
             analysisSessionRegistry.register(
@@ -114,16 +114,13 @@ public class RepositoryAnalysisService {
     private void cleanupWorkspace(Workspace workspace, AnalysisResult result) {
         if (!analyzerProperties.cleanupAfterAnalysis()) {
             LOGGER.info(
-                    "Workspace cleanup skipped by configuration: workspaceId={}, path={}",
-                    workspace.id(),
-                    workspace.path());
+                    "Workspace cleanup skipped by configuration: workspaceId={}", workspace.id());
             return;
         }
         if (retainWorkspaceForSnippetBrowsing && result != null && result.analysisId() != null) {
             LOGGER.info(
-                    "Workspace retained for source snippet browsing: workspaceId={}, path={}",
-                    workspace.id(),
-                    workspace.path());
+                    "Workspace retained for source snippet browsing: workspaceId={}",
+                    workspace.id());
             return;
         }
         if (analyzerProperties.workspaceKeepOnGradleFailure()
@@ -133,18 +130,15 @@ public class RepositoryAnalysisService {
                 && !"SUCCESS".equals(result.gradleModelAnalysis().status().name())
                 && !"NOT_REQUESTED".equals(result.gradleModelAnalysis().status().name())) {
             LOGGER.info(
-                    "Workspace retained because Gradle model analysis failed: workspaceId={},"
-                            + " path={}",
-                    workspace.id(),
-                    workspace.path());
+                    "Workspace retained because Gradle model analysis failed: workspaceId={}",
+                    workspace.id());
             return;
         }
         try {
             workspaceService.deleteWorkspace(workspace);
-            LOGGER.info(
-                    "Workspace deleted: workspaceId={}, path={}", workspace.id(), workspace.path());
+            LOGGER.info("Workspace deleted: workspaceId={}", workspace.id());
         } catch (RuntimeException exception) {
-            LOGGER.warn("Failed to delete workspace {}", workspace.path(), exception);
+            LOGGER.warn("Failed to delete workspace {}", workspace.id(), exception);
         }
     }
 

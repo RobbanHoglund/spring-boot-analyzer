@@ -3,6 +3,7 @@ package com.robbanhoglund.springbootanalyzer.api;
 import com.robbanhoglund.springbootanalyzer.api.dto.RulesConfigRequest;
 import com.robbanhoglund.springbootanalyzer.api.dto.RulesConfigResponse;
 import com.robbanhoglund.springbootanalyzer.application.UserRuleConfigService;
+import jakarta.validation.Valid;
 import java.util.Collections;
 import java.util.Set;
 import org.springframework.http.ResponseEntity;
@@ -28,7 +29,7 @@ public class RuleSettingsController {
     }
 
     @PutMapping("/rules")
-    public ResponseEntity<Void> saveRules(@RequestBody RulesConfigRequest request) {
+    public ResponseEntity<Void> saveRules(@Valid @RequestBody RulesConfigRequest request) {
         Set<String> disabled =
                 request.disabledRuleIds() == null
                         ? Collections.emptySet()

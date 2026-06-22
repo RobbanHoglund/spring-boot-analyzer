@@ -36,7 +36,12 @@ import type {
 } from './types';
 import { renderAnalyzeView } from './views/analyzeView';
 import { type CodeSnippetModalState, type FindingCodeOccurrence, type ResultsViewState } from './views/resultsView';
-import { renderSettingsView, type RepositoryFormModel, type TokenFormModel } from './views/settingsView';
+import {
+  renderSettingsView,
+  type RepositoryFormModel,
+  type RuleManagementViewState,
+  type TokenFormModel
+} from './views/settingsView';
 
 const DEFAULT_REPOSITORY_URL = 'https://github.com/RobbanHoglund/tradingbot.git';
 const THEME_STORAGE_KEY = 'spring-boot-analyzer-theme';
@@ -68,6 +73,7 @@ interface AppState {
   ruleSettings: RuleInfo[] | null;
   ruleSettingsLoading: boolean;
   ruleSettingsError: string;
+  ruleManagementViewState: RuleManagementViewState;
 }
 
 interface FocusSnapshot {
@@ -108,11 +114,14 @@ function createInitialState(): AppState {
   const oneTimeTokenProfileId = restoredOneTimeTokenProfileId && tokenProfiles.some((profile) => profile.id === restoredOneTimeTokenProfileId)
     ? restoredOneTimeTokenProfileId
     : defaultOneTimeTokenProfile?.id ?? '';
+  const analyzeMode = persistedSession?.analyzeMode === 'saved' && repositoryProfiles.length > 0
+    ? 'saved'
+    : 'oneTime';
 
   return {
     currentTab: persistedSession?.currentTab === 'settings' ? 'settings' : 'analyze',
     themePreference: loadThemePreference(),
-    analyzeMode: persistedSession?.analyzeMode === 'oneTime' ? 'oneTime' : 'saved',
+    analyzeMode,
     tokenProfiles,
     repositoryProfiles,
     selectedSavedRepositoryId,
@@ -132,7 +141,8 @@ function createInitialState(): AppState {
     resultsViewState: mergeResultsViewState(defaultResultsViewState, persistedSession?.resultsViewState),
     ruleSettings: null,
     ruleSettingsLoading: false,
-    ruleSettingsError: ''
+    ruleSettingsError: '',
+    ruleManagementViewState: createDefaultRuleManagementViewState()
   };
 }
 
@@ -142,9 +152,11 @@ function createDefaultResultsViewState(): ResultsViewState {
     findingsCategory: 'ALL',
     findingsRuntimeDetection: 'ALL',
     findingsConfidence: 'ALL',
+    findingsTriageStatus: 'ALL',
     findingsText: '',
     findingsExpanded: false,
     findingsGrouped: true,
+    findingsTriage: {},
     configurationSearch: '',
     configurationFocus: 'ALL',
     configurationProfile: 'ALL',
@@ -174,6 +186,15 @@ function createDefaultResultsViewState(): ResultsViewState {
     httpConfiguredExpanded: false,
     httpActuatorExpanded: false,
     codeModal: createClosedCodeModalState()
+  };
+}
+
+function createDefaultRuleManagementViewState(): RuleManagementViewState {
+  return {
+    searchText: '',
+    severity: 'ALL',
+    status: 'ALL',
+    categoryExpansion: 'review'
   };
 }
 
@@ -333,6 +354,13 @@ function render(): void {
           onAnalyzeOneTimeRepository: () => {
             void analyzeOneTimeRepository();
           },
+          onRetryAnalysis: () => {
+            void retryCurrentAnalysis();
+          },
+          onOpenSettings: () => {
+            state.currentTab = 'settings';
+            render();
+          },
           onAnalysisModeChange: (value) => {
             state.analysisMode = value;
             render();
@@ -353,6 +381,10 @@ function render(): void {
             state.resultsViewState.findingsConfidence = value;
             render();
           },
+          onFindingsTriageStatusChange: (value) => {
+            state.resultsViewState.findingsTriageStatus = value;
+            render();
+          },
           onFindingsTextChange: (value) => {
             state.resultsViewState.findingsText = value;
             render();
@@ -363,6 +395,42 @@ function render(): void {
           },
           onFindingsGroupedChange: (value) => {
             state.resultsViewState.findingsGrouped = value;
+            render();
+          },
+          onSetFindingTriageStatus: (key, status) => {
+            const nextTriage = { ...state.resultsViewState.findingsTriage };
+            if (status === 'OPEN') {
+              delete nextTriage[key];
+            } else {
+              nextTriage[key] = status;
+            }
+            state.resultsViewState.findingsTriage = nextTriage;
+            render();
+          },
+          onSetFindingTriageStatuses: (updates) => {
+            const nextTriage = { ...state.resultsViewState.findingsTriage };
+            for (const update of updates) {
+              if (update.status === 'OPEN') {
+                delete nextTriage[update.key];
+              } else {
+                nextTriage[update.key] = update.status;
+              }
+            }
+            state.resultsViewState.findingsTriage = nextTriage;
+            render();
+          },
+          onClearFindingsFilters: () => {
+            state.resultsViewState.findingsSeverity = 'ALL';
+            state.resultsViewState.findingsCategory = 'ALL';
+            state.resultsViewState.findingsRuntimeDetection = 'ALL';
+            state.resultsViewState.findingsConfidence = 'ALL';
+            state.resultsViewState.findingsTriageStatus = 'ALL';
+            state.resultsViewState.findingsText = '';
+            render();
+          },
+          onClearFindingsTriage: () => {
+            state.resultsViewState.findingsTriage = {};
+            state.resultsViewState.findingsTriageStatus = 'ALL';
             render();
           },
             onConfigurationSearchChange: (value) => {
@@ -521,7 +589,8 @@ function render(): void {
           tokenForm: state.tokenForm,
           ruleSettings: state.ruleSettings,
           ruleSettingsLoading: state.ruleSettingsLoading,
-          ruleSettingsError: state.ruleSettingsError
+          ruleSettingsError: state.ruleSettingsError,
+          ruleManagement: state.ruleManagementViewState
         },
         {
           onRepositoryFormChange: (field, value) => {
@@ -578,6 +647,31 @@ function render(): void {
           },
           onSetAllBySeverity: (severity, enabled) => {
             void setAllBySeverity(severity, enabled);
+          },
+          onRuleSearchChange: (value) => {
+            state.ruleManagementViewState.searchText = value;
+            render();
+          },
+          onRuleSeverityFilterChange: (value) => {
+            state.ruleManagementViewState.severity = value;
+            render();
+          },
+          onRuleStatusFilterChange: (value) => {
+            state.ruleManagementViewState.status = value;
+            render();
+          },
+          onRuleCategoryExpansionChange: (value) => {
+            state.ruleManagementViewState.categoryExpansion = value;
+            render();
+          },
+          onClearRuleFilters: () => {
+            state.ruleManagementViewState = {
+              ...state.ruleManagementViewState,
+              searchText: '',
+              severity: 'ALL',
+              status: 'ALL'
+            };
+            render();
           }
         }
       )
@@ -696,6 +790,14 @@ async function analyzeOneTimeRepository(): Promise<void> {
   }
 
   await runAnalysis(request);
+}
+
+async function retryCurrentAnalysis(): Promise<void> {
+  if (state.analyzeMode === 'saved') {
+    await analyzeSavedRepository();
+    return;
+  }
+  await analyzeOneTimeRepository();
 }
 
 async function runAnalysis(request: AnalyzeRepositoryRequest): Promise<void> {
@@ -945,11 +1047,27 @@ async function loadCodeSnippetForSelection(): Promise<void> {
     }
     state.resultsViewState.codeModal.snippet = null;
     state.resultsViewState.codeModal.loading = false;
-    state.resultsViewState.codeModal.errorMessage =
-      error instanceof ApiError ? error.message : 'Source snippet could not be loaded.';
+    state.resultsViewState.codeModal.errorMessage = sourceSnippetErrorMessage(error);
     pendingFocusElementId = 'code-snippet-modal-close';
     render();
   }
+}
+
+function sourceSnippetErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 404) {
+      return 'The saved analysis result is still available, but the local source workspace for this snippet is no longer available or the file could not be found. Open the file in GitHub, or run the analysis again to restore source browsing.';
+    }
+    if (error.status === 400) {
+      return 'This source location cannot be displayed safely. Open the file in GitHub or inspect the repository directly.';
+    }
+    return stripRequestPrefix(error.message);
+  }
+  return 'Source snippet could not be loaded. Run the analysis again and try opening the source from the fresh result.';
+}
+
+function stripRequestPrefix(message: string): string {
+  return message.replace(/^Request failed(?: with status)?(?: \(\d+\))?:\s*/i, '').trim() || message;
 }
 
 function buildFindingCodeOccurrences(findings: Finding[]): FindingCodeOccurrence[] {

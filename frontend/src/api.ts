@@ -89,7 +89,7 @@ export async function saveRuleSettings(disabledRuleIds: string[]): Promise<void>
 async function parsePayload(response: Response): Promise<unknown> {
   const contentType = response.headers.get('content-type') ?? '';
 
-  if (contentType.includes('application/json')) {
+  if (contentType.includes('json')) {
     try {
       return await response.json();
     } catch {
@@ -118,15 +118,39 @@ function buildErrorMessage(status: number, payload: unknown): string {
       }
     }
 
-    const detail = typeof payload.detail === 'string' ? payload.detail : '';
-    const title = typeof payload.title === 'string' ? payload.title : '';
-    const message = detail || title;
+    const message = problemMessage(payload);
     if (message) {
       return `Request failed (${status}): ${message}`;
     }
   }
 
   return `Request failed with status ${status}.`;
+}
+
+function problemMessage(payload: Record<string, any>): string {
+  const detail = typeof payload.detail === 'string' ? payload.detail : '';
+  const nestedProblem = parseJsonObject(detail);
+  if (nestedProblem) {
+    const nestedMessage = problemMessage(nestedProblem);
+    if (nestedMessage) {
+      return nestedMessage;
+    }
+  }
+  const title = typeof payload.title === 'string' ? payload.title : '';
+  return detail || title;
+}
+
+function parseJsonObject(value: string): Record<string, any> | null {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{')) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    return isObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function isObject(value: unknown): value is Record<string, any> {

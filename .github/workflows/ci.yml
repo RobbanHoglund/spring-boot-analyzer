@@ -147,6 +147,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Audit dependencies
+        run: npm audit --audit-level=moderate
+
       # tsc --noEmit type-checks the source without producing output files.
       # Errors here indicate type mismatches that would survive the build step.
       - name: Type check

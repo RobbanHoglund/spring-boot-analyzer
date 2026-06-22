@@ -148,4 +148,75 @@ class WorkspaceServiceTest {
         assertThat(Files.exists(staleWorkspace)).isFalse();
         assertThat(Files.exists(freshWorkspace)).isTrue();
     }
+
+    @Test
+    void reportsFailureWhenScheduledCleanupDoesNotRemoveWorkspace() throws IOException {
+        WorkspaceService workspaceService =
+                new WorkspaceService(
+                        new AnalyzerProperties(
+                                tempDir,
+                                true,
+                                false,
+                                new AnalyzerProperties.ScheduledWorkspaceCleanupProperties(
+                                        true, Duration.ofDays(7), 4),
+                                new AnalyzerProperties.GradleProperties(
+                                        false,
+                                        null,
+                                        GradleExecutionMode.TOOLING_API,
+                                        "9.5.0",
+                                        tempDir.resolve("gradle-cache"),
+                                        java.util.List.of(),
+                                        null,
+                                        null,
+                                        true,
+                                        java.util.List.of("https://plugins.gradle.org/m2/"),
+                                        true,
+                                        false,
+                                        true,
+                                        false,
+                                        true,
+                                        false,
+                                        false,
+                                        new AnalyzerProperties.SettingsPluginWorkaroundProperties(
+                                                false, false, java.util.List.of(), 1),
+                                        new AnalyzerProperties.PluginResolutionBridgeProperties(
+                                                true,
+                                                true,
+                                                true,
+                                                "Spring Boot Analyzer plugin cache",
+                                                java.util.List.of(
+                                                        "https://plugins.gradle.org/m2/",
+                                                        "https://repo.maven.apache.org/maven2/"),
+                                                Duration.ofSeconds(30),
+                                                50,
+                                                500,
+                                                false,
+                                                2),
+                                        false,
+                                        false,
+                                        true,
+                                        null,
+                                        null,
+                                        0,
+                                        0))) {
+                    @Override
+                    public void deleteWorkspace(Workspace workspace) {
+                        // Simulates a deferred Windows cleanup that could not remove the directory.
+                    }
+                };
+        Path staleWorkspace = Files.createDirectories(tempDir.resolve("workspace-old"));
+        Files.writeString(staleWorkspace.resolve("repo.txt"), "old");
+        Files.setLastModifiedTime(
+                staleWorkspace,
+                java.nio.file.attribute.FileTime.from(Instant.parse("2026-04-20T00:00:00Z")));
+
+        WorkspaceService.WorkspaceCleanupResult result =
+                workspaceService.deleteWorkspacesOlderThan(
+                        Duration.ofDays(7), Instant.parse("2026-04-30T00:00:00Z"));
+
+        assertThat(result.scannedCount()).isEqualTo(1);
+        assertThat(result.deletedCount()).isZero();
+        assertThat(result.failedCount()).isEqualTo(1);
+        assertThat(Files.exists(staleWorkspace)).isTrue();
+    }
 }

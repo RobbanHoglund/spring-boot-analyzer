@@ -1,5 +1,6 @@
 package com.robbanhoglund.springbootanalyzer.error;
 
+import com.robbanhoglund.springbootanalyzer.application.InvalidRuleConfigException;
 import com.robbanhoglund.springbootanalyzer.application.InvalidSourceSnippetRequestException;
 import com.robbanhoglund.springbootanalyzer.application.SourceSnippetNotFoundException;
 import com.robbanhoglund.springbootanalyzer.git.GitCloneException;
@@ -54,7 +55,9 @@ public class GlobalExceptionHandler {
         LOGGER.warn("Invalid repository request: {}", exception.getMessage());
         ProblemDetail problemDetail = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
         problemDetail.setTitle("Invalid repository request");
-        problemDetail.setDetail(exception.getMessage());
+        problemDetail.setDetail(
+                "Repository URL could not be accepted. Use an HTTPS or SSH repository URL without"
+                        + " embedded credentials.");
         return problemDetail;
     }
 
@@ -63,7 +66,20 @@ public class GlobalExceptionHandler {
         LOGGER.warn("Repository clone failed: {}", exception.getMessage(), exception);
         ProblemDetail problemDetail = ProblemDetail.forStatus(HttpStatus.BAD_GATEWAY);
         problemDetail.setTitle("Repository clone failed");
-        problemDetail.setDetail(exception.getMessage());
+        problemDetail.setDetail(
+                "Repository could not be cloned. Check that the URL and branch exist, and that the"
+                        + " selected token profile can read the repository contents. For private"
+                        + " GitHub repositories, use a token with repository read access or"
+                        + " fine-grained Contents: Read permission.");
+        return problemDetail;
+    }
+
+    @ExceptionHandler(InvalidRuleConfigException.class)
+    public ProblemDetail handleInvalidRuleConfig(InvalidRuleConfigException exception) {
+        LOGGER.warn("Invalid rule configuration request: {}", exception.getMessage());
+        ProblemDetail problemDetail = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problemDetail.setTitle("Invalid rule configuration");
+        problemDetail.setDetail("Rule configuration request is invalid.");
         return problemDetail;
     }
 
@@ -72,7 +88,7 @@ public class GlobalExceptionHandler {
             InvalidSourceSnippetRequestException exception) {
         ProblemDetail problemDetail = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
         problemDetail.setTitle("Invalid source snippet request");
-        problemDetail.setDetail(exception.getMessage());
+        problemDetail.setDetail("Source snippet request is invalid.");
         return problemDetail;
     }
 
@@ -80,7 +96,8 @@ public class GlobalExceptionHandler {
     public ProblemDetail handleSourceSnippetNotFound(SourceSnippetNotFoundException exception) {
         ProblemDetail problemDetail = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
         problemDetail.setTitle("Source snippet unavailable");
-        problemDetail.setDetail(exception.getMessage());
+        problemDetail.setDetail(
+                "Source snippet is no longer available or the requested file could not be found.");
         return problemDetail;
     }
 
@@ -89,7 +106,7 @@ public class GlobalExceptionHandler {
         LOGGER.error("Analysis failed", exception);
         ProblemDetail problemDetail = ProblemDetail.forStatus(HttpStatus.INTERNAL_SERVER_ERROR);
         problemDetail.setTitle("Analysis failed");
-        problemDetail.setDetail(exception.getMessage());
+        problemDetail.setDetail("Analysis failed unexpectedly. Check server logs for details.");
         return problemDetail;
     }
 }

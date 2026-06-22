@@ -13,6 +13,7 @@ import java.time.Instant;
 import java.util.Comparator;
 import java.util.UUID;
 import java.util.stream.Stream;
+import org.eclipse.jgit.storage.file.WindowCacheConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -77,10 +78,17 @@ public class WorkspaceService {
                 try {
                     deleteWorkspace(
                             new Workspace(workspacePath.getFileName().toString(), workspacePath));
-                    deletedCount++;
+                    if (Files.notExists(workspacePath)) {
+                        deletedCount++;
+                    } else {
+                        failedCount++;
+                    }
                 } catch (IllegalStateException exception) {
                     failedCount++;
-                    LOGGER.warn("Failed to delete stale workspace {}", workspacePath, exception);
+                    LOGGER.warn(
+                            "Failed to delete stale workspace {}",
+                            workspacePath.getFileName(),
+                            exception);
                 }
             }
         } catch (IOException exception) {
@@ -100,6 +108,7 @@ public class WorkspaceService {
         IOException lastException = null;
         for (int attempt = 1; attempt <= DELETE_RETRY_ATTEMPTS; attempt++) {
             try {
+                releaseGitFileHandles(workspacePath);
                 deleteWorkspacePath(workspacePath);
                 return;
             } catch (AccessDeniedException exception) {
@@ -124,6 +133,7 @@ public class WorkspaceService {
                     @Override
                     public FileVisitResult visitFile(Path file, BasicFileAttributes attributes)
                             throws IOException {
+                        makeWritable(file);
                         Files.deleteIfExists(file);
                         return FileVisitResult.CONTINUE;
                     }
@@ -134,10 +144,34 @@ public class WorkspaceService {
                         if (exception != null) {
                             throw exception;
                         }
+                        makeWritable(directory);
                         Files.deleteIfExists(directory);
                         return FileVisitResult.CONTINUE;
                     }
                 });
+    }
+
+    private void releaseGitFileHandles(Path workspacePath) {
+        if (Files.notExists(workspacePath.resolve("repository/.git/objects/pack"))) {
+            return;
+        }
+        try {
+            new WindowCacheConfig().install();
+        } catch (RuntimeException exception) {
+            LOGGER.debug(
+                    "Failed to release JGit file handles before workspace cleanup for {}",
+                    workspacePath.getFileName(),
+                    exception);
+        }
+    }
+
+    private void makeWritable(Path path) {
+        try {
+            path.toFile().setWritable(true);
+        } catch (SecurityException exception) {
+            LOGGER.debug(
+                    "Could not mark workspace path writable: {}", path.getFileName(), exception);
+        }
     }
 
     private void pauseBeforeRetry(
@@ -152,7 +186,10 @@ public class WorkspaceService {
     }
 
     private void scheduleDeferredDeletion(Path workspacePath, IOException exception) {
-        LOGGER.debug("Scheduling deferred deletion for workspace {}", workspacePath, exception);
+        LOGGER.debug(
+                "Scheduling deferred deletion for workspace {}",
+                workspacePath.getFileName(),
+                exception);
 
         Thread.ofPlatform()
                 .daemon()
@@ -169,18 +206,26 @@ public class WorkspaceService {
             }
 
             try {
+                releaseGitFileHandles(workspacePath);
                 deleteWorkspacePath(workspacePath);
                 return;
             } catch (AccessDeniedException exception) {
                 lastException = exception;
                 pauseBeforeDeferredRetry(workspacePath, attempt, exception);
             } catch (IOException exception) {
-                LOGGER.warn("Deferred workspace cleanup failed for {}", workspacePath, exception);
+                LOGGER.warn(
+                        "Deferred workspace cleanup failed for {}: {}",
+                        workspacePath.getFileName(),
+                        exception.getMessage());
                 return;
             }
         }
 
-        LOGGER.warn("Deferred workspace cleanup failed for {}", workspacePath, lastException);
+        LOGGER.warn(
+                "Deferred workspace cleanup failed for {} after {} attempts: {}",
+                workspacePath.getFileName(),
+                DEFERRED_DELETE_RETRY_ATTEMPTS,
+                lastException == null ? "unknown error" : lastException.getMessage());
     }
 
     private void pauseBeforeDeferredRetry(
@@ -191,7 +236,7 @@ public class WorkspaceService {
             Thread.currentThread().interrupt();
             LOGGER.warn(
                     "Interrupted while waiting to retry deferred cleanup for {}",
-                    workspacePath,
+                    workspacePath.getFileName(),
                     exception);
         }
     }
@@ -201,7 +246,9 @@ public class WorkspaceService {
             return Files.getLastModifiedTime(workspacePath).toInstant().isBefore(cutoff);
         } catch (IOException exception) {
             LOGGER.warn(
-                    "Failed to read last modified time for workspace {}", workspacePath, exception);
+                    "Failed to read last modified time for workspace {}",
+                    workspacePath.getFileName(),
+                    exception);
             return false;
         }
     }

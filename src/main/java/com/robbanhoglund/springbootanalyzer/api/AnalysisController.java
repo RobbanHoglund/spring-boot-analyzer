@@ -42,9 +42,11 @@ public class AnalysisController {
         AnalysisMode analysisMode =
                 request.analysisMode() == null ? AnalysisMode.STATIC_ONLY : request.analysisMode();
         LOGGER.info(
-                "Analyze request received: repositoryUrl={}, branch={}, analysisMode={},"
+                "Analyze request received: repository={}, branch={}, analysisMode={},"
                         + " credentialsPresent={}",
-                request.repositoryUrl(),
+                new GitRepositoryReference(
+                                request.repositoryUrl(), request.branch(), null, analysisMode)
+                        .logLabel(),
                 request.branch(),
                 analysisMode,
                 request.credentials() != null && request.credentials().hasToken());

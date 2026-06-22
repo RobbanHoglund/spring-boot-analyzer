@@ -28,6 +28,23 @@ springBoot {
 
 bootJar {
     archiveFileName = 'spring-boot-analyzer.jar'
+    dependsOn 'verifyFrontendBundle'
+    from(layout.projectDirectory.dir('frontend/dist')) {
+        into 'BOOT-INF/classes/static'
+    }
+}
+
+tasks.register('verifyFrontendBundle') {
+    description = 'Verifies that a compiled frontend bundle is available before packaging the release jar.'
+    group = 'verification'
+    doLast {
+        def frontendDistIndex = layout.projectDirectory.file('frontend/dist/index.html').asFile
+        def resourceStaticIndex = layout.projectDirectory.file('src/main/resources/static/index.html').asFile
+        if (!frontendDistIndex.isFile() && !resourceStaticIndex.isFile()) {
+            throw new GradleException(
+                    'Frontend bundle is missing. Run `cd frontend && npm ci && npm run build` before `./gradlew bootJar`.')
+        }
+    }
 }
 
 dependencies {

@@ -23,9 +23,13 @@ function baseSnapshot(): AnalysisSessionSnapshot {
       findingsCategory: 'ALL',
       findingsRuntimeDetection: 'ALL',
       findingsConfidence: 'ALL',
+      findingsTriageStatus: 'ALL',
       findingsText: 'catch',
       findingsExpanded: true,
       findingsGrouped: true,
+      findingsTriage: {
+        'group:JAVA_EMPTY_CATCH_BLOCK': 'ACCEPTED_RISK'
+      },
       configurationSearch: '',
       configurationFocus: 'ALL',
       configurationProfile: 'ALL',
@@ -89,6 +93,7 @@ describe('analysisSessionStore', () => {
 
     expect(restored?.result?.analysisId).toBe('analysis-1');
     expect(restored?.resultsViewState?.findingsSeverity).toBe('WARNING');
+    expect(restored?.resultsViewState?.findingsTriage?.['group:JAVA_EMPTY_CATCH_BLOCK']).toBe('ACCEPTED_RISK');
     expect(restored?.resultsViewState?.httpInboundExpanded).toBe(true);
     expect(restored?.resultsViewState).not.toHaveProperty('codeModal');
   });

@@ -46,7 +46,9 @@ export function renderAnalyzeView(model: AnalyzeViewModel, actions: AnalyzeViewA
       errorMessage: model.errorMessage,
       warningMessage: model.warningMessage,
       isAnalyzing: model.isAnalyzing,
-      analysisMode: model.analysisMode
+      analysisMode: model.analysisMode,
+      analyzeMode: model.analyzeMode,
+      hasSavedRepositories: model.repositoryProfiles.length > 0
     })
   );
 
@@ -199,9 +201,14 @@ function renderAnalysisModeSelector(model: AnalyzeViewModel, actions: AnalyzeVie
   select.value = model.analysisMode;
   select.addEventListener('change', () => actions.onAnalysisModeChange(select.value as AnalysisMode));
 
+  const helper =
+    model.analysisMode === 'EXTENDED'
+      ? 'Static + Gradle model runs Gradle build logic in an isolated workspace to resolve dependencies. It does not start the target Spring Boot application.'
+      : 'Static only scans source, configuration, and build metadata without running Gradle build logic.';
+
   const helperText = element('p', {
     className: 'helper-text',
-    text: 'Static + Gradle model runs Gradle build logic in an isolated workspace to resolve dependencies. It does not start the target Spring Boot application.'
+    text: helper
   });
 
   const warning =

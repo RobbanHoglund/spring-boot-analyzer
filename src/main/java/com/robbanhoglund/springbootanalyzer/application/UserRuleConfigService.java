@@ -16,6 +16,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.stream.Collectors;
@@ -70,10 +71,16 @@ public class UserRuleConfigService {
     public void setDisabledRuleIds(Set<String> disabledRuleIds) {
         lock.writeLock().lock();
         try {
+            Set<String> unknownRuleIds = unknownRuleIds(disabledRuleIds);
+            if (!unknownRuleIds.isEmpty()) {
+                throw new InvalidRuleConfigException("Unknown rule IDs: " + unknownRuleIds);
+            }
             Path path = configFilePath();
             Files.createDirectories(path.getParent());
             objectMapper.writeValue(
-                    path.toFile(), new RuleConfigFile(new ArrayList<>(disabledRuleIds)));
+                    path.toFile(),
+                    new RuleConfigFile(
+                            disabledRuleIds.stream().sorted().collect(Collectors.toList())));
         } catch (IOException exception) {
             LOGGER.error("Failed to write rule config file", exception);
             throw new RuntimeException("Could not save rule configuration", exception);
@@ -124,6 +131,17 @@ public class UserRuleConfigService {
             }
         }
         return fullyDisabled;
+    }
+
+    public Set<String> knownRuleIds() {
+        return allRules().stream().map(FindingRule::ruleId).collect(Collectors.toSet());
+    }
+
+    private Set<String> unknownRuleIds(Set<String> disabledRuleIds) {
+        Set<String> knownRuleIds = knownRuleIds();
+        return disabledRuleIds.stream()
+                .filter(ruleId -> !knownRuleIds.contains(ruleId))
+                .collect(Collectors.toCollection(TreeSet::new));
     }
 
     private static List<FindingRule> allRules() {

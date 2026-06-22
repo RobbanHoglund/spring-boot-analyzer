@@ -89,11 +89,11 @@ public class GradleExecutionService {
                             properties.allowNetwork(),
                             properties);
             LOGGER.info(
-                    "Executing Gradle diagnostic task: executionMode={}, repositoryRoot={},"
+                    "Executing Gradle diagnostic task: executionMode={}, workspaceId={},"
                             + " reportFile={}, timeout={}, useWrapper={}",
                     executionMode,
-                    repositoryRoot,
-                    files.reportFile(),
+                    workspaceId(repositoryRoot),
+                    fileName(files.reportFile()),
                     properties.timeout(),
                     executionMode == GradleExecutionMode.WRAPPER);
 
@@ -305,5 +305,14 @@ public class GradleExecutionService {
         }
         return "Gradle model analysis failed because the analyzer generated an invalid Gradle init"
                 + " script. This is likely a path escaping or helper scoping issue.";
+    }
+
+    private String workspaceId(Path repositoryRoot) {
+        Path parent = repositoryRoot == null ? null : repositoryRoot.getParent();
+        return fileName(parent);
+    }
+
+    private String fileName(Path path) {
+        return path == null || path.getFileName() == null ? null : path.getFileName().toString();
     }
 }

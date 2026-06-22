@@ -1,6 +1,6 @@
 ﻿import { element } from '../dom';
 import { copySummary, downloadJson, downloadMarkdown, downloadSarif } from '../export/exportActions';
-import { tokenizeJavaLines } from '../code/javaHighlighter';
+import { tokenizeJavaLines, type JavaToken } from '../code/javaHighlighter';
 import { expandSnippetHighlightRanges } from '../code/highlightRanges';
 import type {
   ActuatorEndpointExposure,
@@ -72,6 +72,8 @@ const FINDING_RUNTIME_DETECTIONS = [
   'RUNTIME_REQUIRED'
 ] as const;
 const FINDING_CONFIDENCE_LEVELS = ['ALL', 'HIGH', 'MEDIUM', 'LOW'] as const;
+const FINDING_TRIAGE_STATUSES = ['OPEN', 'ACCEPTED_RISK', 'FALSE_POSITIVE', 'FIXED'] as const;
+const FINDING_TRIAGE_FILTERS = ['ALL', ...FINDING_TRIAGE_STATUSES] as const;
 const CONFIGURATION_KINDS = [
   'ALL',
   'SPRING_BOOT',
@@ -99,6 +101,8 @@ const COMPONENT_TYPES = [
 
 type SortDirection = 'asc' | 'desc';
 type SectionChipTone = 'default' | 'info' | 'warning' | 'success';
+export type FindingTriageStatus = (typeof FINDING_TRIAGE_STATUSES)[number];
+export type FindingTriageFilter = (typeof FINDING_TRIAGE_FILTERS)[number];
 type SectionChip = {
   text: string;
   tone?: SectionChipTone;
@@ -124,6 +128,20 @@ type PresentedFinding = {
 type GroupedPresentedFinding = PresentedFinding & {
   occurrences: number;
   items: PresentedFinding[];
+};
+
+type RecommendationExampleLanguage = 'java' | 'properties' | 'yaml';
+
+type RecommendationExample = {
+  title: string;
+  code: string;
+  language?: RecommendationExampleLanguage;
+};
+
+type RecommendationContent = {
+  lead: string;
+  actions: string[];
+  examples: RecommendationExample[];
 };
 
 export interface FindingCodeOccurrence {
@@ -164,9 +182,11 @@ export interface ResultsViewState {
   findingsCategory: string;
   findingsRuntimeDetection: string;
   findingsConfidence: string;
+  findingsTriageStatus: FindingTriageFilter;
   findingsText: string;
   findingsExpanded: boolean;
   findingsGrouped: boolean;
+  findingsTriage: Record<string, FindingTriageStatus>;
   configurationSearch: string;
   configurationFocus: string;
   configurationProfile: string;
@@ -199,13 +219,20 @@ export interface ResultsViewState {
 }
 
 export interface ResultsViewActions {
+  onRetryAnalysis: () => void;
+  onOpenSettings: () => void;
   onFindingsSeverityChange: (value: string) => void;
   onFindingsCategoryChange: (value: string) => void;
   onFindingsRuntimeDetectionChange: (value: string) => void;
   onFindingsConfidenceChange: (value: string) => void;
+  onFindingsTriageStatusChange: (value: FindingTriageFilter) => void;
   onFindingsTextChange: (value: string) => void;
   onToggleFindingsExpanded: () => void;
   onFindingsGroupedChange: (value: boolean) => void;
+  onSetFindingTriageStatus: (key: string, status: FindingTriageStatus) => void;
+  onSetFindingTriageStatuses: (updates: Array<{ key: string; status: FindingTriageStatus }>) => void;
+  onClearFindingsFilters: () => void;
+  onClearFindingsTriage: () => void;
   onConfigurationSearchChange: (value: string) => void;
   onConfigurationFocusChange: (value: string) => void;
   onConfigurationProfileChange: (value: string) => void;
@@ -242,17 +269,21 @@ export interface ResultsViewActions {
   onSelectFindingCodeOccurrence: (index: number) => void;
 }
 
+type ResultsPanelStatus = {
+  statusMessage?: string;
+  errorMessage?: string;
+  warningMessage?: string;
+  isAnalyzing?: boolean;
+  analysisMode?: AnalysisMode;
+  analyzeMode?: 'saved' | 'oneTime';
+  hasSavedRepositories?: boolean;
+};
+
 export function renderResultsView(
   result: AnalyzeRepositoryResponse | null,
   state: ResultsViewState,
   actions: ResultsViewActions,
-  status?: {
-    statusMessage?: string;
-    errorMessage?: string;
-    warningMessage?: string;
-    isAnalyzing?: boolean;
-    analysisMode?: AnalysisMode;
-  }
+  status?: ResultsPanelStatus
 ): HTMLElement {
   const panel = element('section', { className: 'panel panel-compact panel-results' });
 
@@ -266,32 +297,138 @@ export function renderResultsView(
     if (status?.isAnalyzing) {
       panel.appendChild(renderAnalyzingState(status?.statusMessage));
     } else if (status?.errorMessage) {
-      panel.appendChild(renderErrorState(status.errorMessage));
+      panel.appendChild(renderErrorState(status.errorMessage, actions));
     } else {
-      panel.appendChild(renderInitialState());
+      panel.appendChild(renderInitialState(status));
     }
     return panel;
   }
 
   panel.appendChild(renderResultsHeader(status, result));
 
-  panel.appendChild(renderSectionJumpNav());
+  panel.appendChild(renderSectionJumpNav(result));
   panel.appendChild(renderProjectSection(result, status?.analysisMode));
   panel.appendChild(renderResultsOverviewBlock(result, actions));
-  panel.appendChild(renderRuntimeStackSection(result));
   panel.appendChild(renderFindingsSection(result.findings ?? [], state, actions));
-  panel.appendChild(renderHttpSurfaceSection(result.httpSurfaceAnalysis, state, actions));
-  panel.appendChild(renderSchedulingSection(result, actions));
-  panel.appendChild(renderConfigurationSection(result, state, actions));
-  panel.appendChild(renderSpringApiUsageSection(result));
-  panel.appendChild(renderComponentsSection(result.detectedComponents ?? [], state, actions));
-  panel.appendChild(renderDependenciesSection(result, state, actions));
-  panel.appendChild(renderBuildModelSection(result.gradleModelAnalysis));
+  panel.appendChild(renderTechnicalInventorySection(result, state, actions));
   panel.appendChild(renderRawJsonSection(result, state, actions));
   if (state.codeModal.open) {
     panel.appendChild(renderCodeSnippetModal(state.codeModal, actions));
   }
   return panel;
+}
+
+type TechnicalInventoryItem = {
+  label: string;
+  meta: string;
+  section: HTMLElement;
+};
+
+function renderTechnicalInventorySection(
+  result: AnalyzeRepositoryResponse,
+  state: ResultsViewState,
+  actions: ResultsViewActions
+): HTMLElement {
+  const entries = buildTechnicalInventoryItems(result, state, actions);
+  const section = resultsSection(
+    'Technical inventory',
+    'results-reference',
+    'Reference data for deeper investigation. Open these when a finding needs more context.',
+    [sectionChip(`${entries.length} sections`)]
+  );
+  section.classList.add('results-reference-section');
+
+  const overview = element('div', { className: 'results-reference-overview' });
+  for (const entry of entries) {
+    overview.appendChild(
+      element(
+        'div',
+        { className: 'results-reference-overview-item' },
+        element('strong', { text: entry.label }),
+        element('span', { text: entry.meta })
+      )
+    );
+  }
+  section.appendChild(overview);
+
+  const list = element('div', { className: 'results-reference-list' });
+  for (const entry of entries) {
+    const details = document.createElement('details');
+    details.className = 'results-reference-details';
+    const summary = element(
+      'summary',
+      { className: 'results-reference-summary' },
+      element('span', { className: 'results-reference-summary-title', text: entry.label }),
+      element('span', { className: 'results-reference-summary-meta', text: entry.meta })
+    );
+    details.appendChild(summary);
+    details.appendChild(element('div', { className: 'results-reference-body' }, entry.section));
+    list.appendChild(details);
+  }
+  section.appendChild(list);
+  return section;
+}
+
+function buildTechnicalInventoryItems(
+  result: AnalyzeRepositoryResponse,
+  state: ResultsViewState,
+  actions: ResultsViewActions
+): TechnicalInventoryItem[] {
+  const httpSurface = result.httpSurfaceAnalysis;
+  const httpCount =
+    (httpSurface?.inboundEndpoints?.length ?? 0)
+    + (httpSurface?.outboundEndpoints?.length ?? 0)
+    + (httpSurface?.configuredUrls?.length ?? 0)
+    + (httpSurface?.actuatorExposures?.length ?? 0);
+  const configurationCount = result.configurationAnalysis?.properties?.length ?? 0;
+  const componentCount = result.detectedComponents?.length ?? 0;
+  const dependencyCount =
+    result.gradleModelAnalysis?.resolvedDependencies?.length
+    ?? result.dependencies?.length
+    ?? 0;
+
+  return [
+    {
+      label: 'Runtime model',
+      meta: result.javaVersionHint ? `Java ${result.javaVersionHint}` : 'Static compatibility signals',
+      section: renderRuntimeStackSection(result)
+    },
+    {
+      label: 'HTTP surface',
+      meta: `${httpCount} endpoints and URLs`,
+      section: renderHttpSurfaceSection(result.httpSurfaceAnalysis, state, actions)
+    },
+    {
+      label: 'Scheduling and messaging',
+      meta: 'Scheduled jobs and listener entry points',
+      section: renderSchedulingSection(result, actions)
+    },
+    {
+      label: 'Configuration',
+      meta: `${configurationCount} properties`,
+      section: renderConfigurationSection(result, state, actions)
+    },
+    {
+      label: 'Spring API usage',
+      meta: 'Framework API and migration signals',
+      section: renderSpringApiUsageSection(result)
+    },
+    {
+      label: 'Components',
+      meta: `${componentCount} detected classes`,
+      section: renderComponentsSection(result.detectedComponents ?? [], state, actions)
+    },
+    {
+      label: 'Dependencies',
+      meta: `${dependencyCount} dependencies`,
+      section: renderDependenciesSection(result, state, actions)
+    },
+    {
+      label: 'Build model',
+      meta: result.gradleModelAnalysis ? 'Gradle model details' : 'No Gradle model collected',
+      section: renderBuildModelSection(result.gradleModelAnalysis)
+    }
+  ];
 }
 
 function renderProjectSection(result: AnalyzeRepositoryResponse, analysisMode?: AnalysisMode): HTMLElement {
@@ -353,7 +490,7 @@ function renderProjectSection(result: AnalyzeRepositoryResponse, analysisMode?: 
 }
 
 function renderResultsOverviewBlock(result: AnalyzeRepositoryResponse, actions: ResultsViewActions): HTMLElement {
-  const wrapper = element('section', { className: 'results-overview-block' });
+  const wrapper = element('section', { className: 'results-overview-block', attributes: { id: 'results-overview' } });
   const grid = element('div', { className: 'results-overview-grid' });
   grid.append(
     renderTopConcernsCard(result),
@@ -424,7 +561,7 @@ function topConcernGroups(findings: Finding[]): GroupedPresentedFinding[] {
         message: representative.message,
         summary: representative.summary,
         location: representative.location,
-        locationShort: middleEllipsis(representative.location, 88),
+        locationShort: compactSourceText(representative.location, 72),
         locationMeta: representative.locationMeta,
         locationKnown: representative.locationKnown,
         occurrences: bucket.length,
@@ -940,6 +1077,14 @@ function renderFindingsSection(
 
   const errorCount = findings.filter((f) => normalizeSeverity(f.severity) === 'ERROR').length;
   const infoCount = findings.filter((f) => normalizeSeverity(f.severity) === 'INFO').length;
+  const triageCounts = findingTriageCounts(findings, state);
+  const filtered = filterFindings(findings, state);
+  const openFilteredTriageKeys = findingTriageKeysForFindings(filtered, state, 'OPEN');
+  const openFilteredFindings = filtered.filter((finding) => {
+    const presented = deriveFindingPresentation(finding);
+    const key = findingTriageKey(presented, state.findingsGrouped);
+    return findingTriageStatusForKey(state, key) === 'OPEN';
+  });
 
   const summary = element('div', { className: 'stat-grid compact' });
 
@@ -989,14 +1134,33 @@ function renderFindingsSection(
       )
     );
   }
+  for (const status of FINDING_TRIAGE_STATUSES) {
+    const isActive = state.findingsTriageStatus === status;
+    const btn = element('button', {
+      className: `mini-stat triage-filter-btn triage-filter-${triageStatusClass(status)}${isActive ? ' active' : ''}`
+    });
+    btn.appendChild(element('div', { className: 'mini-stat-label', text: triageStatusLabel(status) }));
+    btn.appendChild(element('div', { className: 'mini-stat-value', text: String(triageCounts[status] ?? 0) }));
+    btn.addEventListener('click', () => actions.onFindingsTriageStatusChange(isActive ? 'ALL' : status));
+    summary.appendChild(btn);
+  }
 
   section.appendChild(summary);
   section.appendChild(
     element('p', {
       className: 'muted-text findings-severity-note',
-      text: 'Warnings are prioritized static review items. Errors are reserved for analyzer failures or other blocking conditions.'
+      text: 'Errors are the highest-priority findings to review. Warnings are important review items, and info findings are lower-priority context.'
     })
   );
+  section.appendChild(renderFindingsReviewToolbar(
+    findings.length,
+    filtered.length,
+    triageCounts,
+    openFilteredTriageKeys,
+    openFilteredFindings,
+    state,
+    actions
+  ));
 
   const primaryControls = element('div', { className: 'filter-row compact-filter-row' });
 
@@ -1044,6 +1208,18 @@ function renderFindingsSection(
         actions.onFindingsConfidenceChange,
         'results-findings-confidence'
       )
+    ),
+    labeledInlineField(
+      'Triage',
+      selectInput(
+        FINDING_TRIAGE_FILTERS.map((value) => ({
+          value,
+          label: value === 'ALL' ? 'All triage statuses' : triageStatusLabel(value)
+        })),
+        state.findingsTriageStatus,
+        (value) => actions.onFindingsTriageStatusChange(value as FindingTriageFilter),
+        'results-findings-triage-status'
+      )
     )
   );
   section.appendChild(primaryControls);
@@ -1060,39 +1236,6 @@ function renderFindingsSection(
     )
   );
   section.appendChild(secondaryControls);
-
-  const filtered = findings.filter((finding) => {
-    const severityMatches =
-      state.findingsSeverity === 'ALL' || normalizeSeverity(finding.severity) === state.findingsSeverity;
-    const categoryMatches =
-      state.findingsCategory === 'ALL' || normalizeFindingCategory(finding.category) === state.findingsCategory;
-    const runtimeMatches =
-      state.findingsRuntimeDetection === 'ALL'
-      || normalizeRuntimeDetection(finding.runtimeDetection) === state.findingsRuntimeDetection;
-    const confidenceMatches =
-      state.findingsConfidence === 'ALL' || normalizeConfidence(finding.confidence) === state.findingsConfidence;
-    const textNeedle = state.findingsText.trim().toLowerCase();
-    const derived = deriveFindingPresentation(finding);
-    const haystack = [
-      finding.message,
-      finding.location,
-      finding.rule,
-      finding.ruleId,
-      finding.title,
-      finding.category,
-      finding.runtimeDetection,
-      finding.confidence,
-      finding.target,
-      finding.evidence,
-      derived.ruleType,
-      derived.target
-    ]
-      .filter((value): value is string => Boolean(value))
-      .join(' ')
-      .toLowerCase();
-    return severityMatches && categoryMatches && runtimeMatches && confidenceMatches
-      && (!textNeedle || haystack.includes(textNeedle));
-  });
 
   if (filtered.length === 0) {
     section.appendChild(element('p', { className: 'muted-text', text: 'No findings match the current filters.' }));
@@ -1135,19 +1278,21 @@ function renderFindingsSection(
     }
     const detailsId = `finding-details-${Math.random().toString(36).slice(2, 10)}`;
     const codeButtonId = createFindingCodeButtonId(groupedFinding ?? derived);
+    const triageKey = findingTriageKey(groupedFinding ?? derived, state.findingsGrouped);
+    const triageStatus = findingTriageStatusForKey(state, triageKey);
     appendCells(row, [
       badgeCell(derived.severity, `badge badge-${derived.severity.toLowerCase()}`),
       badgeCell(derived.category, 'badge badge-category'),
-      findingSummaryCell(groupedFinding ?? derived, detailsId),
+      findingSummaryCell(groupedFinding ?? derived, detailsId, triageStatus),
       findingLocationCell(groupedFinding ?? derived),
-      findingActionsCell(groupedFinding ?? derived, detailsId, codeButtonId)
+      findingActionsCell(groupedFinding ?? derived, detailsId, codeButtonId, triageKey, triageStatus, actions)
     ]);
     const detailsRow = tbody.insertRow();
     detailsRow.className = 'details-row finding-details-row';
     detailsRow.hidden = true;
     const detailsCell = detailsRow.insertCell();
     detailsCell.colSpan = 5;
-    detailsCell.appendChild(renderFindingDetailsCard(groupedFinding ?? derived, detailsId, actions));
+    detailsCell.appendChild(renderFindingDetailsCard(groupedFinding ?? derived, detailsId, actions, triageKey, triageStatus));
 
     const expandButton = row.querySelector('.finding-expand-button') as HTMLButtonElement | null;
     if (expandButton) {
@@ -1181,6 +1326,114 @@ function renderFindingsSection(
     );
   }
   return section;
+}
+
+function renderFindingsReviewToolbar(
+  totalFindings: number,
+  filteredFindings: number,
+  triageCounts: Record<FindingTriageStatus, number>,
+  openFilteredTriageKeys: string[],
+  openFilteredFindings: Finding[],
+  state: ResultsViewState,
+  actions: ResultsViewActions
+): HTMLElement {
+  const markedCount = findingTriageMarkedCount(state);
+  const activeFilters = hasActiveFindingFilters(state);
+  const openCount = triageCounts.OPEN ?? 0;
+  const reviewSummary = activeFilters
+    ? `${openCount} open, ${markedCount} triaged of ${totalFindings}; ${filteredFindings} matching filters`
+    : `${openCount} open, ${markedCount} triaged of ${totalFindings}`;
+  const toolbar = element('div', { className: 'findings-review-toolbar' });
+  toolbar.appendChild(
+    element(
+      'div',
+      { className: 'findings-review-copy' },
+      element('strong', { text: 'Review queue' }),
+      element('span', {
+        text: reviewSummary
+      })
+    )
+  );
+
+  const actionRow = element('div', { className: 'findings-review-actions' });
+  const showOpenButton = element('button', {
+    className: `secondary-button findings-review-action${state.findingsTriageStatus === 'OPEN' ? ' active' : ''}`,
+    text: state.findingsTriageStatus === 'OPEN' ? 'Showing open' : 'Show open',
+    attributes: { type: 'button' }
+  });
+  showOpenButton.addEventListener('click', () => {
+    actions.onFindingsTriageStatusChange(state.findingsTriageStatus === 'OPEN' ? 'ALL' : 'OPEN');
+  });
+  actionRow.appendChild(showOpenButton);
+
+  const copyPlanButton = element('button', {
+    className: 'secondary-button findings-review-action findings-copy-plan-button',
+    text: 'Copy plan',
+    attributes: { type: 'button' }
+  }) as HTMLButtonElement;
+  copyPlanButton.disabled = openFilteredFindings.length === 0;
+  copyPlanButton.title = openFilteredFindings.length > 0
+    ? `Copy a review plan for ${openFilteredFindings.length} open findings matching the current filters`
+    : 'No open findings match the current filters';
+  copyPlanButton.addEventListener('click', () => {
+    void copyTextWithFeedback(
+      copyPlanButton,
+      buildFindingsReviewPlan(openFilteredFindings, state, totalFindings, filteredFindings)
+    );
+  });
+  actionRow.appendChild(copyPlanButton);
+
+  const bulkSelect = element('select', {
+    className: 'select-input findings-bulk-triage-select',
+    attributes: {
+      'aria-label': 'Bulk triage status',
+      title: 'Bulk triage status'
+    }
+  }) as HTMLSelectElement;
+  for (const status of ['ACCEPTED_RISK', 'FALSE_POSITIVE', 'FIXED'] as FindingTriageStatus[]) {
+    bulkSelect.appendChild(new Option(triageStatusLabel(status), status, false, status === 'FIXED'));
+  }
+  bulkSelect.value = 'FIXED';
+  actionRow.appendChild(bulkSelect);
+
+  const applyBulkButton = element('button', {
+    className: 'secondary-button findings-review-action findings-bulk-triage-button',
+    text: 'Mark open',
+    attributes: { type: 'button' }
+  }) as HTMLButtonElement;
+  applyBulkButton.disabled = openFilteredTriageKeys.length === 0;
+  applyBulkButton.title = openFilteredTriageKeys.length > 0
+    ? `Mark ${openFilteredTriageKeys.length} open findings matching the current filters`
+    : 'No open findings match the current filters';
+  applyBulkButton.addEventListener('click', () => {
+    const status = normalizeFindingTriageStatus(bulkSelect.value);
+    if (status === 'OPEN' || openFilteredTriageKeys.length === 0) {
+      return;
+    }
+    actions.onSetFindingTriageStatuses(openFilteredTriageKeys.map((key) => ({ key, status })));
+  });
+  actionRow.appendChild(applyBulkButton);
+
+  const clearFiltersButton = element('button', {
+    className: 'secondary-button findings-review-action findings-clear-filters-button',
+    text: 'Clear filters',
+    attributes: { type: 'button' }
+  }) as HTMLButtonElement;
+  clearFiltersButton.disabled = !activeFilters;
+  clearFiltersButton.addEventListener('click', () => actions.onClearFindingsFilters());
+  actionRow.appendChild(clearFiltersButton);
+
+  const resetTriageButton = element('button', {
+    className: 'secondary-button findings-review-action findings-clear-triage-button',
+    text: 'Reset triage',
+    attributes: { type: 'button' }
+  }) as HTMLButtonElement;
+  resetTriageButton.disabled = markedCount === 0;
+  resetTriageButton.addEventListener('click', () => actions.onClearFindingsTriage());
+  actionRow.appendChild(resetTriageButton);
+
+  toolbar.appendChild(actionRow);
+  return toolbar;
 }
 
 function renderHttpSurfaceSection(
@@ -1940,7 +2193,7 @@ function renderComponentsSection(
       const sourceButtonId = `component-source-btn-${component.fullyQualifiedClassName ?? component.filePath}`;
       const sourceButton = element('button', {
         className: 'property-source-link',
-        text: component.filePath,
+        text: compactSourceText(component.filePath, 56),
         attributes: {
           id: sourceButtonId,
           type: 'button',
@@ -2691,7 +2944,7 @@ function renderConfigurationTable(
       const sourceButtonId = `property-source-btn-${key}`;
       const sourceButton = element('button', {
         className: 'property-source-link',
-        text: sourceLabel(property.sourceFile, property.line),
+        text: compactSourceLabel(property.sourceFile, property.line, undefined, 56),
         attributes: {
           id: sourceButtonId,
           type: 'button',
@@ -3472,7 +3725,7 @@ function httpSourceLinkCell(
   const text = sourceLabel(sourceFile, line);
   const btn = element('button', {
     className: 'property-source-link',
-    text,
+    text: compactSourceText(text, 56),
     attributes: {
       id: triggerId,
       type: 'button',
@@ -3508,7 +3761,8 @@ function outboundUrlCell(endpoint: OutboundEndpoint): HTMLTableCellElement {
 
 function findingSummaryCell(
   finding: GroupedPresentedFinding | PresentedFinding,
-  _detailsId: string
+  _detailsId: string,
+  triageStatus: FindingTriageStatus
 ): HTMLTableCellElement {
   const cell = document.createElement('td');
   cell.className = 'finding-main-cell';
@@ -3548,6 +3802,11 @@ function findingSummaryCell(
   );
   const meta = element('div', { className: 'finding-summary-meta-row' });
   meta.append(
+    element('span', {
+      className: `badge badge-triage badge-triage-${triageStatusClass(triageStatus)}`,
+      text: triageStatusLabel(triageStatus),
+      attributes: { title: `Triage: ${triageStatusLabel(triageStatus)}` }
+    }),
     element('span', {
       className: 'badge badge-confidence',
       text: finding.confidence,
@@ -3616,7 +3875,10 @@ function findingLocationCell(finding: GroupedPresentedFinding | PresentedFinding
 function findingActionsCell(
   finding: GroupedPresentedFinding | PresentedFinding,
   detailsId: string,
-  codeButtonId: string
+  codeButtonId: string,
+  triageKey: string,
+  triageStatus: FindingTriageStatus,
+  resultsActions: ResultsViewActions
 ): HTMLTableCellElement {
   const cell = document.createElement('td');
   cell.className = 'finding-actions-cell';
@@ -3647,6 +3909,7 @@ function findingActionsCell(
       })
     );
   }
+  actions.appendChild(renderFindingTriageSelect(triageKey, triageStatus, resultsActions, 'finding-row-triage-select'));
   cell.appendChild(actions);
   return cell;
 }
@@ -3654,7 +3917,9 @@ function findingActionsCell(
 function renderFindingDetailsCard(
   finding: GroupedPresentedFinding | PresentedFinding,
   detailsId: string,
-  actions: ResultsViewActions
+  actions: ResultsViewActions,
+  triageKey: string,
+  triageStatus: FindingTriageStatus
 ): HTMLElement {
   const grouped = 'occurrences' in finding;
   const primary = finding;
@@ -3713,6 +3978,13 @@ function renderFindingDetailsCard(
       })
     );
   }
+  const triageControl = element(
+    'label',
+    { className: 'finding-detail-triage' },
+    element('span', { className: 'inline-field-label', text: 'Triage' }),
+    renderFindingTriageSelect(triageKey, triageStatus, actions, 'finding-detail-triage-select')
+  );
+  badgeRow.appendChild(triageControl);
   header.append(headerCopy, badgeRow);
   card.append(header, renderFindingExplanationSections(primary.finding));
 
@@ -3911,7 +4183,7 @@ function renderCodeSnippetModal(
     actionRow.appendChild(copySummaryButton);
   }
 
-  const githubUrl = modalState.snippet?.githubUrl ?? currentOccurrence?.location?.githubUrl;
+  const githubUrl = modalState.snippet?.githubUrl ?? currentOccurrence?.location?.githubUrl ?? undefined;
   if (githubUrl) {
     actionRow.appendChild(
       element('a', {
@@ -3937,7 +4209,7 @@ function renderCodeSnippetModal(
   if (modalState.loading) {
     modal.appendChild(element('div', { className: 'code-snippet-status', text: 'Loading source snippet...' }));
   } else if (modalState.errorMessage) {
-    modal.appendChild(element('div', { className: 'code-snippet-status error-note', text: modalState.errorMessage }));
+    modal.appendChild(renderCodeSnippetUnavailable(modalState, currentOccurrence, githubUrl));
   } else if (modalState.snippet) {
     modal.appendChild(renderCodeSnippetViewer(modalState.snippet));
   }
@@ -3947,6 +4219,116 @@ function renderCodeSnippetModal(
     (document.getElementById('code-snippet-modal-close') as HTMLButtonElement | null)?.focus();
   }, 0);
   return overlay;
+}
+
+function renderCodeSnippetUnavailable(
+  modalState: CodeSnippetModalState,
+  occurrence: FindingCodeOccurrence | undefined,
+  githubUrl: string | undefined
+): HTMLElement {
+  const wrapper = element('div', { className: 'code-snippet-unavailable' });
+  wrapper.append(
+    element('div', { className: 'code-snippet-unavailable-title', text: 'Source snippet unavailable' }),
+    element('p', {
+      className: 'code-snippet-unavailable-message',
+      text: readableSourceSnippetError(modalState.errorMessage)
+    })
+  );
+
+  const facts = element('div', { className: 'code-snippet-unavailable-facts' });
+  facts.appendChild(
+    element(
+      'div',
+      { className: 'code-snippet-unavailable-fact' },
+      element('span', { className: 'detail-label', text: 'File' }),
+      element('span', {
+        className: 'detail-value property-detail-value',
+        text: occurrence?.location.filePath ?? 'Unknown'
+      })
+    )
+  );
+  facts.appendChild(
+    element(
+      'div',
+      { className: 'code-snippet-unavailable-fact' },
+      element('span', { className: 'detail-label', text: 'Line' }),
+      element('span', {
+        className: 'detail-value',
+        text: occurrence?.location ? lineRangeLabel(occurrence.location) : 'Unknown'
+      })
+    )
+  );
+  if (modalState.analysisId) {
+    facts.appendChild(
+      element(
+        'div',
+        { className: 'code-snippet-unavailable-fact' },
+        element('span', { className: 'detail-label', text: 'Analysis' }),
+        element('span', { className: 'detail-value', text: 'Restored result' })
+      )
+    );
+  }
+  wrapper.appendChild(facts);
+
+  const hint = element('div', { className: 'code-snippet-unavailable-hint' });
+  hint.appendChild(
+    element('span', {
+      text: githubUrl
+        ? 'The local snippet cache is missing, but this source location can still be opened from the repository.'
+        : 'Run the analysis again to recreate the local source workspace for snippet browsing.'
+    })
+  );
+  if (githubUrl) {
+    hint.appendChild(
+      element('a', {
+        className: 'secondary-button code-snippet-link-button',
+        text: 'Open file in GitHub',
+        attributes: {
+          href: githubUrl,
+          target: '_blank',
+          rel: 'noreferrer noopener'
+        }
+      })
+    );
+  }
+  wrapper.appendChild(hint);
+
+  return wrapper;
+}
+
+function readableSourceSnippetError(message: string): string {
+  const nestedProblem = extractProblemDetail(message);
+  const normalized = stripRequestPrefix(nestedProblem ?? message);
+  if (/source snippet/i.test(normalized) && /(unavailable|not found|no longer|could not be found)/i.test(normalized)) {
+    return 'The saved result can still be reviewed, but the local source workspace used for inline snippets is not available anymore.';
+  }
+  return normalized || 'The source snippet could not be loaded.';
+}
+
+function extractProblemDetail(message: string): string | null {
+  const start = message.indexOf('{');
+  if (start < 0) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(message.slice(start));
+    if (parsed && typeof parsed === 'object') {
+      const detail = (parsed as { detail?: unknown }).detail;
+      const title = (parsed as { title?: unknown }).title;
+      return typeof detail === 'string'
+        ? detail
+        : typeof title === 'string'
+          ? title
+          : null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function stripRequestPrefix(message: string): string {
+  return message.replace(/^Request failed(?: with status)?(?: \(\d+\))?:\s*/i, '').trim();
 }
 
 function renderCodeOccurrenceSelector(
@@ -4076,7 +4458,6 @@ function renderFindingExplanationSections(finding: Finding): HTMLElement {
   const sections: Array<[string, string | null | undefined]> = [
     ['Why this is a bad pattern', finding.whyBadPractice],
     ['Possible impact', finding.possibleImpact],
-    ['Recommendation', finding.recommendation],
     ['Evidence', finding.evidence ?? finding.message],
     ['Static analysis limitation', finding.limitations]
   ];
@@ -4086,10 +4467,468 @@ function renderFindingExplanationSections(finding: Finding): HTMLElement {
     }
     wrapper.appendChild(propertyDetailSection(title, text));
   }
+  const recommendationSection = renderRecommendationSection(finding);
+  if (recommendationSection) {
+    wrapper.appendChild(recommendationSection);
+  }
   if (finding.relatedSignals && finding.relatedSignals.length > 0) {
     wrapper.appendChild(renderRelatedSignalsSection(finding.relatedSignals));
   }
   return wrapper;
+}
+
+function renderRecommendationSection(finding: Finding): HTMLElement | null {
+  const content = buildRecommendationContent(finding);
+  if (!content && !finding.recommendation?.trim()) {
+    return null;
+  }
+
+  const section = element('div', { className: 'property-detail-section remediation-section' });
+  section.appendChild(element('div', { className: 'property-detail-section-title', text: 'Recommended fix' }));
+  section.appendChild(
+    element('p', {
+      className: 'property-detail-value remediation-lead',
+      text: content?.lead ?? finding.recommendation?.trim() ?? ''
+    })
+  );
+
+  if (content?.actions.length) {
+    const actionList = element('div', { className: 'remediation-actions' });
+    for (const action of content.actions) {
+      actionList.appendChild(
+        element(
+          'div',
+          { className: 'remediation-action' },
+          element('span', { className: 'remediation-action-label', text: 'Fix' }),
+          element('span', { className: 'remediation-action-text', text: action })
+        )
+      );
+    }
+    section.appendChild(actionList);
+  }
+
+  if (content?.examples.length) {
+    const examples = element('div', { className: 'remediation-example-grid' });
+    for (const example of content.examples) {
+      examples.appendChild(renderRecommendationExampleCard(example));
+    }
+    section.appendChild(examples);
+  }
+
+  return section;
+}
+
+function renderRecommendationExampleCard(example: RecommendationExample): HTMLElement {
+  const language = example.language ?? 'java';
+  const copyButton = element('button', {
+    className: 'secondary-button remediation-copy-button',
+    text: 'Copy',
+    attributes: {
+      type: 'button',
+      'aria-label': `Copy ${example.title} example`
+    }
+  }) as HTMLButtonElement;
+  copyButton.addEventListener('click', () => {
+    void copyTextWithFeedback(copyButton, trimCodeBlock(example.code));
+  });
+
+  return element(
+    'div',
+    { className: 'remediation-code-card' },
+    element(
+      'div',
+      { className: 'remediation-code-title' },
+      element('span', { text: example.title }),
+      element(
+        'span',
+        { className: 'remediation-code-title-actions' },
+        element('span', {
+          className: 'remediation-code-language',
+          text: recommendationLanguageLabel(language)
+        }),
+        copyButton
+      )
+    ),
+    renderCodeExampleBlock(example.code, language)
+  );
+}
+
+async function copyTextWithFeedback(button: HTMLButtonElement, text: string): Promise<void> {
+  const originalText = button.textContent || 'Copy';
+  try {
+    await navigator.clipboard?.writeText(text);
+    button.textContent = 'Copied';
+  } catch {
+    button.textContent = 'Copy failed';
+  }
+  window.setTimeout(() => {
+    button.textContent = originalText;
+  }, 1200);
+}
+
+function buildRecommendationContent(finding: Finding): RecommendationContent | null {
+  const ruleId = finding.ruleId ?? '';
+  if (ruleId === 'SPRING_SECRET_LITERAL' || ruleId === 'SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT') {
+    return {
+      lead: 'Move the secret out of source-controlled configuration and require the deployment environment to provide it. Weak placeholder defaults should fail startup instead of silently becoming the production credential.',
+      actions: [
+        'Remove literal passwords, tokens, and placeholder defaults that look usable.',
+        'Reference an environment variable or secret-manager value with no production fallback.',
+        'Bind secret-bearing properties to a validated configuration object so missing values stop startup.'
+      ],
+      examples: [
+        {
+          title: 'Configuration without weak defaults',
+          language: 'properties',
+          code: `
+bootlens.client.registration.actuator-password=\${BOOTLENS_ACTUATOR_PASSWORD}
+tradingbot.admin.password=\${TRADINGBOT_ADMIN_PASSWORD}`
+        },
+        {
+          title: 'Fail fast when the secret is missing',
+          code: `
+@ConfigurationProperties("bootlens.client.registration")
+@Validated
+public record BootlensRegistrationProperties(
+    @NotBlank String actuatorPassword
+) {}`
+        }
+      ]
+    };
+  }
+
+  if (ruleId === 'SPRING_SECRET_MULTI_PROFILE') {
+    return {
+      lead: 'Use one secret source across profiles so rotation and incident response are predictable. Profile files should reference the same external secret name rather than carrying divergent values.',
+      actions: [
+        'Replace profile-specific literal values with the same environment or secret-manager reference.',
+        'Keep local/test-only credentials in isolated non-production profiles.',
+        'Validate that production refuses to start when the external secret is absent.'
+      ],
+      examples: [
+        {
+          title: 'Shared profile-safe reference',
+          language: 'yaml',
+          code: `
+payment:
+  api-key: \${PAYMENT_API_KEY}`
+        }
+      ]
+    };
+  }
+
+  if (ruleId === 'SPRING_CSRF_DISABLED') {
+    return {
+      lead: 'Keep CSRF protection enabled for browser or session-cookie flows. If an endpoint is truly stateless, scope the exception to that endpoint instead of disabling CSRF for the whole application.',
+      actions: [
+        'Remove blanket csrf disable calls from the main security chain.',
+        'Ignore only stateless webhook or token-only API paths that cannot use browser cookies.',
+        'Keep authentication and authorization rules explicit on every ignored path.'
+      ],
+      examples: [
+        {
+          title: 'Scoped CSRF exception',
+          code: `
+@Bean
+SecurityFilterChain security(HttpSecurity http) throws Exception {
+    http
+        .csrf(csrf -> csrf
+            .ignoringRequestMatchers("/api/webhooks/**"))
+        .authorizeHttpRequests(auth -> auth.anyRequest().authenticated());
+    return http.build();
+}`
+        }
+      ]
+    };
+  }
+
+  if (ruleId === 'SPRING_HTTP_PLAIN_URL') {
+    return {
+      lead: 'Use HTTPS for external service URLs. Keep plain HTTP limited to loopback or explicitly private development endpoints, and guard production configuration so it cannot drift back to http://.',
+      actions: [
+        'Change external service base URLs from http:// to https://.',
+        'Reject non-local plain HTTP URLs during configuration validation.',
+        'Document any unavoidable internal HTTP endpoint as an accepted risk and keep it off the public network.'
+      ],
+      examples: [
+        {
+          title: 'Secure configured endpoint',
+          language: 'properties',
+          code: `
+pricing.api.base-url=https://pricing.example.com`
+        },
+        {
+          title: 'Production guard',
+          code: `
+URI baseUri = URI.create(properties.baseUrl());
+if ("http".equalsIgnoreCase(baseUri.getScheme()) && !isLocal(baseUri)) {
+    throw new IllegalStateException("External service URLs must use HTTPS");
+}`
+        }
+      ]
+    };
+  }
+
+  if (ruleId === 'SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD') {
+    return {
+      lead: 'Expose only the operational endpoints that are safe for the active profile, then protect actuator traffic with its own authorization rule. Sensitive endpoints such as env, heapdump, and shutdown should not be reachable from normal application users.',
+      actions: [
+        'Reduce management.endpoints.web.exposure.include to the smallest production set.',
+        'Require an operations role or network control before any sensitive actuator endpoint is reachable.',
+        'Keep detailed health output behind authorization.'
+      ],
+      examples: [
+        {
+          title: 'Minimal production exposure',
+          language: 'properties',
+          code: `
+management.endpoints.web.exposure.include=health,info
+management.endpoint.health.show-details=when_authorized`
+        },
+        {
+          title: 'Separate actuator authorization',
+          code: `
+@Bean
+SecurityFilterChain actuatorSecurity(HttpSecurity http) throws Exception {
+    http
+        .securityMatcher(EndpointRequest.toAnyEndpoint())
+        .authorizeHttpRequests(auth -> auth.anyRequest().hasRole("OPS"))
+        .httpBasic(Customizer.withDefaults());
+    return http.build();
+}`
+        }
+      ]
+    };
+  }
+
+  if (ruleId === 'SPRING_RAW_EXCEPTION_MESSAGE_HTTP') {
+    return {
+      lead: 'Return a stable client-safe error message and keep the exception details in server logs. Raw exception messages often include internals that should not become part of the HTTP contract.',
+      actions: [
+        'Map expected failures to a controlled ProblemDetail or error DTO.',
+        'Log the exception server-side with request context or a correlation id.',
+        'Avoid copying ex.getMessage() directly into response bodies.'
+      ],
+      examples: [
+        {
+          title: 'Client-safe exception response',
+          code: `
+@ExceptionHandler(OrderSyncException.class)
+ResponseEntity<ProblemDetail> handleOrderSync(OrderSyncException ex) {
+    log.warn("Order sync failed", ex);
+    ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_GATEWAY);
+    problem.setDetail("Order sync is temporarily unavailable.");
+    return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(problem);
+}`
+        }
+      ]
+    };
+  }
+
+  if (ruleId === 'SPRING_TRANSACTIONAL_EXCEPTION_SWALLOWED') {
+    return {
+      lead: 'Make the transactional boundary explicit: either let the failure leave the method, configure rollback for checked exceptions, or mark the transaction rollback-only before returning an intentional fallback.',
+      actions: [
+        'Prefer rethrowing after logging when the unit of work cannot be completed.',
+        'Use rollbackFor when a checked exception should roll back the transaction.',
+        'Only return a fallback after calling TransactionAspectSupport.currentTransactionStatus().setRollbackOnly().'
+      ],
+      examples: [
+        {
+          title: 'Preferred: rethrow and rollback',
+          code: `
+@Transactional(rollbackFor = Exception.class)
+public void syncPortfolio() throws Exception {
+    try {
+        syncPositions();
+    } catch (Exception ex) {
+        log.warn("Portfolio sync failed", ex);
+        throw ex;
+    }
+}`
+        },
+        {
+          title: 'Intentional fallback: mark rollback-only',
+          code: `
+@Transactional
+public SyncResult syncPortfolio() {
+    try {
+        syncPositions();
+        return SyncResult.ok();
+    } catch (Exception ex) {
+        log.warn("Portfolio sync failed", ex);
+        TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+        return SyncResult.failed();
+    }
+}`
+        }
+      ]
+    };
+  }
+
+  if (
+    ruleId === 'JAVA_EMPTY_CATCH_BLOCK'
+    || ruleId === 'SPRING_SWALLOWED_EXCEPTION_FALLBACK'
+    || ruleId === 'SPRING_BROAD_EXCEPTION_HANDLER'
+  ) {
+    return {
+      lead: 'Make the exception handling visible and intentional. Log useful context, rethrow when the caller must know, or return a documented fallback only after preserving the failure signal.',
+      actions: [
+        'Catch the narrowest exception type that the code can actually handle.',
+        'Log context that helps diagnose the failing operation.',
+        'Rethrow, wrap, or document the fallback path instead of silently swallowing the exception.'
+      ],
+      examples: [
+        {
+          title: 'Visible handling with rethrow',
+          code: `
+try {
+    importOrders();
+} catch (IOException ex) {
+    log.warn("Order import failed", ex);
+    throw new OrderImportException("Could not import orders", ex);
+}`
+        }
+      ]
+    };
+  }
+
+  return null;
+}
+
+function renderCodeExampleBlock(source: string, language: RecommendationExampleLanguage): HTMLElement {
+  const lines = trimCodeBlock(source).split('\n');
+  const tokenized = tokenizeRecommendationLines(lines, language);
+  const pre = element('pre', { className: 'remediation-code-pre' });
+  const code = element('code', { className: `remediation-code remediation-code-${language}` });
+  tokenized.forEach((line, index) => {
+    const lineEl = element('span', { className: 'remediation-code-line' });
+    line.tokens.forEach((token) => {
+      lineEl.appendChild(element('span', { className: `token-${token.type}`, text: token.text }));
+    });
+    code.appendChild(lineEl);
+    if (index < tokenized.length - 1) {
+      code.appendChild(document.createTextNode('\n'));
+    }
+  });
+  pre.appendChild(code);
+  return element('div', { className: 'remediation-code-viewer' }, pre);
+}
+
+function recommendationLanguageLabel(language: RecommendationExampleLanguage): string {
+  if (language === 'properties') {
+    return 'properties';
+  }
+  if (language === 'yaml') {
+    return 'yaml';
+  }
+  return 'java';
+}
+
+function tokenizeRecommendationLines(
+  lines: string[],
+  language: RecommendationExampleLanguage
+): Array<{ tokens: JavaToken[] }> {
+  if (language === 'java') {
+    return tokenizeJavaLines(lines);
+  }
+  return lines.map((line) => ({ tokens: tokenizeConfigurationExampleLine(line, language) }));
+}
+
+function tokenizeConfigurationExampleLine(line: string, language: RecommendationExampleLanguage): JavaToken[] {
+  if (!line.trim()) {
+    return [{ type: 'plain', text: line }];
+  }
+  const commentIndex = findConfigurationCommentIndex(line);
+  const codePart = commentIndex >= 0 ? line.slice(0, commentIndex) : line;
+  const commentPart = commentIndex >= 0 ? line.slice(commentIndex) : '';
+  const tokens = language === 'yaml'
+    ? tokenizeYamlExampleLine(codePart)
+    : tokenizePropertiesExampleLine(codePart);
+  if (commentPart) {
+    tokens.push({ type: 'comment', text: commentPart });
+  }
+  return tokens.length ? tokens : [{ type: 'plain', text: line }];
+}
+
+function tokenizePropertiesExampleLine(line: string): JavaToken[] {
+  const match = line.match(/^(\s*)([^:=\s][^:=]*?)(\s*[:=]\s*)(.*)$/);
+  if (!match) {
+    return [{ type: 'plain', text: line }];
+  }
+  const [, indent, key, separator, value] = match;
+  const tokens: JavaToken[] = [
+    { type: 'plain', text: indent },
+    { type: 'type-name', text: key.trimEnd() },
+    { type: 'operator', text: separator },
+    ...tokenizeConfigurationValue(value)
+  ];
+  return tokens.filter((token) => token.text.length > 0);
+}
+
+function tokenizeYamlExampleLine(line: string): JavaToken[] {
+  const match = line.match(/^(\s*)(-?\s*)?([A-Za-z0-9_.-]+)(\s*:\s*)(.*)$/);
+  if (!match) {
+    return [{ type: 'plain', text: line }];
+  }
+  const [, indent, listPrefix = '', key, separator, value] = match;
+  const tokens: JavaToken[] = [
+    { type: 'plain', text: indent },
+    { type: 'operator', text: listPrefix },
+    { type: 'type-name', text: key },
+    { type: 'operator', text: separator },
+    ...tokenizeConfigurationValue(value)
+  ];
+  return tokens.filter((token) => token.text.length > 0);
+}
+
+function tokenizeConfigurationValue(value: string): JavaToken[] {
+  if (!value) {
+    return [];
+  }
+  const tokens: JavaToken[] = [];
+  const placeholderPattern = /\$\{[^}]+}/g;
+  let index = 0;
+  for (const match of value.matchAll(placeholderPattern)) {
+    const start = match.index ?? 0;
+    if (start > index) {
+      tokens.push({ type: 'string', text: value.slice(index, start) });
+    }
+    tokens.push({ type: 'literal', text: match[0] });
+    index = start + match[0].length;
+  }
+  if (index < value.length) {
+    tokens.push({ type: 'string', text: value.slice(index) });
+  }
+  return tokens;
+}
+
+function findConfigurationCommentIndex(line: string): number {
+  const hashIndex = line.indexOf('#');
+  if (hashIndex === 0) {
+    return 0;
+  }
+  if (hashIndex > 0 && /\s/.test(line[hashIndex - 1])) {
+    return hashIndex;
+  }
+  return -1;
+}
+
+function trimCodeBlock(source: string): string {
+  const lines = source.replace(/\r\n/g, '\n').split('\n');
+  while (lines.length > 0 && !lines[0].trim()) {
+    lines.shift();
+  }
+  while (lines.length > 0 && !lines[lines.length - 1].trim()) {
+    lines.pop();
+  }
+  const indent = lines
+    .filter((line) => line.trim())
+    .reduce((min, line) => {
+      const count = line.match(/^\s*/)?.[0].length ?? 0;
+      return Math.min(min, count);
+    }, Number.POSITIVE_INFINITY);
+  return lines.map((line) => line.slice(Number.isFinite(indent) ? indent : 0)).join('\n');
 }
 
 function renderRelatedSignalsSection(signals: RelatedFindingSignal[]): HTMLElement {
@@ -4140,7 +4979,7 @@ function badgeCell(text: string, badgeClass: string): HTMLTableCellElement {
 // Empty / error / analyzing states
 // ---------------------------------------------------------------------------
 
-function renderInitialState(): HTMLElement {
+function renderInitialState(status?: ResultsPanelStatus): HTMLElement {
   const wrapper = element('div', { className: 'results-idle-state' });
 
   const iconEl = document.createElement('div');
@@ -4153,11 +4992,18 @@ function renderInitialState(): HTMLElement {
   wrapper.appendChild(iconEl);
 
   const body = element('div', { className: 'results-idle-body' });
-  body.appendChild(element('h3', { className: 'results-idle-title', text: 'Point it at a repository' }));
+  const savedModeWithoutProfiles = status?.analyzeMode === 'saved' && !status.hasSavedRepositories;
+  const title = savedModeWithoutProfiles ? 'Choose how to start' : 'Point it at a repository';
+  const description = status?.analyzeMode === 'saved' && status.hasSavedRepositories
+    ? 'Select a saved repository profile on the left, then click "Analyze saved repository". The backend clones the repo into a temporary workspace and analyzes it without starting the application.'
+    : savedModeWithoutProfiles
+      ? 'No saved repositories are configured yet. Switch to one-time repository, or save a reusable repository profile in Settings.'
+      : 'Enter a repository URL on the left, then click "Clone and analyze". The backend clones the repo into a temporary workspace and analyzes it without starting the application.';
+  body.appendChild(element('h3', { className: 'results-idle-title', text: title }));
   body.appendChild(
     element('p', {
       className: 'results-idle-desc',
-      text: 'Enter a repository URL on the left, then click "Clone and analyze". The backend clones the repo into a temporary workspace and analyzes it without starting the application.'
+      text: description
     })
   );
 
@@ -4202,7 +5048,7 @@ function renderAnalyzingState(statusMessage?: string): HTMLElement {
   return wrapper;
 }
 
-function renderErrorState(errorMessage: string): HTMLElement {
+function renderErrorState(errorMessage: string, actions: ResultsViewActions): HTMLElement {
   const wrapper = element('div', { className: 'results-idle-state' });
 
   const iconEl = document.createElement('div');
@@ -4225,12 +5071,20 @@ function renderErrorState(errorMessage: string): HTMLElement {
   const isAuthError =
     lowerMsg.includes('auth') || lowerMsg.includes('401') || lowerMsg.includes('credential') ||
     lowerMsg.includes('not authorized') || lowerMsg.includes('token');
+  const isInputError =
+    lowerMsg.includes('required') ||
+    lowerMsg.includes('select a saved repository') ||
+    lowerMsg.includes('choose a default token profile') ||
+    lowerMsg.includes('could not be found');
   const isNotFound =
     lowerMsg.includes('not found') || lowerMsg.includes('404') || lowerMsg.includes('repository') ||
     lowerMsg.includes('does not exist');
   const isTimeout = lowerMsg.includes('timeout') || lowerMsg.includes('timed out');
 
-  if (isAuthError) {
+  if (isInputError) {
+    hints.appendChild(element('li', { text: 'Complete the highlighted repository controls, then start the analysis again.' }));
+    hints.appendChild(element('li', { text: 'For a one-time run, enter an HTTPS or SSH repository URL.' }));
+  } else if (isAuthError) {
     hints.appendChild(element('li', { text: 'Check that the HTTPS token has read access to the repository.' }));
     hints.appendChild(element('li', { text: 'Ensure the username matches the token owner.' }));
     hints.appendChild(element('li', { text: 'SSH repositories do not use HTTPS tokens — use the server SSH agent.' }));
@@ -4243,10 +5097,49 @@ function renderErrorState(errorMessage: string): HTMLElement {
   } else {
     hints.appendChild(element('li', { text: 'Verify the repository URL, branch name, and network connectivity.' }));
     hints.appendChild(element('li', { text: 'Private repositories require a valid HTTPS token or SSH access.' }));
-    hints.appendChild(element('li', { text: 'Check the browser console or backend logs for more detail.' }));
+    hints.appendChild(element('li', { text: 'Check backend logs for lower-level clone or analysis details.' }));
   }
 
   body.appendChild(hints);
+  const actionRow = element('div', { className: 'results-idle-actions' });
+  if (!isInputError) {
+    const retryButton = element('button', {
+      className: 'primary-button',
+      text: 'Retry analysis',
+      attributes: { type: 'button' }
+    });
+    retryButton.addEventListener('click', () => {
+      actions.onRetryAnalysis();
+    });
+    actionRow.appendChild(retryButton);
+  }
+
+  const reviewButton = element('button', {
+    className: isInputError ? 'primary-button' : 'secondary-button',
+    text: 'Review repository controls',
+    attributes: { type: 'button' }
+  });
+  reviewButton.addEventListener('click', () => {
+    const target =
+      document.getElementById('analyze-one-time-repository-url')
+      ?? document.getElementById('analyze-saved-repository-select')
+      ?? document.getElementById('settings-repository-url')
+      ?? document.querySelector('.analyze-sidebar button, .analyze-sidebar input, .analyze-sidebar select');
+    if (target instanceof HTMLElement) {
+      target.focus();
+    }
+  });
+  actionRow.appendChild(reviewButton);
+  if (isAuthError) {
+    const settingsButton = element('button', {
+      className: 'secondary-button',
+      text: 'Open token settings',
+      attributes: { type: 'button' }
+    });
+    settingsButton.addEventListener('click', actions.onOpenSettings);
+    actionRow.appendChild(settingsButton);
+  }
+  body.appendChild(actionRow);
   wrapper.appendChild(body);
   return wrapper;
 }
@@ -4524,7 +5417,7 @@ function severityLabel(value: string): string {
 function severityExplanation(value: string): string {
   switch (normalizeSeverity(value)) {
     case 'ERROR':
-      return 'Error — reserved for analyzer failures or other blocking conditions.';
+      return 'Error — highest-priority finding to review.';
     case 'WARNING':
       return 'Warning — prioritized static finding to review.';
     case 'INFO':
@@ -4602,18 +5495,13 @@ function renderDependencyTree(resolved: GradleResolvedDependencyModel[]): HTMLEl
   return container;
 }
 
-function renderSectionJumpNav(): HTMLElement {
+function renderSectionJumpNav(result: AnalyzeRepositoryResponse): HTMLElement {
   const nav = element('nav', { className: 'results-jump-nav', attributes: { 'aria-label': 'Results sections' } });
   for (const [label, href] of [
-    ['Runtime', '#results-runtime'],
-    ['Findings', '#results-findings'],
-    ['HTTP', '#results-http'],
-    ['Scheduling', '#results-scheduling'],
-    ['Configuration', '#results-configuration'],
-    ['Spring API', '#results-spring-api'],
-    ['Components', '#results-components'],
-    ['Dependencies', '#results-dependencies'],
-    ['Build model', '#results-build-model']
+    ['Project', '#results-project'],
+    ['Overview', '#results-overview'],
+    [`Findings (${result.findings?.length ?? 0})`, '#results-findings'],
+    ['Technical inventory', '#results-reference']
   ] as Array<[string, string]>) {
     nav.appendChild(element('a', { className: 'results-jump-link', text: label, attributes: { href } }));
   }
@@ -4634,6 +5522,235 @@ function sortableHeader(
   });
   button.addEventListener('click', () => onSort(key));
   return button;
+}
+
+function filterFindings(findings: Finding[], state: ResultsViewState): Finding[] {
+  return findings.filter((finding) => {
+    const severityMatches =
+      state.findingsSeverity === 'ALL' || normalizeSeverity(finding.severity) === state.findingsSeverity;
+    const categoryMatches =
+      state.findingsCategory === 'ALL' || normalizeFindingCategory(finding.category) === state.findingsCategory;
+    const runtimeMatches =
+      state.findingsRuntimeDetection === 'ALL'
+      || normalizeRuntimeDetection(finding.runtimeDetection) === state.findingsRuntimeDetection;
+    const confidenceMatches =
+      state.findingsConfidence === 'ALL' || normalizeConfidence(finding.confidence) === state.findingsConfidence;
+    const derived = deriveFindingPresentation(finding);
+    const triageStatus = findingTriageStatusForKey(state, findingTriageKey(derived, state.findingsGrouped));
+    const triageMatches =
+      state.findingsTriageStatus === 'ALL' || triageStatus === state.findingsTriageStatus;
+    const textNeedle = state.findingsText.trim().toLowerCase();
+    const haystack = [
+      finding.message,
+      finding.location,
+      finding.rule,
+      finding.ruleId,
+      finding.title,
+      finding.category,
+      finding.runtimeDetection,
+      finding.confidence,
+      finding.target,
+      finding.evidence,
+      derived.ruleType,
+      derived.target,
+      triageStatusLabel(triageStatus)
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join(' ')
+      .toLowerCase();
+    return severityMatches && categoryMatches && runtimeMatches && confidenceMatches && triageMatches
+      && (!textNeedle || haystack.includes(textNeedle));
+  });
+}
+
+function buildFindingsReviewPlan(
+  findings: Finding[],
+  state: ResultsViewState,
+  totalFindings: number,
+  filteredFindings: number
+): string {
+  const lines: string[] = [
+    '# Spring Boot Analyzer review plan',
+    '',
+    `Scope: ${findings.length} open finding${findings.length === 1 ? '' : 's'}`
+      + ` matching current filters (${filteredFindings} filtered of ${totalFindings} total).`
+  ];
+  const filterSummary = findingFilterSummary(state);
+  if (filterSummary) {
+    lines.push(`Filters: ${filterSummary}.`);
+  }
+  lines.push('');
+
+  findings.forEach((finding, index) => {
+    const derived = deriveFindingPresentation(finding);
+    const recommendation = buildRecommendationContent(finding);
+    lines.push(`${index + 1}. [${derived.severity}] ${derived.title}`);
+    lines.push(`   Rule: ${finding.ruleId || derived.ruleType}`);
+    lines.push(`   Category: ${findingCategoryLabel(normalizeFindingCategory(finding.category))}`);
+    if (derived.target && derived.target !== 'Multiple targets') {
+      lines.push(`   Target: ${derived.target}`);
+    }
+    if (derived.location && derived.location !== 'Unknown location') {
+      lines.push(`   Location: ${derived.location}`);
+    }
+    const fix = recommendation?.actions?.[0] ?? finding.recommendation ?? recommendation?.lead;
+    if (fix) {
+      lines.push(`   First fix: ${singleLine(fix)}`);
+    }
+    lines.push('');
+  });
+
+  return lines.join('\n').trimEnd();
+}
+
+function findingFilterSummary(state: ResultsViewState): string {
+  const filters: string[] = [];
+  if (state.findingsSeverity !== 'ALL') {
+    filters.push(`severity ${state.findingsSeverity}`);
+  }
+  if (state.findingsCategory !== 'ALL') {
+    filters.push(`category ${findingCategoryLabel(normalizeFindingCategory(state.findingsCategory))}`);
+  }
+  if (state.findingsRuntimeDetection !== 'ALL') {
+    filters.push(`runtime ${runtimeDetectionLabel(normalizeRuntimeDetection(state.findingsRuntimeDetection))}`);
+  }
+  if (state.findingsConfidence !== 'ALL') {
+    filters.push(`confidence ${confidenceLabel(normalizeConfidence(state.findingsConfidence))}`);
+  }
+  if (state.findingsTriageStatus !== 'ALL') {
+    filters.push(`triage ${triageStatusLabel(state.findingsTriageStatus)}`);
+  }
+  const text = state.findingsText.trim();
+  if (text) {
+    filters.push(`text "${text}"`);
+  }
+  return filters.join(', ');
+}
+
+function singleLine(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function findingTriageCounts(
+  findings: Finding[],
+  state: ResultsViewState
+): Record<FindingTriageStatus, number> {
+  const counts: Record<FindingTriageStatus, number> = {
+    OPEN: 0,
+    ACCEPTED_RISK: 0,
+    FALSE_POSITIVE: 0,
+    FIXED: 0
+  };
+  for (const finding of findings) {
+    const presented = deriveFindingPresentation(finding);
+    const status = findingTriageStatusForKey(state, findingTriageKey(presented, state.findingsGrouped));
+    counts[status] += 1;
+  }
+  return counts;
+}
+
+function findingTriageKeysForFindings(
+  findings: Finding[],
+  state: ResultsViewState,
+  status: FindingTriageStatus
+): string[] {
+  const keys = new Set<string>();
+  for (const finding of findings) {
+    const presented = deriveFindingPresentation(finding);
+    const key = findingTriageKey(presented, state.findingsGrouped);
+    if (findingTriageStatusForKey(state, key) === status) {
+      keys.add(key);
+    }
+  }
+  return [...keys];
+}
+
+function findingTriageMarkedCount(state: ResultsViewState): number {
+  return Object.values(state.findingsTriage ?? {})
+    .filter((value) => normalizeFindingTriageStatus(value) !== 'OPEN')
+    .length;
+}
+
+function hasActiveFindingFilters(state: ResultsViewState): boolean {
+  return state.findingsSeverity !== 'ALL'
+    || state.findingsCategory !== 'ALL'
+    || state.findingsRuntimeDetection !== 'ALL'
+    || state.findingsConfidence !== 'ALL'
+    || state.findingsTriageStatus !== 'ALL'
+    || state.findingsText.trim().length > 0;
+}
+
+function findingTriageKey(
+  finding: GroupedPresentedFinding | PresentedFinding,
+  groupedMode: boolean
+): string {
+  const groupKey = topConcernAnchorKeyFromPresented(finding);
+  if ('occurrences' in finding || groupedMode) {
+    return `group:${groupKey}`;
+  }
+  return [
+    'finding',
+    groupKey,
+    normalizeGroupingText(finding.target),
+    normalizeGroupingText(finding.location),
+    hashString(finding.summary || finding.message || finding.title)
+  ].join(':');
+}
+
+function findingTriageStatusForKey(
+  state: ResultsViewState,
+  triageKey: string
+): FindingTriageStatus {
+  return normalizeFindingTriageStatus(state.findingsTriage?.[triageKey]);
+}
+
+function normalizeFindingTriageStatus(value: string | undefined): FindingTriageStatus {
+  return FINDING_TRIAGE_STATUSES.includes(value as FindingTriageStatus)
+    ? value as FindingTriageStatus
+    : 'OPEN';
+}
+
+function triageStatusLabel(value: FindingTriageStatus | FindingTriageFilter): string {
+  switch (value) {
+    case 'OPEN':
+      return 'Open';
+    case 'ACCEPTED_RISK':
+      return 'Accepted risk';
+    case 'FALSE_POSITIVE':
+      return 'False positive';
+    case 'FIXED':
+      return 'Fixed';
+    case 'ALL':
+    default:
+      return 'All triage statuses';
+  }
+}
+
+function triageStatusClass(value: FindingTriageStatus): string {
+  return value.toLowerCase().replace(/_/g, '-');
+}
+
+function renderFindingTriageSelect(
+  triageKey: string,
+  status: FindingTriageStatus,
+  actions: ResultsViewActions,
+  className: string
+): HTMLSelectElement {
+  const select = element('select', {
+    className: `select-input finding-triage-select ${className}`,
+    attributes: {
+      'aria-label': 'Set finding triage status',
+      title: 'Set finding triage status'
+    }
+  }) as HTMLSelectElement;
+  for (const option of FINDING_TRIAGE_STATUSES) {
+    select.appendChild(new Option(triageStatusLabel(option), option, false, option === status));
+  }
+  select.value = status;
+  select.addEventListener('change', () => {
+    actions.onSetFindingTriageStatus(triageKey, normalizeFindingTriageStatus(select.value));
+  });
+  return select;
 }
 
 function configurationKindLabel(value: string): string {
@@ -5181,7 +6298,7 @@ function deriveFindingPresentation(finding: Finding): PresentedFinding {
     ruleType,
     target,
     location,
-    locationShort: middleEllipsis(location, 88),
+    locationShort: compactSourceText(location, 72),
     locationMeta: locationDetails.meta,
     locationKnown: locationDetails.known,
     message,
@@ -5316,7 +6433,7 @@ function groupFindings(findings: Finding[]): GroupedPresentedFinding[] {
       message: representative.message,
       summary: representative.summary,
       location: representative.location,
-      locationShort: middleEllipsis(representative.location, 88),
+      locationShort: compactSourceText(representative.location, 72),
       locationMeta: representative.locationMeta,
       locationKnown: representative.locationKnown,
       occurrences: bucket.length,
@@ -5715,6 +6832,38 @@ function sourceLabel(sourceFile?: string | null, line?: number | null, endLine?:
   return sourceFile ?? 'Source reference';
 }
 
+function compactSourceLabel(
+  sourceFile?: string | null,
+  line?: number | null,
+  endLine?: number | null,
+  maxLength = 64
+): string {
+  return compactSourceText(sourceLabel(sourceFile, line, endLine), maxLength);
+}
+
+function compactSourceText(value: string, maxLength = 64): string {
+  const text = value.trim();
+  if (!text || text.length <= maxLength || text === 'Source reference' || text === '—') {
+    return value;
+  }
+
+  const locationMatch = text.match(/^(?<path>.*?)(?<suffix>:\d+(?:-\d+)?)$/);
+  const path = locationMatch?.groups?.path ?? text;
+  const suffix = locationMatch?.groups?.suffix ?? '';
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  if (parts.length >= 3) {
+    for (let count = 3; count <= Math.min(parts.length, 5); count++) {
+      const candidate = `.../${parts.slice(-count).join('/')}${suffix}`;
+      if (candidate.length <= maxLength) {
+        return candidate;
+      }
+    }
+    return middleEllipsis(`.../${parts.slice(-3).join('/')}${suffix}`, maxLength);
+  }
+
+  return middleEllipsis(text, maxLength);
+}
+
 function buildFindingLocation(finding: Finding): string {
   const primaryLocation = primaryFindingLocation(finding);
   if (primaryLocation?.filePath) {
@@ -6044,6 +7193,3 @@ function urlKindLabel(value: string | null | undefined): string {
       return 'Unknown';
   }
 }
-
-
-

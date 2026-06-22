@@ -96,4 +96,15 @@ class GitCloneServiceTest {
                         "Browser-stored HTTPS tokens cannot be used for SSH repository URLs."
                                 + " Configure SSH keys on the server instead.");
     }
+
+    @Test
+    void repositoryReferenceLogLabelOmitsRepositoryPath() {
+        GitRepositoryReference repositoryReference =
+                new GitRepositoryReference(
+                        "https://github.com/private-owner/private-repo.git", "main");
+
+        assertThat(repositoryReference.logLabel()).isEqualTo("https://github.com");
+        assertThat(repositoryReference.toString()).doesNotContain("private-owner");
+        assertThat(repositoryReference.toString()).doesNotContain("private-repo");
+    }
 }

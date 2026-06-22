@@ -73,7 +73,7 @@ public class GradleModelReportParser {
                     text(root, "gradleVersion"),
                     null,
                     executionMode,
-                    reportFile.toString(),
+                    fileName(reportFile),
                     null,
                     null,
                     false,
@@ -134,6 +134,10 @@ public class GradleModelReportParser {
                                     "Failed to parse Gradle model report.",
                                     null)));
         }
+    }
+
+    private String fileName(Path path) {
+        return path == null || path.getFileName() == null ? null : path.getFileName().toString();
     }
 
     private List<GradleProjectModel> parseProjects(JsonNode node) {

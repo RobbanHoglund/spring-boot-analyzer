@@ -2,6 +2,17 @@ import { element } from '../dom';
 import { findMatchingTokenProfile, maskToken } from '../tokenStore';
 import type { RepositoryProfile, RuleInfo, TokenProfile, TokenProvider } from '../types';
 
+export type RuleSeverityFilter = 'ALL' | 'ERROR' | 'WARNING' | 'INFO';
+export type RuleStatusFilter = 'ALL' | 'ENABLED' | 'DISABLED';
+export type RuleCategoryExpansionState = 'review' | 'all' | 'none';
+
+export interface RuleManagementViewState {
+  searchText: string;
+  severity: RuleSeverityFilter;
+  status: RuleStatusFilter;
+  categoryExpansion: RuleCategoryExpansionState;
+}
+
 export interface TokenFormModel {
   id: string;
   name: string;
@@ -32,6 +43,7 @@ export interface SettingsViewModel {
   ruleSettings: RuleInfo[] | null;
   ruleSettingsLoading: boolean;
   ruleSettingsError: string;
+  ruleManagement: RuleManagementViewState;
 }
 
 export interface SettingsViewActions {
@@ -51,6 +63,11 @@ export interface SettingsViewActions {
   onToggleRule: (ruleId: string, enabled: boolean) => void;
   onEnableAllRules: () => void;
   onSetAllBySeverity: (severity: string, enabled: boolean) => void;
+  onRuleSearchChange: (value: string) => void;
+  onRuleSeverityFilterChange: (value: RuleSeverityFilter) => void;
+  onRuleStatusFilterChange: (value: RuleStatusFilter) => void;
+  onRuleCategoryExpansionChange: (value: RuleCategoryExpansionState) => void;
+  onClearRuleFilters: () => void;
 }
 
 export function renderSettingsView(
@@ -256,7 +273,7 @@ function renderTokenSection(
       'p',
       {
         className: 'helper-text',
-        text: 'Tokens are stored in browser localStorage for local development convenience. This is not recommended for production secret storage. Do not save highly privileged tokens here.'
+        text: 'Token profiles are stored locally in this browser. Use read-only repository scopes and remove profiles you no longer need.'
       }
     )
   );
@@ -304,7 +321,7 @@ function renderTokenSection(
         'p',
         {
           className: 'helper-text',
-          text: `Saved token: ${model.tokenForm.maskedTokenHint}`
+          text: `Saved token ending in ${model.tokenForm.maskedTokenHint.slice(-4)}`
         }
       )
     );
@@ -490,6 +507,119 @@ function renderRulesSection(model: SettingsViewModel, actions: SettingsViewActio
   }
 
   const disabledCount = model.ruleSettings.filter((r) => !r.enabled).length;
+  const ruleManagement = normalizeRuleManagementState(model.ruleManagement);
+  const filteredRules = filterRules(model.ruleSettings, ruleManagement);
+  const activeFilterCount = countActiveRuleFilters(ruleManagement);
+  const activeFilters = activeFilterCount > 0;
+
+  panel.appendChild(
+    element(
+      'div',
+      { className: 'rule-management-overview' },
+      element(
+        'div',
+        { className: 'rule-count-summary' },
+        element('strong', { text: `${filteredRules.length} of ${model.ruleSettings.length} rules` }),
+        element('span', { text: ` | ${disabledCount} disabled` })
+      ),
+      element('div', {
+        className: 'rule-count-meta',
+        text: activeFilters
+          ? `${activeFilterCount} active filter${activeFilterCount === 1 ? '' : 's'}`
+          : 'Showing the full rule catalog'
+      })
+    )
+  );
+
+  const catalogDetails = document.createElement('details');
+  catalogDetails.className = 'rule-catalog-details';
+  if (activeFilters) {
+    catalogDetails.open = true;
+  }
+  catalogDetails.appendChild(
+    element(
+      'summary',
+      { className: 'rule-catalog-summary' },
+      element('span', { className: 'rule-catalog-summary-title', text: 'Configure rule catalog' }),
+      element('span', {
+        className: 'rule-catalog-summary-meta',
+        text: activeFilters
+          ? 'Filters are active'
+          : disabledCount > 0
+            ? `${disabledCount} disabled`
+            : 'Collapsed by default'
+      })
+    )
+  );
+  const catalogBody = element('div', { className: 'rule-catalog-body' });
+
+  const filterRow = element('div', { className: 'rule-filter-row' });
+  filterRow.append(
+    field(
+      'Search rules',
+      textInput('settings-rule-search', ruleManagement.searchText, 'Rule title or id', actions.onRuleSearchChange)
+    ),
+    field(
+      'Severity',
+      selectControl(
+        'settings-rule-severity',
+        [
+          ['ALL', 'All severities'],
+          ['ERROR', 'Errors'],
+          ['WARNING', 'Warnings'],
+          ['INFO', 'Info']
+        ],
+        ruleManagement.severity,
+        (value) => actions.onRuleSeverityFilterChange(value as RuleSeverityFilter)
+      )
+    ),
+    field(
+      'Status',
+      selectControl(
+        'settings-rule-status',
+        [
+          ['ALL', 'Enabled and disabled'],
+          ['ENABLED', 'Enabled only'],
+          ['DISABLED', 'Disabled only']
+        ],
+        ruleManagement.status,
+        (value) => actions.onRuleStatusFilterChange(value as RuleStatusFilter)
+      )
+    )
+  );
+  catalogBody.appendChild(filterRow);
+
+  const viewActions = element('div', { className: 'actions rule-view-actions' });
+  const expandAllButton = element('button', {
+    className: 'secondary-button utility-button',
+    text: 'Expand all categories',
+    attributes: { type: 'button' }
+  });
+  expandAllButton.addEventListener('click', () => actions.onRuleCategoryExpansionChange('all'));
+  const collapseAllButton = element('button', {
+    className: 'secondary-button utility-button',
+    text: 'Collapse all categories',
+    attributes: { type: 'button' }
+  });
+  collapseAllButton.addEventListener('click', () => actions.onRuleCategoryExpansionChange('none'));
+  const reviewButton = element('button', {
+    className: 'secondary-button utility-button',
+    text: 'Review changed categories',
+    attributes: { type: 'button' }
+  });
+  reviewButton.addEventListener('click', () => actions.onRuleCategoryExpansionChange('review'));
+  viewActions.append(expandAllButton, collapseAllButton, reviewButton);
+
+  if (activeFilters) {
+    const clearFiltersButton = element('button', {
+      className: 'secondary-button utility-button rule-filter-clear',
+      text: 'Clear filters',
+      attributes: { type: 'button' }
+    });
+    clearFiltersButton.addEventListener('click', actions.onClearRuleFilters);
+    viewActions.appendChild(clearFiltersButton);
+  }
+  catalogBody.appendChild(viewActions);
 
   // Severity bulk-action bar
   const severityBar = element('div', { className: 'rule-severity-bar' });
@@ -516,34 +646,52 @@ function renderRulesSection(model: SettingsViewModel, actions: SettingsViewActio
     enableAll.addEventListener('click', actions.onEnableAllRules);
     severityBar.appendChild(enableAll);
   }
-  panel.appendChild(severityBar);
+  catalogBody.appendChild(severityBar);
+
+  if (filteredRules.length === 0) {
+    catalogBody.appendChild(element('p', { className: 'muted-text rule-empty-state', text: 'No rules match the current filters.' }));
+    catalogDetails.appendChild(catalogBody);
+    panel.appendChild(catalogDetails);
+    return panel;
+  }
 
   // Group rules by category
   const byCategory = new Map<string, RuleInfo[]>();
-  for (const rule of model.ruleSettings) {
+  for (const rule of filteredRules) {
     const list = byCategory.get(rule.category) ?? [];
     list.push(rule);
     byCategory.set(rule.category, list);
   }
 
-  const sortedCategories = [...byCategory.keys()].sort();
+  const sortedCategories = [...byCategory.keys()].sort((left, right) => {
+    const leftDisabled = byCategory.get(left)!.filter((rule) => !rule.enabled).length;
+    const rightDisabled = byCategory.get(right)!.filter((rule) => !rule.enabled).length;
+    if (leftDisabled !== rightDisabled) {
+      return rightDisabled - leftDisabled;
+    }
+    return categoryDisplayName(left).localeCompare(categoryDisplayName(right));
+  });
 
   for (const category of sortedCategories) {
-    const rules = byCategory.get(category)!;
+    const rules = sortRulesForDisplay(byCategory.get(category)!);
     const disabledInCategory = rules.filter((r) => !r.enabled).length;
+    const totalInCategory = model.ruleSettings.filter((rule) => rule.category === category).length;
 
     const details = document.createElement('details');
     details.className = 'rule-category-details';
-    if (disabledInCategory > 0) {
+    if (
+      ruleManagement.categoryExpansion === 'all'
+      || (ruleManagement.categoryExpansion === 'review' && (disabledInCategory > 0 || activeFilters))
+    ) {
       details.open = true;
     }
 
     const summary = document.createElement('summary');
     summary.className = 'rule-category-summary';
-    const categoryLabel = element('span', { text: categoryDisplayName(category) });
+    const categoryLabel = element('span', { className: 'rule-category-name', text: categoryDisplayName(category) });
     const badge = element('span', {
       className: 'rule-category-badge',
-      text: String(rules.length)
+      text: rules.length === totalInCategory ? String(rules.length) : `${rules.length}/${totalInCategory}`
     });
     summary.appendChild(categoryLabel);
     summary.appendChild(badge);
@@ -594,9 +742,11 @@ function renderRulesSection(model: SettingsViewModel, actions: SettingsViewActio
     }
 
     details.appendChild(ruleList);
-    panel.appendChild(details);
+    catalogBody.appendChild(details);
   }
 
+  catalogDetails.appendChild(catalogBody);
+  panel.appendChild(catalogDetails);
   return panel;
 }
 
@@ -622,4 +772,76 @@ function categoryDisplayName(category: string): string {
     DEPENDENCY: 'Dependency compatibility'
   };
   return names[category] ?? category;
+}
+
+function selectControl(
+  id: string,
+  options: Array<[string, string]>,
+  value: string,
+  onChange: (value: string) => void
+): HTMLSelectElement {
+  const select = element('select', {
+    className: 'select-input',
+    attributes: { id }
+  }) as HTMLSelectElement;
+  for (const [optionValue, label] of options) {
+    select.appendChild(new Option(label, optionValue, false, optionValue === value));
+  }
+  select.value = value;
+  select.addEventListener('change', () => onChange(select.value));
+  return select;
+}
+
+function normalizeRuleManagementState(state: RuleManagementViewState): RuleManagementViewState {
+  return {
+    searchText: state.searchText ?? '',
+    severity: ['ALL', 'ERROR', 'WARNING', 'INFO'].includes(state.severity) ? state.severity : 'ALL',
+    status: ['ALL', 'ENABLED', 'DISABLED'].includes(state.status) ? state.status : 'ALL',
+    categoryExpansion: ['review', 'all', 'none'].includes(state.categoryExpansion) ? state.categoryExpansion : 'review'
+  };
+}
+
+function countActiveRuleFilters(state: RuleManagementViewState): number {
+  return [
+    state.searchText.trim() ? 1 : 0,
+    state.severity !== 'ALL' ? 1 : 0,
+    state.status !== 'ALL' ? 1 : 0
+  ].reduce((sum, value) => sum + value, 0);
+}
+
+function filterRules(rules: RuleInfo[], state: RuleManagementViewState): RuleInfo[] {
+  const needle = state.searchText.trim().toLowerCase();
+  return rules.filter((rule) => {
+    const matchesText = !needle
+      || [
+        rule.ruleId,
+        rule.title,
+        rule.category,
+        rule.severity,
+        rule.runtimeDetection
+      ]
+        .join(' ')
+        .toLowerCase()
+        .includes(needle);
+    const matchesSeverity = state.severity === 'ALL' || rule.severity === state.severity;
+    const matchesStatus =
+      state.status === 'ALL'
+      || (state.status === 'ENABLED' && rule.enabled)
+      || (state.status === 'DISABLED' && !rule.enabled);
+    return matchesText && matchesSeverity && matchesStatus;
+  });
+}
+
+function sortRulesForDisplay(rules: RuleInfo[]): RuleInfo[] {
+  const severityRank: Record<string, number> = { ERROR: 0, WARNING: 1, INFO: 2 };
+  return [...rules].sort((left, right) => {
+    if (left.enabled !== right.enabled) {
+      return left.enabled ? 1 : -1;
+    }
+    const severity = (severityRank[left.severity] ?? 99) - (severityRank[right.severity] ?? 99);
+    if (severity !== 0) {
+      return severity;
+    }
+    return left.title.localeCompare(right.title);
+  });
 }

@@ -9,10 +9,12 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 public class FrontendResourceConfiguration implements WebMvcConfigurer {
 
     private static final String FRONTEND_DIST_LOCATION = "file:./frontend/dist/";
+    private static final String CLASSPATH_STATIC_LOCATION = "classpath:/static/";
 
     @Override
     public void addResourceHandlers(ResourceHandlerRegistry registry) {
-        registry.addResourceHandler("/**").addResourceLocations(FRONTEND_DIST_LOCATION);
+        registry.addResourceHandler("/**")
+                .addResourceLocations(FRONTEND_DIST_LOCATION, CLASSPATH_STATIC_LOCATION);
     }
 
     @Override

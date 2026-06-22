@@ -9,9 +9,11 @@ function defaultState(): ResultsViewState {
     findingsCategory: 'ALL',
     findingsRuntimeDetection: 'ALL',
     findingsConfidence: 'ALL',
+    findingsTriageStatus: 'ALL',
     findingsText: '',
     findingsExpanded: false,
     findingsGrouped: true,
+    findingsTriage: {},
     configurationSearch: '',
     configurationFocus: 'ALL',
     configurationProfile: 'ALL',
@@ -65,13 +67,20 @@ function defaultState(): ResultsViewState {
 function defaultActions(overrides: Partial<ResultsViewActions> = {}): ResultsViewActions {
   const noop = (..._args: Array<unknown>) => undefined;
   return {
+    onRetryAnalysis: noop,
+    onOpenSettings: noop,
     onFindingsSeverityChange: noop,
     onFindingsCategoryChange: noop,
     onFindingsRuntimeDetectionChange: noop,
     onFindingsConfidenceChange: noop,
+    onFindingsTriageStatusChange: noop,
     onFindingsTextChange: noop,
     onToggleFindingsExpanded: noop,
     onFindingsGroupedChange: noop,
+    onSetFindingTriageStatus: noop,
+    onSetFindingTriageStatuses: noop,
+    onClearFindingsFilters: noop,
+    onClearFindingsTriage: noop,
     onConfigurationSearchChange: noop,
     onConfigurationFocusChange: noop,
     onConfigurationProfileChange: noop,
@@ -378,6 +387,225 @@ describe('renderResultsView findings UI', () => {
     expect(document.querySelector('.finding-detail-badges')?.textContent).toContain('Mixed severity');
   });
 
+  it('renders transactional exception recommendations as a full-width remediation panel with Java examples', () => {
+    const finding = baseFinding({
+      severity: 'ERROR',
+      title: '@Transactional method swallows exception, preventing rollback',
+      ruleId: 'SPRING_TRANSACTIONAL_EXCEPTION_SWALLOWED',
+      category: 'TRANSACTION',
+      message: '@Transactional method catches and swallows a broad exception, preventing rollback.',
+      shortMessage: '@Transactional method catches and swallows a broad exception, preventing rollback.',
+      whyBadPractice: 'Spring transaction management only rolls back when an exception propagates out of the @Transactional method.',
+      possibleImpact: 'The database may be left in an inconsistent state.',
+      recommendation: 'Either let the exception propagate, annotate with rollbackFor, or explicitly call setRollbackOnly before handling.',
+      evidence: 'Method catches Exception without rethrowing.',
+      limitations: 'Static analysis cannot determine whether rollback is handled via TransactionAspectSupport.',
+      target: 'PositionSyncService#sync'
+    });
+
+    const view = renderResultsView(baseResult([finding]), defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    (document.querySelector('.finding-expand-button') as HTMLButtonElement).click();
+
+    const remediation = document.querySelector('.remediation-section') as HTMLElement | null;
+    expect(remediation).not.toBeNull();
+    expect(remediation?.textContent).toContain('Recommended fix');
+    expect(remediation?.textContent).toContain('rollbackFor');
+    expect(remediation?.textContent).toContain('TransactionAspectSupport.currentTransactionStatus().setRollbackOnly()');
+    expect(document.querySelectorAll('.remediation-code-card')).toHaveLength(2);
+    expect(document.querySelector('.remediation-code .token-annotation')?.textContent).toBe('@Transactional');
+  });
+
+  it('renders secret remediation with properties and Java validation examples', async () => {
+    const finding = baseFinding({
+      title: 'Secret placeholder has a weak default value',
+      ruleId: 'SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT',
+      category: 'SECURITY',
+      message: 'A secret placeholder with a weak default can silently fall back to an insecure value.',
+      shortMessage: 'A secret placeholder with a weak default can silently fall back to an insecure value.',
+      target: 'bootlens.client.registration.actuator-password',
+      sourceFile: 'src/main/resources/application.properties',
+      line: 30,
+      primaryLocation: {
+        filePath: 'src/main/resources/application.properties',
+        startLine: 30,
+        endLine: 30,
+        language: 'properties'
+      }
+    });
+
+    const view = renderResultsView(baseResult([finding]), defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    (document.querySelector('.finding-expand-button') as HTMLButtonElement).click();
+
+    const remediation = document.querySelector('.remediation-section') as HTMLElement | null;
+    expect(remediation).not.toBeNull();
+    expect(remediation?.textContent).toContain('Remove literal passwords');
+    expect(remediation?.textContent).toContain('${BOOTLENS_ACTUATOR_PASSWORD}');
+    expect(remediation?.textContent).toContain('@ConfigurationProperties');
+    expect(document.querySelector('.remediation-code-properties')).not.toBeNull();
+    expect(document.querySelector('.remediation-code-language')?.textContent).toBe('properties');
+    expect(document.querySelector('.remediation-code .token-literal')?.textContent).toBe('${BOOTLENS_ACTUATOR_PASSWORD}');
+
+    (document.querySelector('.remediation-copy-button') as HTMLButtonElement).click();
+    await Promise.resolve();
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('${BOOTLENS_ACTUATOR_PASSWORD}'));
+  });
+
+  it('renders targeted remediation for CSRF, plain HTTP, and actuator findings', () => {
+    const cases: Array<{ ruleId: string; expected: string }> = [
+      { ruleId: 'SPRING_CSRF_DISABLED', expected: 'ignoringRequestMatchers("/api/webhooks/**")' },
+      { ruleId: 'SPRING_HTTP_PLAIN_URL', expected: 'pricing.api.base-url=https://pricing.example.com' },
+      { ruleId: 'SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD', expected: 'EndpointRequest.toAnyEndpoint()' }
+    ];
+
+    for (const item of cases) {
+      document.body.innerHTML = '';
+      const view = renderResultsView(
+        baseResult([
+          baseFinding({
+            title: item.ruleId,
+            ruleId: item.ruleId,
+            category: item.ruleId.includes('ACTUATOR') ? 'ACTUATOR' : 'SECURITY',
+            message: item.ruleId,
+            shortMessage: item.ruleId
+          })
+        ]),
+        defaultState(),
+        defaultActions()
+      );
+      document.body.appendChild(view);
+
+      (document.querySelector('.finding-expand-button') as HTMLButtonElement).click();
+
+      expect(document.querySelector('.remediation-section')?.textContent).toContain(item.expected);
+    }
+  });
+
+  it('lets findings be triaged and filtered by triage status', () => {
+    const onSetFindingTriageStatus = vi.fn();
+    const view = renderResultsView(
+      baseResult([baseFinding()]),
+      defaultState(),
+      defaultActions({ onSetFindingTriageStatus })
+    );
+    document.body.appendChild(view);
+
+    const select = document.querySelector('.finding-row-triage-select') as HTMLSelectElement;
+    expect(select.value).toBe('OPEN');
+    select.value = 'FALSE_POSITIVE';
+    select.dispatchEvent(new Event('change'));
+    expect(onSetFindingTriageStatus).toHaveBeenCalledWith('group:JAVA_EMPTY_CATCH_BLOCK', 'FALSE_POSITIVE');
+
+    document.body.innerHTML = '';
+    const filteredState = defaultState();
+    filteredState.findingsTriageStatus = 'FALSE_POSITIVE';
+    filteredState.findingsTriage = {
+      'group:JAVA_EMPTY_CATCH_BLOCK': 'FALSE_POSITIVE'
+    };
+    const filteredView = renderResultsView(baseResult([baseFinding()]), filteredState, defaultActions());
+    document.body.appendChild(filteredView);
+
+    expect(document.querySelectorAll('.finding-summary-row')).toHaveLength(1);
+    expect(document.querySelector('.badge-triage')?.textContent).toBe('False positive');
+    expect((document.getElementById('results-findings-triage-status') as HTMLSelectElement).value).toBe('FALSE_POSITIVE');
+  });
+
+  it('renders review queue actions for clearing finding filters and triage', () => {
+    const onFindingsTriageStatusChange = vi.fn();
+    const onClearFindingsFilters = vi.fn();
+    const onClearFindingsTriage = vi.fn();
+    const state = defaultState();
+    state.findingsSeverity = 'WARNING';
+    state.findingsText = 'secret';
+    state.findingsTriage = {
+      'group:JAVA_EMPTY_CATCH_BLOCK': 'ACCEPTED_RISK'
+    };
+
+    const view = renderResultsView(
+      baseResult([baseFinding()]),
+      state,
+      defaultActions({ onFindingsTriageStatusChange, onClearFindingsFilters, onClearFindingsTriage })
+    );
+    document.body.appendChild(view);
+
+    expect(document.querySelector('.findings-review-toolbar')?.textContent).toContain('0 open, 1 triaged of 1');
+
+    (document.querySelector('.findings-review-action') as HTMLButtonElement).click();
+    expect(onFindingsTriageStatusChange).toHaveBeenCalledWith('OPEN');
+
+    (document.querySelector('.findings-clear-filters-button') as HTMLButtonElement).click();
+    expect(onClearFindingsFilters).toHaveBeenCalled();
+
+    (document.querySelector('.findings-clear-triage-button') as HTMLButtonElement).click();
+    expect(onClearFindingsTriage).toHaveBeenCalled();
+  });
+
+  it('bulk triages only open findings matching the current filters', () => {
+    const onSetFindingTriageStatuses = vi.fn();
+    const state = defaultState();
+    state.findingsText = 'csrf';
+    const csrfFinding = baseFinding({
+      title: 'CSRF protection is disabled',
+      ruleId: 'SPRING_CSRF_DISABLED',
+      category: 'SECURITY',
+      message: 'CSRF protection is disabled.',
+      shortMessage: 'CSRF protection is disabled.'
+    });
+
+    const view = renderResultsView(
+      baseResult([baseFinding(), csrfFinding]),
+      state,
+      defaultActions({ onSetFindingTriageStatuses })
+    );
+    document.body.appendChild(view);
+
+    expect(document.querySelector('.findings-review-toolbar')?.textContent).toContain('1 matching filters');
+    expect(document.querySelectorAll('.finding-summary-row')).toHaveLength(1);
+
+    const bulkSelect = document.querySelector('.findings-bulk-triage-select') as HTMLSelectElement;
+    bulkSelect.value = 'ACCEPTED_RISK';
+    (document.querySelector('.findings-bulk-triage-button') as HTMLButtonElement).click();
+
+    expect(onSetFindingTriageStatuses).toHaveBeenCalledWith([
+      { key: 'group:SPRING_CSRF_DISABLED', status: 'ACCEPTED_RISK' }
+    ]);
+  });
+
+  it('copies a markdown review plan for open findings matching filters', async () => {
+    const state = defaultState();
+    state.findingsText = 'csrf';
+    const csrfFinding = baseFinding({
+      title: 'CSRF protection is disabled',
+      ruleId: 'SPRING_CSRF_DISABLED',
+      category: 'SECURITY',
+      message: 'CSRF protection is disabled.',
+      shortMessage: 'CSRF protection is disabled.',
+      target: 'SecurityConfig#securityFilterChain',
+      sourceFile: 'src/main/java/com/example/SecurityConfig.java',
+      line: 57,
+      primaryLocation: {
+        filePath: 'src/main/java/com/example/SecurityConfig.java',
+        startLine: 57,
+        endLine: 57,
+        language: 'java'
+      }
+    });
+
+    const view = renderResultsView(baseResult([baseFinding(), csrfFinding]), state, defaultActions());
+    document.body.appendChild(view);
+
+    (document.querySelector('.findings-copy-plan-button') as HTMLButtonElement).click();
+    await Promise.resolve();
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('# Spring Boot Analyzer review plan'));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('Filters: text "csrf".'));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('Rule: SPRING_CSRF_DISABLED'));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('First fix: Remove blanket csrf disable calls'));
+  });
+
   it('deduplicates and ranks top concerns by finding rule', () => {
     const rawHttp = baseFinding({
       title: 'Raw exception message exposed through HTTP response',
@@ -438,8 +666,8 @@ describe('renderResultsView findings UI', () => {
     expect(document.body.textContent).toContain('Top concerns');
     expect(document.body.textContent).toContain('Security posture');
     expect(document.body.textContent).toContain('Persistence');
-    expect(document.body.textContent).toContain('Errors are reserved for analyzer failures');
-    expect(document.body.textContent).toContain('Warnings are prioritized static review items.');
+    expect(document.body.textContent).toContain('Errors are the highest-priority findings to review.');
+    expect(document.body.textContent).toContain('Warnings are important review items');
     expect(document.body.textContent).toContain('Detected statically');
     expect(document.body.textContent).toContain('Depends on active profile');
     expect(document.body.textContent).toContain('Requires runtime verification');
@@ -558,7 +786,9 @@ describe('renderResultsView findings UI', () => {
     expect(document.querySelector('.http-table-actuator')).not.toBeNull();
     expect(document.querySelector('.http-cell-controller .cell-technical-wrap')?.textContent)
       .toBe('com.robbanhoglund.springbootanalyzer.api.AnalysisController');
-    expect(document.querySelector('.http-cell-source .cell-technical-wrap')?.textContent)
+    const sourceButton = document.querySelector('.http-cell-source .property-source-link') as HTMLButtonElement;
+    expect(sourceButton?.textContent).toContain('AnalysisController.java:144');
+    expect(sourceButton?.getAttribute('title'))
       .toContain('src/main/java/com/robbanhoglund/springbootanalyzer/api/AnalysisController.java:144');
     expect(document.querySelector('.http-cell-value .cell-technical-wrap')?.textContent)
       .toContain('https://plugins.gradle.org/m2/');
@@ -574,6 +804,25 @@ describe('renderResultsView findings UI', () => {
     expect(document.getElementById('results-configuration-focus')).not.toBeNull();
     expect(document.getElementById('results-components-text')).not.toBeNull();
     expect(document.getElementById('results-dependencies-search')).not.toBeNull();
+  });
+
+  it('keeps the review workflow primary and groups reference sections under technical inventory', () => {
+    const view = renderResultsView(baseResult([baseFinding()]), defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    const topLevelSections = [...document.querySelectorAll('.panel-results > .results-section')]
+      .map((section) => section.id);
+    expect(topLevelSections).toEqual([
+      'results-project',
+      'results-findings',
+      'results-reference'
+    ]);
+    const overview = document.getElementById('results-overview') as HTMLElement;
+    const findings = document.getElementById('results-findings') as HTMLElement;
+    expect(overview).not.toBeNull();
+    expect((overview.compareDocumentPosition(findings) & Node.DOCUMENT_POSITION_FOLLOWING) > 0).toBe(true);
+    expect(document.querySelector('.results-reference-summary-title')?.textContent).toBe('Runtime model');
+    expect(document.getElementById('results-configuration')).not.toBeNull();
   });
 
   it('renders a configuration review overview and compact custom-property meanings', () => {
@@ -654,7 +903,9 @@ describe('renderResultsView findings UI', () => {
     expect(document.querySelector('.component-class-primary')?.textContent).toBe('AnalysisController');
     expect(document.querySelector('.component-class-secondary')?.textContent)
       .toBe('com.robbanhoglund.springbootanalyzer.api.AnalysisController');
-    expect(document.querySelector('.component-source-cell .cell-technical-wrap')?.textContent)
+    const sourceButton = document.querySelector('.component-source-cell .property-source-link') as HTMLButtonElement;
+    expect(sourceButton?.textContent).toContain('AnalysisController.java');
+    expect(sourceButton?.getAttribute('title'))
       .toContain('src/main/java/com/robbanhoglund/springbootanalyzer/api/AnalysisController.java');
   });
 
@@ -736,10 +987,60 @@ describe('renderResultsView findings UI', () => {
 
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
     expect(document.querySelectorAll('.code-line-highlight')).toHaveLength(4);
-    expect(document.querySelector('.token-keyword')?.textContent).toBe('public');
+    expect(document.querySelector('.code-snippet-viewer .token-keyword')?.textContent).toBe('public');
     expect(document.querySelector('.code-snippet-viewer img')).toBeNull();
     expect(document.querySelector('.code-snippet-link-button')?.getAttribute('href'))
       .toContain('/blob/abc123/src/main/java/com/example/ResendClient.java#L10-L13');
+  });
+
+  it('renders source snippet failures as a friendly unavailable state with repository fallback', () => {
+    const state = defaultState();
+    state.codeModal = {
+      open: true,
+      title: 'Secret placeholder has a weak default value',
+      summary: 'Sensitive configuration property has a weak placeholder default.',
+      ruleType: 'SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT',
+      target: 'bootlens.client.registration.actuator-password',
+      severity: 'WARNING',
+      category: 'SECURITY',
+      confidence: 'HIGH',
+      runtimeDetection: 'NOT_NORMALLY_DETECTED',
+      isPropertySource: false,
+      analysisId: 'analysis-1',
+      occurrences: [
+        {
+          key: 'occ-1',
+          label: 'src/main/resources/application.properties:30',
+          summary: 'Sensitive configuration property has a weak placeholder default.',
+          location: {
+            filePath: 'src/main/resources/application.properties',
+            startLine: 30,
+            endLine: 30,
+            language: 'properties',
+            githubUrl: 'https://github.com/example/demo/blob/abc123/src/main/resources/application.properties#L30'
+          },
+          highlightRanges: [{ startLine: 30, endLine: 30, kind: 'issue' }]
+        }
+      ],
+      selectedOccurrenceIndex: 0,
+      loading: false,
+      errorMessage: 'Request failed (404): {"type":"about:blank","title":"Source snippet unavailable","status":404,"detail":"Source snippet is no longer available or the requested file could not be found."}',
+      snippet: null,
+      returnFocusId: null
+    };
+
+    const view = renderResultsView(baseResult([baseFinding()]), state, defaultActions());
+    document.body.appendChild(view);
+
+    const unavailable = document.querySelector('.code-snippet-unavailable') as HTMLElement | null;
+    expect(unavailable).not.toBeNull();
+    expect(unavailable?.textContent).toContain('Source snippet unavailable');
+    expect(unavailable?.textContent).toContain('local source workspace');
+    expect(unavailable?.textContent).toContain('src/main/resources/application.properties');
+    expect(unavailable?.textContent).not.toContain('about:blank');
+    expect(unavailable?.textContent).not.toContain('"status":404');
+    expect(document.querySelector('.code-snippet-unavailable .code-snippet-link-button')?.getAttribute('href'))
+      .toContain('/blob/abc123/src/main/resources/application.properties#L30');
   });
 
   it('closes the code modal through the close button', () => {
@@ -800,14 +1101,29 @@ describe('renderResultsView findings UI', () => {
 
   describe('idle states (no result)', () => {
     it('renders the initial welcome state when there is no result, no error, and not analyzing', () => {
-      const view = renderResultsView(null, defaultState(), defaultActions());
+      const view = renderResultsView(null, defaultState(), defaultActions(), {
+        analyzeMode: 'oneTime',
+        hasSavedRepositories: false
+      });
       document.body.appendChild(view);
 
       expect(document.querySelector('.results-idle-state')).not.toBeNull();
       expect(document.querySelector('.results-idle-title')?.textContent).toBe('Point it at a repository');
+      expect(document.querySelector('.results-idle-desc')?.textContent).toContain('Enter a repository URL');
       expect(document.querySelectorAll('.results-idle-features li').length).toBeGreaterThan(0);
       // No error icon
       expect(document.querySelector('.results-idle-icon.error-icon')).toBeNull();
+    });
+
+    it('uses saved-repository onboarding copy only when a saved repository is available', () => {
+      const view = renderResultsView(null, defaultState(), defaultActions(), {
+        analyzeMode: 'saved',
+        hasSavedRepositories: true
+      });
+      document.body.appendChild(view);
+
+      expect(document.querySelector('.results-idle-desc')?.textContent).toContain('Select a saved repository profile');
+      expect(document.querySelector('.results-idle-desc')?.textContent).not.toContain('Enter a repository URL');
     });
 
     it('renders the analyzing state when isAnalyzing is true and there is no result', () => {
@@ -836,6 +1152,25 @@ describe('renderResultsView findings UI', () => {
       // Auth-related hints
       const hints = document.querySelectorAll('.results-idle-error-hints li');
       expect(hints.length).toBeGreaterThan(0);
+      const primaryButton = document.querySelector('.results-idle-actions .primary-button') as HTMLButtonElement;
+      expect(primaryButton?.textContent).toBe('Retry analysis');
+    });
+
+    it('wires retry and token settings actions from the error state', () => {
+      const onRetryAnalysis = vi.fn();
+      const onOpenSettings = vi.fn();
+      const view = renderResultsView(null, defaultState(), defaultActions({ onRetryAnalysis, onOpenSettings }), {
+        errorMessage: 'Authentication failed: 401 Unauthorized'
+      });
+      document.body.appendChild(view);
+
+      (document.querySelector('.results-idle-actions .primary-button') as HTMLButtonElement).click();
+      expect(onRetryAnalysis).toHaveBeenCalledOnce();
+
+      const tokenButton = [...document.querySelectorAll('.results-idle-actions .secondary-button')]
+        .find((button) => button.textContent === 'Open token settings') as HTMLButtonElement;
+      tokenButton.click();
+      expect(onOpenSettings).toHaveBeenCalledOnce();
     });
 
     it('does not render the error chip in the header when there is no result (error shown in panel)', () => {

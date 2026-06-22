@@ -377,7 +377,12 @@ class AnalysisControllerTest {
                                 .param("path", "src/main/java/Demo.java")
                                 .param("context", "4"))
                 .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.title").value("Source snippet unavailable"));
+                .andExpect(jsonPath("$.title").value("Source snippet unavailable"))
+                .andExpect(
+                        jsonPath("$.detail")
+                                .value(
+                                        "Source snippet is no longer available or the requested"
+                                                + " file could not be found."));
     }
 
     @Test
@@ -392,7 +397,8 @@ class AnalysisControllerTest {
                                 .param("path", "../secrets.txt")
                                 .param("context", "0"))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.title").value("Invalid source snippet request"));
+                .andExpect(jsonPath("$.title").value("Invalid source snippet request"))
+                .andExpect(jsonPath("$.detail").value("Source snippet request is invalid."));
     }
 
     @Test
@@ -410,7 +416,16 @@ class AnalysisControllerTest {
                                         }
                                         """))
                 .andExpect(status().isBadGateway())
-                .andExpect(jsonPath("$.title").value("Repository clone failed"));
+                .andExpect(jsonPath("$.title").value("Repository clone failed"))
+                .andExpect(
+                        jsonPath("$.detail")
+                                .value(
+                                        "Repository could not be cloned. Check that the URL and"
+                                                + " branch exist, and that the selected token"
+                                                + " profile can read the repository contents. For"
+                                                + " private GitHub repositories, use a token with"
+                                                + " repository read access or fine-grained"
+                                                + " Contents: Read permission."));
     }
 
     @Test
@@ -428,7 +443,12 @@ class AnalysisControllerTest {
                                         }
                                         """))
                 .andExpect(status().isInternalServerError())
-                .andExpect(jsonPath("$.title").value("Analysis failed"));
+                .andExpect(jsonPath("$.title").value("Analysis failed"))
+                .andExpect(
+                        jsonPath("$.detail")
+                                .value(
+                                        "Analysis failed unexpectedly. Check server logs for"
+                                                + " details."));
     }
 
     private BuildInfo buildInfo(String javaVersion) {

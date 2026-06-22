@@ -91,13 +91,11 @@ export function maskToken(token: string): string {
   }
 
   if (token.length <= 8) {
-    return '••••••••';
+    return '********';
   }
 
-  const prefix = token.slice(0, 4);
   const suffix = token.slice(-4);
-  const maskLength = Math.max(8, token.length - 8);
-  return `${prefix}${'•'.repeat(maskLength)}${suffix}`;
+  return `********${suffix}`;
 }
 
 export function inferRepositoryHost(repositoryUrl: string): string | null {

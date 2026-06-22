@@ -83,9 +83,9 @@ public class GradleModelAnalyzer {
         boolean sanitizedBuildModel = false;
 
         LOGGER.info(
-                "Gradle model analysis decision: repositoryUrl={}, analysisMode={}, buildTool={},"
+                "Gradle model analysis decision: repository={}, analysisMode={}, buildTool={},"
                         + " execute={}, executionMode={}, reason={}",
-                repositoryReference.repositoryUrl(),
+                repositoryReference.logLabel(),
                 repositoryReference.analysisMode(),
                 buildInfo.buildTool(),
                 decision.execute(),
@@ -201,7 +201,7 @@ public class GradleModelAnalyzer {
                 executionResult.successful(),
                 executionResult.timedOut(),
                 executionResult.exitCode(),
-                executionResult.reportFile());
+                fileName(executionResult.reportFile()));
 
         if (executionResult.timedOut()) {
             findings.add(
@@ -729,13 +729,13 @@ public class GradleModelAnalyzer {
             return;
         }
         LOGGER.info(
-                "Workspace retained because Gradle model analysis failed: path={}, initScript={},"
-                        + " reportFile={}",
-                repositoryRoot.getParent(),
-                executionResult.initScriptFile(),
-                executionResult.reportFile());
+                "Workspace retained because Gradle model analysis failed: workspaceId={},"
+                        + " initScript={}, reportFile={}",
+                fileName(repositoryRoot.getParent()),
+                fileName(executionResult.initScriptFile()),
+                fileName(executionResult.reportFile()));
         if (executionResult.initScriptFile() != null && executionResult.reportFile() != null) {
-            LOGGER.info(
+            LOGGER.debug(
                     "Gradle diagnostic reproduction hint: {}",
                     GradleExecutionSupport.externalCommandHint(
                             executionResult.initScriptFile(),
@@ -982,6 +982,10 @@ public class GradleModelAnalyzer {
         }
         return "Gradle model analysis failed because the analyzer generated an invalid Gradle init"
                 + " script. This is likely a path escaping or helper scoping issue.";
+    }
+
+    private String fileName(Path path) {
+        return path == null || path.getFileName() == null ? null : path.getFileName().toString();
     }
 
     public record Result(GradleModelAnalysis gradleModelAnalysis, List<Finding> findings) {}

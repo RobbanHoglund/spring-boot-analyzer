@@ -333,7 +333,8 @@ final Closure<String> sbaRelativePath = { project, Object value ->
                 .toAbsolutePath()
                 .normalize()
         if (targetPath.startsWith(basePath)) {
-            return sbaNormalizePath.call(basePath.relativize(targetPath).toString())
+            def relativePath = sbaNormalizePath.call(basePath.relativize(targetPath).toString())
+            return relativePath == null || relativePath.isBlank() ? '.' : relativePath
         }
     } catch (Throwable ignored) {
     }
@@ -496,7 +497,7 @@ gradle.projectsLoaded {
                     report.projects << [
                         path: project.path,
                         name: project.name,
-                        projectDir: project.projectDir.absolutePath
+                        projectDir: sbaRelativePath.call(rootProject, project.projectDir)
                     ]
 
                     project.plugins.each { plugin ->

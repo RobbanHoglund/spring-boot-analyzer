@@ -204,7 +204,7 @@ public class GitCloneService {
 
     private String buildCloneFailureMessage(
             GitRepositoryReference repositoryReference, GitAPIException exception) {
-        String baseMessage = "Failed to clone repository: " + repositoryReference.repositoryUrl();
+        String baseMessage = "Failed to clone repository: " + repositoryReference.logLabel();
         String causeMessage = sanitizeMessage(extractCauseMessage(exception));
 
         if (causeMessage == null || causeMessage.isBlank()) {

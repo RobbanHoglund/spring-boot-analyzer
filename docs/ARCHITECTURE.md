@@ -258,7 +258,7 @@ analyze()
        └── otherwise                                 →  deleteWorkspace()
 ```
 
-`WorkspaceCleanupScheduler` runs on a configurable interval and calls `WorkspaceService.deleteWorkspacesOlderThan(maxAge)` to remove directories that were retained but are now stale. The default max-age is 7 days; the scheduler runs 4 times per day by default.
+`WorkspaceCleanupScheduler` runs on a configurable interval and calls `WorkspaceService.deleteWorkspacesOlderThan(maxAge)` to remove directories that were retained but are now stale. The packaged application config keeps retained workspaces for 1 day; the scheduler runs 4 times per day by default.
 
 `WorkspaceService.deleteWorkspace()` retries up to 5 times with increasing delays on `AccessDeniedException` (relevant on Windows). If all retries fail it schedules a background daemon thread that retries for up to 30 seconds.
 
@@ -477,7 +477,7 @@ All externalized configuration is bound from the `analyzer.*` namespace via `Ana
 | `analyzer.cleanup-after-analysis` | `true` | Delete workspace when analysis finishes. Set to `false` to retain all workspaces. |
 | `analyzer.workspace-keep-on-gradle-failure` | `false` | Retain workspace when Gradle model analysis fails (useful for debugging). |
 | `analyzer.scheduled-workspace-cleanup.enabled` | `true` | Enable the periodic stale-workspace cleanup job. |
-| `analyzer.scheduled-workspace-cleanup.max-age` | `7d` | Workspaces older than this are deleted by the scheduled job. |
+| `analyzer.scheduled-workspace-cleanup.max-age` | `1d` | Workspaces older than this are deleted by the scheduled job. |
 | `analyzer.scheduled-workspace-cleanup.runs-per-day` | `4` | How many times per day the cleanup runs. |
 | `analyzer.gradle.enabled` | `true` | Whether to attempt Gradle model analysis in EXTENDED mode. |
 | `analyzer.gradle.timeout` | `120s` | Per-invocation Gradle timeout. |
