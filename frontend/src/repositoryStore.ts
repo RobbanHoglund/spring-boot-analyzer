@@ -114,6 +114,24 @@ export function inferAuthMode(repositoryUrl: string): 'none' | 'token' | 'ssh' {
   return 'none';
 }
 
+export function inferRepositoryName(repositoryUrl: string): string | null {
+  const trimmed = repositoryUrl.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const scpLikeMatch = trimmed.match(/^[^@/\s]+@[^:\s]+:(.+)$/);
+  if (scpLikeMatch) {
+    return repositoryNameFromPath(scpLikeMatch[1]);
+  }
+
+  try {
+    return repositoryNameFromPath(new URL(trimmed).pathname);
+  } catch {
+    return repositoryNameFromPath(trimmed);
+  }
+}
+
 function isRepositoryProfileLike(value: unknown): value is RepositoryProfile {
   if (!value || typeof value !== 'object') {
     return false;
@@ -151,4 +169,25 @@ function createId(): string {
   }
 
   return `repository-profile-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function repositoryNameFromPath(path: string): string | null {
+  const cleanPath = path.split(/[?#]/)[0]?.replace(/\\/g, '/').replace(/\/+$/, '') ?? '';
+  const pathSegments = cleanPath.split('/').filter(Boolean);
+  const lastSegment = pathSegments[pathSegments.length - 1];
+  if (!lastSegment) {
+    return null;
+  }
+
+  const decodedSegment = safeDecodeURIComponent(lastSegment);
+  const repositoryName = decodedSegment.replace(/\.git$/i, '').trim();
+  return repositoryName || null;
+}
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }

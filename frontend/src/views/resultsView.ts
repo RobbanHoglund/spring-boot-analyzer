@@ -338,23 +338,10 @@ function renderTechnicalInventorySection(
   );
   section.classList.add('results-reference-section');
 
-  const overview = element('div', { className: 'results-reference-overview' });
-  for (const entry of entries) {
-    overview.appendChild(
-      element(
-        'div',
-        { className: 'results-reference-overview-item' },
-        element('strong', { text: entry.label }),
-        element('span', { text: entry.meta })
-      )
-    );
-  }
-  section.appendChild(overview);
-
-  const list = element('div', { className: 'results-reference-list' });
-  for (const entry of entries) {
+  const renderedEntries = entries.map((entry, index) => {
     const details = document.createElement('details');
     details.className = 'results-reference-details';
+    const bodyId = `results-reference-body-${index}`;
     const summary = element(
       'summary',
       { className: 'results-reference-summary' },
@@ -362,8 +349,44 @@ function renderTechnicalInventorySection(
       element('span', { className: 'results-reference-summary-meta', text: entry.meta })
     );
     details.appendChild(summary);
-    details.appendChild(element('div', { className: 'results-reference-body' }, entry.section));
-    list.appendChild(details);
+    details.appendChild(element('div', { className: 'results-reference-body', attributes: { id: bodyId } }, entry.section));
+    return { entry, details, summary, bodyId };
+  });
+
+  const overview = element('div', { className: 'results-reference-overview' });
+  for (const rendered of renderedEntries) {
+    const button = element(
+      'button',
+      {
+        className: 'results-reference-overview-item',
+        attributes: {
+          type: 'button',
+          'aria-controls': rendered.bodyId,
+          'aria-expanded': 'false',
+          'aria-label': `Open ${rendered.entry.label} technical inventory`
+        }
+      },
+      element('strong', { text: rendered.entry.label }),
+      element('span', { text: rendered.entry.meta })
+    );
+    button.addEventListener('click', () => {
+      rendered.details.open = true;
+      button.setAttribute('aria-expanded', 'true');
+      if (typeof rendered.details.scrollIntoView === 'function') {
+        rendered.details.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      }
+      rendered.summary.focus();
+    });
+    rendered.details.addEventListener('toggle', () => {
+      button.setAttribute('aria-expanded', String(rendered.details.open));
+    });
+    overview.appendChild(button);
+  }
+  section.appendChild(overview);
+
+  const list = element('div', { className: 'results-reference-list' });
+  for (const rendered of renderedEntries) {
+    list.appendChild(rendered.details);
   }
   section.appendChild(list);
   return section;
@@ -3900,7 +3923,7 @@ function findingActionsCell(
     actions.appendChild(
       element('button', {
         className: 'secondary-button finding-row-action finding-code-button',
-        text: 'View code',
+        text: 'Code',
         attributes: {
           id: codeButtonId,
           type: 'button',

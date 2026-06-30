@@ -309,6 +309,23 @@ describe('renderResultsView findings UI', () => {
     expect(document.querySelector('.finding-code-button')).not.toBeNull();
   });
 
+  it('opens technical inventory details from the overview cards', () => {
+    const view = renderResultsView(baseResult([baseFinding()]), defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    const overviewButton = document.querySelector('.results-reference-overview-item') as HTMLButtonElement;
+    const firstDetails = document.querySelector('.results-reference-details') as HTMLDetailsElement;
+
+    expect(overviewButton.tagName).toBe('BUTTON');
+    expect(overviewButton.getAttribute('aria-expanded')).toBe('false');
+    expect(firstDetails.open).toBe(false);
+
+    overviewButton.click();
+
+    expect(firstDetails.open).toBe(true);
+    expect(overviewButton.getAttribute('aria-expanded')).toBe('true');
+  });
+
   it('does not group unrelated findings and never renders question-mark sort indicators', () => {
     const unrelated = baseFinding({
       title: 'Raw exception message exposed through HTTP response',

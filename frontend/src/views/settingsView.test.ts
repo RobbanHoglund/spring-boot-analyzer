@@ -8,7 +8,7 @@ import {
   type SettingsViewModel,
   type TokenFormModel
 } from './settingsView';
-import type { RuleInfo, TokenProfile } from '../types';
+import type { RepositoryProfile, RuleInfo, TokenProfile } from '../types';
 
 function defaultRepositoryForm(): RepositoryFormModel {
   return {
@@ -19,6 +19,7 @@ function defaultRepositoryForm(): RepositoryFormModel {
     authMode: 'none',
     tokenProfileId: '',
     notes: '',
+    templateSourceName: '',
     errorMessage: ''
   };
 }
@@ -98,6 +99,7 @@ function defaultActions(overrides: Partial<SettingsViewActions> = {}): SettingsV
     onDeleteSelectedRepository: noop,
     onClearRepositoryForm: noop,
     onEditRepository: noop,
+    onUseRepositoryAsTemplate: noop,
     onDeleteRepository: noop,
     onAnalyzeRepository: noop,
     onTokenFormChange: noop,
@@ -152,6 +154,66 @@ describe('renderSettingsView rule management', () => {
     expect(document.body.textContent).toContain('********1234');
     expect(document.body.textContent).not.toContain('ghp_');
     expect(document.body.textContent).not.toContain('localStorage');
+  });
+
+  it('uses provider-specific token placeholders', () => {
+    for (const [provider, expected] of [
+      ['github', ['GitHub personal token', 'github.com', 'my-github-username', 'ghp_xxx']],
+      ['gitlab', ['GitLab access token', 'gitlab.com', 'my-gitlab-username', 'glpat-xxx']],
+      ['bitbucket', ['Bitbucket app password', 'bitbucket.org', 'my-bitbucket-username', 'app password']],
+      ['other', ['Repository access token', 'git.example.com', 'username', 'token']]
+    ] as const) {
+      document.body.innerHTML = '';
+      const tokenForm = defaultTokenForm();
+      tokenForm.provider = provider;
+      const view = renderSettingsView(model({ tokenForm }), defaultActions());
+      document.body.appendChild(view);
+
+      expect((document.getElementById('settings-token-name') as HTMLInputElement).placeholder).toBe(expected[0]);
+      expect((document.getElementById('settings-token-host') as HTMLInputElement).placeholder).toBe(expected[1]);
+      expect((document.getElementById('settings-token-username') as HTMLInputElement).placeholder).toBe(expected[2]);
+      expect((document.getElementById('settings-token-value') as HTMLInputElement).placeholder).toBe(expected[3]);
+    }
+  });
+
+  it('wires saved repository template action', () => {
+    const onUseRepositoryAsTemplate = vi.fn();
+    const repository: RepositoryProfile = {
+      id: 'repo-1',
+      name: 'Trading Bot',
+      repositoryUrl: 'https://github.com/example/tradingbot.git',
+      branch: 'main',
+      authMode: 'token',
+      tokenProfileId: 'token-1',
+      notes: 'Default setup',
+      createdAt: '2026-06-21T10:00:00.000Z',
+      updatedAt: '2026-06-21T10:00:00.000Z'
+    };
+
+    const view = renderSettingsView(
+      model({ repositoryProfiles: [repository] }),
+      defaultActions({ onUseRepositoryAsTemplate })
+    );
+    document.body.appendChild(view);
+
+    const templateButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Use as template'
+    ) as HTMLButtonElement | undefined;
+
+    expect(templateButton).toBeTruthy();
+    templateButton?.click();
+    expect(onUseRepositoryAsTemplate).toHaveBeenCalledWith('repo-1');
+  });
+
+  it('shows repository template context when present', () => {
+    const repositoryForm = defaultRepositoryForm();
+    repositoryForm.templateSourceName = 'Trading Bot';
+
+    const view = renderSettingsView(model({ repositoryForm }), defaultActions());
+    document.body.appendChild(view);
+
+    expect(document.body.textContent).toContain('Using Trading Bot as template');
+    expect(document.body.textContent).toContain('Enter the new repository URL');
   });
 
   it('filters rules by text, severity, and disabled status', () => {
@@ -239,6 +301,8 @@ describe('renderSettingsView rule management', () => {
 
     const catalog = document.querySelector('.rule-catalog-details') as HTMLDetailsElement;
     expect(catalog.open).toBe(false);
+    expect(document.querySelector('.rule-count-meta')?.textContent).toBe('2 rules available');
+    expect(document.body.textContent).not.toContain('Showing the full rule catalog');
     expect(document.querySelector('.rule-catalog-summary')?.textContent).toContain('Configure rule catalog');
     expect(document.getElementById('settings-rule-search')).not.toBeNull();
   });

@@ -10,6 +10,7 @@ import {
   deleteRepositoryProfile,
   findRepositoryById,
   inferAuthMode,
+  inferRepositoryName,
   loadRepositoryProfiles
 } from './repositoryStore';
 import { createTabNavigation, type AppTab } from './router';
@@ -32,7 +33,8 @@ import type {
   RuleInfo,
   SourceLocation,
   SourceSnippetResponse,
-  TokenProfile
+  TokenProfile,
+  TokenProvider
 } from './types';
 import { renderAnalyzeView } from './views/analyzeView';
 import { type CodeSnippetModalState, type FindingCodeOccurrence, type ResultsViewState } from './views/resultsView';
@@ -43,9 +45,27 @@ import {
   type TokenFormModel
 } from './views/settingsView';
 
-const DEFAULT_REPOSITORY_URL = 'https://github.com/RobbanHoglund/tradingbot.git';
+const DEFAULT_REPOSITORY_URL = '';
 const THEME_STORAGE_KEY = 'spring-boot-analyzer-theme';
 const THEME_OPTIONS = ['system', 'light', 'dark'] as const;
+const TOKEN_PROFILE_DEFAULTS: Record<TokenProvider, { name: string; host: string }> = {
+  github: {
+    name: 'GitHub personal token',
+    host: 'github.com'
+  },
+  gitlab: {
+    name: 'GitLab access token',
+    host: 'gitlab.com'
+  },
+  bitbucket: {
+    name: 'Bitbucket app password',
+    host: 'bitbucket.org'
+  },
+  other: {
+    name: 'Repository access token',
+    host: 'git.example.com'
+  }
+};
 
 type ThemePreference = (typeof THEME_OPTIONS)[number];
 
@@ -609,6 +629,9 @@ function render(): void {
           },
           onEditRepository: (repositoryId) => {
             editRepositoryProfile(repositoryId);
+          },
+          onUseRepositoryAsTemplate: (repositoryId) => {
+            useRepositoryAsTemplate(repositoryId);
           },
           onDeleteRepository: (repositoryId) => {
             deleteRepositoryById(repositoryId);
@@ -1366,10 +1389,46 @@ function editRepositoryProfile(repositoryId: string): void {
   render();
 }
 
+function useRepositoryAsTemplate(repositoryId: string): void {
+  const repository = state.repositoryProfiles.find((entry) => entry.id === repositoryId);
+  if (!repository) {
+    return;
+  }
+
+  const tokenProfileId =
+    repository.authMode === 'token' &&
+    repository.tokenProfileId &&
+    state.tokenProfiles.some((profile) => profile.id === repository.tokenProfileId)
+      ? repository.tokenProfileId
+      : '';
+
+  const authMode = repository.authMode === 'token' && !tokenProfileId ? 'none' : repository.authMode;
+
+  state.repositoryForm = {
+    id: '',
+    name: '',
+    repositoryUrl: '',
+    branch: repository.branch ?? '',
+    authMode,
+    tokenProfileId,
+    notes: repository.notes ?? '',
+    templateSourceName: repository.name,
+    errorMessage: ''
+  };
+  pendingFocusElementId = 'settings-repository-url';
+  render();
+}
+
 function updateRepositoryForm(field: keyof RepositoryFormModel, value: string): void {
-  const next = { ...state.repositoryForm, [field]: value, errorMessage: '' };
+  const previous = state.repositoryForm;
+  const next = { ...previous, [field]: value, errorMessage: '' };
 
   if (field === 'repositoryUrl') {
+    const inferredName = inferRepositoryName(value);
+    if (inferredName && repositoryNameCanBeAutoReplaced(previous.name, previous.repositoryUrl)) {
+      next.name = inferredName;
+    }
+
     const inferredAuthMode = inferAuthMode(value);
     if (inferredAuthMode === 'ssh') {
       next.authMode = 'ssh';
@@ -1379,8 +1438,16 @@ function updateRepositoryForm(field: keyof RepositoryFormModel, value: string): 
     }
 
     const matchingProfile = findMatchingTokenProfile(value, state.tokenProfiles);
-    if (matchingProfile && next.authMode === 'token' && !next.tokenProfileId) {
+    const selectedProfileMatches = tokenProfileMatchesRepository(next.tokenProfileId, value);
+    if (
+      matchingProfile &&
+      inferredAuthMode !== 'ssh' &&
+      (next.authMode === 'none' || !next.tokenProfileId || !selectedProfileMatches)
+    ) {
+      next.authMode = 'token';
       next.tokenProfileId = matchingProfile.id;
+    } else if (next.authMode === 'token' && next.tokenProfileId && !selectedProfileMatches) {
+      next.tokenProfileId = '';
     }
   }
 
@@ -1406,11 +1473,28 @@ function updateRepositoryForm(field: keyof RepositoryFormModel, value: string): 
 }
 
 function updateTokenForm(field: keyof TokenFormModel, value: string): void {
-  state.tokenForm = {
-    ...state.tokenForm,
+  const previous = state.tokenForm;
+  const next = {
+    ...previous,
     [field]: value,
     errorMessage: ''
   };
+
+  if (field === 'provider') {
+    const provider = normalizeTokenProvider(value);
+    const defaults = TOKEN_PROFILE_DEFAULTS[provider];
+    next.provider = provider;
+
+    if (tokenFormValueCanUseProviderDefault(previous.name, 'name')) {
+      next.name = defaults.name;
+    }
+
+    if (tokenFormValueCanUseProviderDefault(previous.host, 'host')) {
+      next.host = defaults.host;
+    }
+  }
+
+  state.tokenForm = next;
   render();
 }
 
@@ -1441,11 +1525,12 @@ function saveRepositoryProfilesToState(): void {
 }
 
 function createEmptyTokenForm(): TokenFormModel {
+  const defaults = TOKEN_PROFILE_DEFAULTS.github;
   return {
     id: '',
-    name: '',
+    name: defaults.name,
     provider: 'github',
-    host: '',
+    host: defaults.host,
     username: '',
     token: '',
     maskedTokenHint: '',
@@ -1462,6 +1547,7 @@ function createEmptyRepositoryForm(): RepositoryFormModel {
     authMode: 'none',
     tokenProfileId: '',
     notes: '',
+    templateSourceName: '',
     errorMessage: ''
   };
 }
@@ -1479,6 +1565,41 @@ function tokenFormFromProfile(profile: TokenProfile): TokenFormModel {
   };
 }
 
+function repositoryNameCanBeAutoReplaced(currentName: string, previousRepositoryUrl: string): boolean {
+  const trimmedName = currentName.trim();
+  if (!trimmedName) {
+    return true;
+  }
+
+  const previousInferredName = inferRepositoryName(previousRepositoryUrl);
+  return Boolean(previousInferredName && trimmedName === previousInferredName);
+}
+
+function tokenProfileMatchesRepository(tokenProfileId: string, repositoryUrl: string): boolean {
+  if (!tokenProfileId) {
+    return false;
+  }
+
+  const selectedProfile = state.tokenProfiles.find((profile) => profile.id === tokenProfileId);
+  return Boolean(selectedProfile && findMatchingTokenProfile(repositoryUrl, [selectedProfile]));
+}
+
+function normalizeTokenProvider(value: string): TokenProvider {
+  if (value === 'gitlab' || value === 'bitbucket' || value === 'other') {
+    return value;
+  }
+  return 'github';
+}
+
+function tokenFormValueCanUseProviderDefault(value: string, field: 'name' | 'host'): boolean {
+  const trimmedValue = value.trim();
+  if (!trimmedValue) {
+    return true;
+  }
+
+  return Object.values(TOKEN_PROFILE_DEFAULTS).some((defaults) => defaults[field] === trimmedValue);
+}
+
 function repositoryFormFromProfile(profile: RepositoryProfile): RepositoryFormModel {
   return {
     id: profile.id,
@@ -1488,6 +1609,7 @@ function repositoryFormFromProfile(profile: RepositoryProfile): RepositoryFormMo
     authMode: profile.authMode,
     tokenProfileId: profile.tokenProfileId ?? '',
     notes: profile.notes ?? '',
+    templateSourceName: '',
     errorMessage: ''
   };
 }

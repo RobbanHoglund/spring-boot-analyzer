@@ -32,6 +32,7 @@ export interface RepositoryFormModel {
   authMode: RepositoryProfile['authMode'];
   tokenProfileId: string;
   notes: string;
+  templateSourceName: string;
   errorMessage: string;
 }
 
@@ -52,6 +53,7 @@ export interface SettingsViewActions {
   onDeleteSelectedRepository: () => void;
   onClearRepositoryForm: () => void;
   onEditRepository: (repositoryId: string) => void;
+  onUseRepositoryAsTemplate: (repositoryId: string) => void;
   onDeleteRepository: (repositoryId: string) => void;
   onAnalyzeRepository: (repositoryId: string) => void;
   onTokenFormChange: (field: keyof TokenFormModel, value: string) => void;
@@ -69,6 +71,40 @@ export interface SettingsViewActions {
   onRuleCategoryExpansionChange: (value: RuleCategoryExpansionState) => void;
   onClearRuleFilters: () => void;
 }
+
+type TokenProviderPlaceholders = {
+  profileName: string;
+  host: string;
+  username: string;
+  token: string;
+};
+
+const TOKEN_PROVIDER_PLACEHOLDERS: Record<TokenProvider, TokenProviderPlaceholders> = {
+  github: {
+    profileName: 'GitHub personal token',
+    host: 'github.com',
+    username: 'my-github-username',
+    token: 'ghp_xxx'
+  },
+  gitlab: {
+    profileName: 'GitLab access token',
+    host: 'gitlab.com',
+    username: 'my-gitlab-username',
+    token: 'glpat-xxx'
+  },
+  bitbucket: {
+    profileName: 'Bitbucket app password',
+    host: 'bitbucket.org',
+    username: 'my-bitbucket-username',
+    token: 'app password'
+  },
+  other: {
+    profileName: 'Repository access token',
+    host: 'git.example.com',
+    username: 'username',
+    token: 'token'
+  }
+};
 
 export function renderSettingsView(
   model: SettingsViewModel,
@@ -153,6 +189,15 @@ function renderRepositorySection(
     field('Default token profile', tokenSelect),
     field('Notes optional', notesInput)
   );
+
+  if (model.repositoryForm.templateSourceName) {
+    panel.appendChild(
+      element('p', {
+        className: 'status-text repository-template-status',
+        text: `Using ${model.repositoryForm.templateSourceName} as template. Enter the new repository URL, then save it as a new profile.`
+      })
+    );
+  }
 
   if (matchingToken && model.repositoryForm.authMode !== 'token') {
     panel.appendChild(
@@ -245,6 +290,13 @@ function renderRepositorySection(
       });
       editButton.addEventListener('click', () => actions.onEditRepository(repository.id));
 
+      const templateButton = element('button', {
+        className: 'secondary-button',
+        text: 'Use as template',
+        attributes: { type: 'button' }
+      });
+      templateButton.addEventListener('click', () => actions.onUseRepositoryAsTemplate(repository.id));
+
       const deleteAction = element('button', {
         className: 'danger-button',
         text: 'Delete',
@@ -252,7 +304,7 @@ function renderRepositorySection(
       });
       deleteAction.addEventListener('click', () => actions.onDeleteRepository(repository.id));
 
-      cardActions.append(analyzeButton, editButton, deleteAction);
+      cardActions.append(analyzeButton, editButton, templateButton, deleteAction);
       card.appendChild(cardActions);
       list.appendChild(card);
     }
@@ -266,6 +318,7 @@ function renderTokenSection(
   model: SettingsViewModel,
   actions: SettingsViewActions
 ): HTMLElement {
+  const placeholders = TOKEN_PROVIDER_PLACEHOLDERS[model.tokenForm.provider];
   const panel = element('section', { className: 'panel panel-compact' });
   panel.appendChild(element('h2', { text: 'HTTPS token profiles' }));
   panel.appendChild(
@@ -301,17 +354,17 @@ function renderTokenSection(
       id: 'settings-token-value',
       type: 'password',
       autocomplete: 'off',
-      placeholder: model.tokenForm.id ? 'Leave blank to keep the existing token' : 'ghp_xxx'
+      placeholder: model.tokenForm.id ? 'Leave blank to keep the existing token' : placeholders.token
     }
   }) as HTMLInputElement;
   tokenInput.value = model.tokenForm.token;
   tokenInput.addEventListener('input', () => actions.onTokenFormChange('token', tokenInput.value));
 
   panel.append(
-    field('Profile name', textInput('settings-token-name', model.tokenForm.name, 'GitHub personal token', (value) => actions.onTokenFormChange('name', value))),
+    field('Profile name', textInput('settings-token-name', model.tokenForm.name, placeholders.profileName, (value) => actions.onTokenFormChange('name', value))),
     field('Provider', providerSelect),
-    field('Host', textInput('settings-token-host', model.tokenForm.host, 'github.com', (value) => actions.onTokenFormChange('host', value))),
-    field('Username', textInput('settings-token-username', model.tokenForm.username, 'my-github-username', (value) => actions.onTokenFormChange('username', value))),
+    field('Host', textInput('settings-token-host', model.tokenForm.host, placeholders.host, (value) => actions.onTokenFormChange('host', value))),
+    field('Username', textInput('settings-token-username', model.tokenForm.username, placeholders.username, (value) => actions.onTokenFormChange('username', value))),
     field('Token/PAT', tokenInput)
   );
 
@@ -526,7 +579,7 @@ function renderRulesSection(model: SettingsViewModel, actions: SettingsViewActio
         className: 'rule-count-meta',
         text: activeFilters
           ? `${activeFilterCount} active filter${activeFilterCount === 1 ? '' : 's'}`
-          : 'Showing the full rule catalog'
+          : `${model.ruleSettings.length} rules available`
       })
     )
   );
