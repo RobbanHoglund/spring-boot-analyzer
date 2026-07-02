@@ -1861,6 +1861,74 @@ class PriceRefreshJob {
     }
 
     @Test
+    void doesNotFlagOneToManyWithExplicitJoinColumn() throws IOException {
+        // A unidirectional @OneToMany with @JoinColumn maps a plain FK column in the child table
+        // and creates no join table — the standard intentional mapping must not be flagged.
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Order.java"),
+                """
+                package com.example.demo;
+
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.JoinColumn;
+                import jakarta.persistence.OneToMany;
+                import java.util.List;
+
+                @Entity
+                class Order {
+                    @OneToMany
+                    @JoinColumn(name = "order_id")
+                    private List<Item> items;
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_JPA_ONETOMANY_MISSING_MAPPED_BY
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
+    }
+
+    @Test
+    void doesNotFlagManyToManyWithoutMappedBy() throws IOException {
+        // The owning side of a @ManyToMany MUST lack mappedBy — flagging it would hit every
+        // correctly mapped association, so the rule is scoped to @OneToMany only.
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Student.java"),
+                """
+                package com.example.demo;
+
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.ManyToMany;
+                import java.util.List;
+
+                @Entity
+                class Student {
+                    @ManyToMany
+                    private List<Course> courses;
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_JPA_ONETOMANY_MISSING_MAPPED_BY
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
+    }
+
+    @Test
     void flagsManyToOneWithoutFetchType() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
         Path sourceRoot =
@@ -4969,7 +5037,45 @@ interface InventoryClient {
     // ── SPRING_TRANSACTIONAL_NON_PUBLIC_METHOD ────────────────────────────────
 
     @Test
-    void flagsTransactionalOnProtectedMethod() throws IOException {
+    void flagsTransactionalOnProtectedMethodOnBoot2() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OrderService.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+
+                @Service
+                public class OrderService {
+                    @Transactional
+                    protected void save() {}
+                }
+                """);
+
+        BuildInfo boot2BuildInfo =
+                new BuildInfo(
+                        BuildTool.GRADLE,
+                        true,
+                        "11",
+                        List.of(),
+                        "2.7.18",
+                        "build.gradle plugin",
+                        "HIGH");
+        List<Finding> findings = analyzeStaticPractice(tempDir, boot2BuildInfo);
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .contains(FindingRules.SPRING_TRANSACTIONAL_NON_PUBLIC_METHOD.ruleId());
+    }
+
+    @Test
+    void doesNotFlagTransactionalOnProtectedMethodOnBoot3() throws IOException {
+        // Spring Framework 6.0 (Boot 3) advises protected/package-private @Transactional methods
+        // on class-based proxies by default, so the rule must stay silent on Boot 3 projects.
         Files.createDirectories(tempDir.resolve("src/main/resources"));
         Path sourceRoot =
                 Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
@@ -4992,7 +5098,7 @@ interface InventoryClient {
 
         assertThat(findings)
                 .extracting(Finding::ruleId)
-                .contains(FindingRules.SPRING_TRANSACTIONAL_NON_PUBLIC_METHOD.ruleId());
+                .doesNotContain(FindingRules.SPRING_TRANSACTIONAL_NON_PUBLIC_METHOD.ruleId());
     }
 
     @Test

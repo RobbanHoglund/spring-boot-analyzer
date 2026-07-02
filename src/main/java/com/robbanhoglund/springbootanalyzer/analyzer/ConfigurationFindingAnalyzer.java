@@ -144,7 +144,6 @@ public class ConfigurationFindingAnalyzer {
                 repositoryRoot, buildInfo, configurationAnalysis, gradleModelAnalysis, findings);
         detectMissingSecurityStarter(buildInfo, findings);
         detectOpenInViewNotDisabled(configurationAnalysis, findings);
-        detectJpaDdlAutoDangerous(configurationAnalysis, findings);
         detectActuatorExposure(configurationAnalysis, findings);
         detectConnectionPoolMisconfiguration(configurationAnalysis, findings);
         detectDevToolsInProduction(buildInfo, findings);
@@ -1298,72 +1297,6 @@ public class ConfigurationFindingAnalyzer {
         }
     }
 
-    private void detectJpaDdlAutoDangerous(
-            ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {
-        if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
-            return;
-        }
-        Set<String> dangerousValues = Set.of("create", "create-drop");
-        Set<String> targetProperties =
-                Set.of("spring.jpa.hibernate.ddl-auto", "spring.datasource.initialization-mode");
-        for (ApplicationProperty property : configurationAnalysis.properties()) {
-            if (property == null || property.name() == null || property.value() == null) {
-                continue;
-            }
-            if (!targetProperties.contains(property.name())) {
-                continue;
-            }
-            if (!dangerousValues.contains(property.value().toLowerCase(Locale.ROOT))) {
-                continue;
-            }
-            String profile = normalizedProfile(property.profile());
-            if (!isProdLikeProfile(profile)) {
-                continue;
-            }
-            findings.add(
-                    FindingFactory.builder(
-                                    FindingRules.SPRING_JPA_DDL_AUTO_DANGEROUS,
-                                    FindingConfidence.HIGH)
-                            .shortMessage(
-                                    property.name()
-                                            + "="
-                                            + property.value()
-                                            + " drops and recreates the schema on every startup in"
-                                            + " a production-oriented profile.")
-                            .whyBadPractice(
-                                    "The values 'create' and 'create-drop' drop all tables and"
-                                        + " recreate them from scratch on every application"
-                                        + " startup. In a production or staging environment this"
-                                        + " destroys all existing data unconditionally.")
-                            .possibleImpact(
-                                    "Every deployment wipes the database. This is almost certainly"
-                                        + " unintentional in a production environment and the data"
-                                        + " loss cannot be undone.")
-                            .recommendation(
-                                    "Set "
-                                            + property.name()
-                                            + "=validate or none in production profiles. Manage"
-                                            + " schema changes through Flyway or Liquibase"
-                                            + " migrations.")
-                            .evidence(
-                                    property.name()
-                                            + "="
-                                            + property.value()
-                                            + " was found in "
-                                            + property.sourceFile()
-                                            + " (profile: "
-                                            + profile
-                                            + ").")
-                            .limitations(
-                                    "Static analysis cannot determine whether the target database"
-                                        + " is disposable or whether the profile is always active"
-                                        + " in deployment.")
-                            .source(property.sourceFile(), property.line())
-                            .target(property.name())
-                            .build());
-        }
-    }
-
     private void detectMissingSecurityStarter(BuildInfo buildInfo, List<Finding> findings) {
         if (buildInfo == null || buildInfo.dependencies() == null) {
             return;
@@ -2298,13 +2231,11 @@ public class ConfigurationFindingAnalyzer {
                         .recommendation(
                                 "Configure a DelegatingSecurityContextAsyncTaskExecutor that wraps"
                                     + " the underlying TaskExecutor and copies the SecurityContext"
-                                    + " to the new thread before each task runs. Alternatively, set"
-                                    + " the SecurityContextHolder strategy to"
-                                    + " MODE_INHERITABLETHREADLOCAL via"
-                                    + " SecurityContextHolder.setStrategyName(). Note that"
-                                    + " InheritableThreadLocal does not work with thread pools"
-                                    + " where threads are reused — the delegating executor approach"
-                                    + " is preferred.")
+                                    + " to the new thread before each task runs. Avoid"
+                                    + " MODE_INHERITABLETHREADLOCAL with @Async: inheritable"
+                                    + " thread-locals are copied only when a thread is created, so"
+                                    + " reused pool threads carry a stale — potentially another"
+                                    + " user's — SecurityContext.")
                         .limitations(
                                 "Medium confidence — async methods may not perform any"
                                     + " security-sensitive operations, in which case the missing"

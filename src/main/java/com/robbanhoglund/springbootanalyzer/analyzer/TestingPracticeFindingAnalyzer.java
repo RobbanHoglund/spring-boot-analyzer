@@ -182,7 +182,8 @@ public class TestingPracticeFindingAnalyzer {
                                     "Replace @SpringBootTest with @WebMvcTest("
                                             + controllerType
                                             + ".class) and mock service dependencies with"
-                                            + " @MockBean.")
+                                            + " @MockitoBean (Spring Boot 3.4+; the older @MockBean"
+                                            + " is deprecated).")
                             .evidence(
                                     "Class "
                                             + cls.getNameAsString()
@@ -211,8 +212,9 @@ public class TestingPracticeFindingAnalyzer {
                                             + " seconds to the CI build.")
                             .recommendation(
                                     "Replace @SpringBootTest with @DataJpaTest. If you need"
-                                            + " specific service beans, add them with"
-                                            + " @Import or @MockBean.")
+                                            + " specific service beans, add them with @Import or"
+                                            + " @MockitoBean (Spring Boot 3.4+; the older @MockBean"
+                                            + " is deprecated).")
                             .evidence(
                                     "Class "
                                             + cls.getNameAsString()
@@ -288,8 +290,15 @@ public class TestingPracticeFindingAnalyzer {
 
     private void detectMockBeanOveruse(
             ClassOrInterfaceDeclaration cls, String relativePath, List<Finding> findings) {
+        // @MockBean was deprecated in Spring Boot 3.4 in favor of Spring Framework 6.2's
+        // @MockitoBean; both fragment the test-context cache the same way, so count both.
         long mockBeanCount =
-                cls.getFields().stream().filter(f -> hasAnnotation(f, "MockBean")).count();
+                cls.getFields().stream()
+                        .filter(
+                                f ->
+                                        hasAnnotation(f, "MockBean")
+                                                || hasAnnotation(f, "MockitoBean"))
+                        .count();
         if (mockBeanCount <= MOCKBEAN_THRESHOLD) {
             return;
         }
@@ -299,23 +308,25 @@ public class TestingPracticeFindingAnalyzer {
                                 FindingRules.SPRING_TEST_MOCKBEAN_OVERUSE, FindingConfidence.MEDIUM)
                         .shortMessage(
                                 mockBeanCount
-                                        + " @MockBean fields in "
+                                        + " mocked-bean fields (@MockBean/@MockitoBean) in "
                                         + cls.getNameAsString()
                                         + " — consider narrowing the test scope.")
                         .whyBadPractice(
-                                "Each @MockBean replaces a real Spring bean in the application"
-                                    + " context. When @MockBean configurations differ between test"
-                                    + " classes, Spring must create a new context for each, making"
-                                    + " the test suite significantly slower. A high count also"
-                                    + " indicates the class under test has excessive dependencies.")
+                                "Each mocked bean (@MockBean, or @MockitoBean on Spring Boot 3.4+)"
+                                    + " replaces a real Spring bean in the application context."
+                                    + " When the mock configurations differ between test classes,"
+                                    + " Spring must create a new context for each, making the test"
+                                    + " suite significantly slower. A high count also indicates the"
+                                    + " class under test has excessive dependencies.")
                         .possibleImpact(
                                 "Slow CI builds due to repeated context reloads; brittle tests"
                                         + " tightly coupled to implementation details.")
                         .recommendation(
                                 "Consider using plain unit tests (no Spring context) with"
                                     + " Mockito.mock() for unit-level tests of classes with many"
-                                    + " dependencies. Reserve @MockBean for integration tests that"
-                                    + " genuinely need the Spring context.")
+                                    + " dependencies. Reserve @MockitoBean (@MockBean before Spring"
+                                    + " Boot 3.4) for integration tests that genuinely need the"
+                                    + " Spring context.")
                         .evidence(
                                 cls.getNameAsString()
                                         + " declares "

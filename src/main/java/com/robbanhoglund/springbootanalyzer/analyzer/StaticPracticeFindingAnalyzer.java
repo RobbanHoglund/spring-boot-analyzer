@@ -237,7 +237,19 @@ public class StaticPracticeFindingAnalyzer {
             HttpSurfaceAnalysis httpSurfaceAnalysis,
             List<DetectedClass> detectedClasses) {
         List<Finding> findings = new ArrayList<>();
-        detectSourcePractices(repositoryRoot, httpSurfaceAnalysis, detectedClasses, findings);
+        // Spring Framework 6.0 (Spring Boot 3) applies transaction advice to protected and
+        // package-visible methods on class-based proxies by default, so the non-public
+        // @Transactional rule is only accurate for Boot 1.x/2.x (Framework 5) projects.
+        String bootVersion = buildInfo == null ? null : buildInfo.springBootVersion();
+        boolean legacyTransactionalVisibility =
+                bootVersion != null
+                        && (bootVersion.startsWith("1.") || bootVersion.startsWith("2."));
+        detectSourcePractices(
+                repositoryRoot,
+                httpSurfaceAnalysis,
+                detectedClasses,
+                legacyTransactionalVisibility,
+                findings);
         detectRepeatedFallbackParsingPattern(findings);
         return dedupe(findings);
     }
@@ -246,6 +258,7 @@ public class StaticPracticeFindingAnalyzer {
             Path repositoryRoot,
             HttpSurfaceAnalysis httpSurfaceAnalysis,
             List<DetectedClass> detectedClasses,
+            boolean legacyTransactionalVisibility,
             List<Finding> findings) {
         Path sourceRoot = repositoryRoot.resolve("src/main/java");
         if (Files.notExists(sourceRoot)) {
@@ -281,7 +294,12 @@ public class StaticPracticeFindingAnalyzer {
                             .sorted(Comparator.naturalOrder())
                             .toList()) {
                 parseSourcePractices(
-                        repositoryRoot, sourceFile, outboundByFile, controllerClasses, findings);
+                        repositoryRoot,
+                        sourceFile,
+                        outboundByFile,
+                        controllerClasses,
+                        legacyTransactionalVisibility,
+                        findings);
             }
         } catch (IOException exception) {
             LOGGER.warn(
@@ -298,6 +316,7 @@ public class StaticPracticeFindingAnalyzer {
             Path sourceFile,
             Map<String, List<OutboundEndpoint>> outboundByFile,
             Set<String> controllerClasses,
+            boolean legacyTransactionalVisibility,
             List<Finding> findings)
             throws IOException {
         var parseResult = javaParser.parse(sourceFile);
@@ -315,6 +334,7 @@ public class StaticPracticeFindingAnalyzer {
                     fileContent,
                     outboundByFile.getOrDefault(relativePath, List.of()),
                     controllerClasses,
+                    legacyTransactionalVisibility,
                     findings);
         }
     }
@@ -325,6 +345,7 @@ public class StaticPracticeFindingAnalyzer {
             String fileContent,
             List<OutboundEndpoint> outboundEndpoints,
             Set<String> controllerClasses,
+            boolean legacyTransactionalVisibility,
             List<Finding> findings) {
         if (isGeneratedSource(relativePath, declaration)) {
             return;
@@ -534,6 +555,7 @@ public class StaticPracticeFindingAnalyzer {
                         method,
                         transactionalMethods,
                         repositoryLike,
+                        legacyTransactionalVisibility,
                         signals,
                         findings);
             }
@@ -1452,21 +1474,30 @@ public class StaticPracticeFindingAnalyzer {
                                                     pair ->
                                                             pair.getNameAsString()
                                                                     .equals("mappedBy"));
-                    if (!hasMappedBy) {
+                    // Only @OneToMany is checked: a @ManyToMany owning side MUST lack mappedBy,
+                    // so flagging it would hit every correctly mapped association. Fields with an
+                    // explicit @JoinColumn/@JoinTable are deliberate unidirectional mappings —
+                    // @OneToMany + @JoinColumn maps a plain FK column and creates no join table.
+                    boolean hasExplicitJoinMapping =
+                            hasAnnotation(field.getAnnotations(), "JoinColumn")
+                                    || hasAnnotation(field.getAnnotations(), "JoinTable");
+                    if (annotationName.equals("OneToMany")
+                            && !hasMappedBy
+                            && !hasExplicitJoinMapping) {
                         findings.add(
                                 FindingFactory.builder(
                                                 FindingRules.SPRING_JPA_ONETOMANY_MISSING_MAPPED_BY,
                                                 FindingConfidence.MEDIUM)
                                         .shortMessage(
-                                                "@"
-                                                        + annotationName
-                                                        + " on "
+                                                "@OneToMany on "
                                                         + target
-                                                        + " has no mappedBy attribute.")
+                                                        + " has neither mappedBy nor @JoinColumn.")
                                         .whyBadPractice(
-                                                "Without mappedBy, JPA treats this side as the"
-                                                    + " owning side and creates an additional join"
-                                                    + " table even when a foreign key column would"
+                                                "A bare @OneToMany without mappedBy (and without an"
+                                                    + " explicit @JoinColumn) makes this the owning"
+                                                    + " side, and Hibernate maps it through an"
+                                                    + " additional join table even though a foreign"
+                                                    + " key column in the child table would"
                                                     + " suffice.")
                                         .possibleImpact(
                                                 "The schema contains an unexpected join table,"
@@ -1474,17 +1505,19 @@ public class StaticPracticeFindingAnalyzer {
                                                     + " a data model that is harder to query and"
                                                     + " maintain.")
                                         .recommendation(
-                                                "Add mappedBy referencing the owning side field to"
-                                                        + " make the relationship bidirectional and"
-                                                        + " avoid the unintended join table.")
+                                                "For a bidirectional association, add mappedBy"
+                                                    + " referencing the owning @ManyToOne field."
+                                                    + " For an intentional unidirectional"
+                                                    + " association, add an explicit @JoinColumn to"
+                                                    + " map a foreign key column instead of a join"
+                                                    + " table.")
                                         .evidence(
-                                                "@"
-                                                        + annotationName
-                                                        + " on field "
+                                                "@OneToMany on field "
                                                         + fieldName
                                                         + " in "
                                                         + relativePath
-                                                        + " has no mappedBy attribute.")
+                                                        + " has neither a mappedBy attribute nor a"
+                                                        + " @JoinColumn/@JoinTable annotation.")
                                         .limitations(
                                                 "Static analysis cannot determine whether a"
                                                     + " unidirectional relationship and join table"
@@ -3043,6 +3076,7 @@ public class StaticPracticeFindingAnalyzer {
             MethodDeclaration method,
             Set<String> transactionalMethods,
             boolean repositoryLike,
+            boolean legacyTransactionalVisibility,
             MethodSignals signals,
             List<Finding> findings) {
         boolean transactional =
@@ -3086,7 +3120,11 @@ public class StaticPracticeFindingAnalyzer {
                             .target(declaration.getNameAsString() + "#" + method.getNameAsString())
                             .build());
         }
-        if (hasAnnotation(method.getAnnotations(), "Transactional")
+        // Only meaningful on Spring Boot 1.x/2.x (Framework 5): as of Spring Framework 6.0,
+        // protected and package-visible @Transactional methods ARE advised on class-based
+        // (CGLIB) proxies by default, so this finding would be a false positive on Boot 3+.
+        if (legacyTransactionalVisibility
+                && hasAnnotation(method.getAnnotations(), "Transactional")
                 && !method.isPublic()
                 && !method.isPrivate()
                 && !declaration.isInterface()) {
@@ -3100,20 +3138,26 @@ public class StaticPracticeFindingAnalyzer {
                                             + "#"
                                             + method.getNameAsString())
                             .whyBadPractice(
-                                    "Spring's proxy applies transaction advice only to public"
-                                        + " methods. On a protected or package-private method the"
-                                        + " annotation is silently ignored and no transaction is"
-                                        + " started.")
+                                    "On Spring Framework 5 (Spring Boot 1.x/2.x, the version this"
+                                            + " project resolves to), the transaction proxy applies"
+                                            + " advice only to public methods. On a protected or"
+                                            + " package-private method the annotation is silently"
+                                            + " ignored and no transaction is started. (Spring"
+                                            + " Framework 6.0+ supports non-public methods on"
+                                            + " class-based proxies.)")
                             .possibleImpact(
                                     "Multi-statement writes run without a transaction, so a failure"
                                             + " leaves partially-applied changes with no rollback.")
                             .recommendation(
                                     "Make the method public, or move the @Transactional boundary to"
-                                            + " a public method invoked through the proxy.")
+                                            + " a public method invoked through the proxy."
+                                            + " Upgrading to Spring Boot 3 (Framework 6) also lifts"
+                                            + " this restriction for class-based proxies.")
                             .limitations(
-                                    "Static analysis cannot prove the proxying strategy; AspectJ"
-                                            + " weaving (mode=ASPECTJ) would advise non-public"
-                                            + " methods.")
+                                    "Reported only when the resolved Spring Boot version is 1.x or"
+                                            + " 2.x. Static analysis cannot prove the proxying"
+                                            + " strategy; AspectJ weaving (mode=ASPECTJ) would"
+                                            + " advise non-public methods even on Framework 5.")
                             .source(relativePath, line)
                             .target(declaration.getNameAsString() + "#" + method.getNameAsString())
                             .build());
@@ -4262,9 +4306,11 @@ public class StaticPracticeFindingAnalyzer {
                                                         "Without a fallback, any failure in the"
                                                             + " remote service propagates directly"
                                                             + " to the caller as an exception."
-                                                            + " Feign has no default read timeout,"
-                                                            + " so slow or unresponsive services"
-                                                            + " can block threads indefinitely.")
+                                                            + " Feign's defaults are 10 s connect /"
+                                                            + " 60 s read timeout — long enough for"
+                                                            + " blocked threads to pile up under"
+                                                            + " load when a downstream service"
+                                                            + " degrades.")
                                                 .possibleImpact(
                                                         "Thread pool exhaustion under sustained"
                                                             + " failure or latency in the remote"
@@ -4275,8 +4321,11 @@ public class StaticPracticeFindingAnalyzer {
                                                             + " @FeignClient(fallback ="
                                                             + " MyFallback.class), or configure a"
                                                             + " circuit-breaker via Resilience4j."
-                                                            + " At minimum, configure"
-                                                            + " feign.client.config.default.readTimeout.")
+                                                            + " Configure workload-appropriate"
+                                                            + " timeouts via"
+                                                            + " feign.client.config.<name>.connectTimeout"
+                                                            + " and readTimeout instead of relying"
+                                                            + " on the 10 s/60 s defaults.")
                                                 .evidence(
                                                         "@FeignClient on "
                                                                 + name
@@ -5454,16 +5503,22 @@ public class StaticPracticeFindingAnalyzer {
                                     FindingConfidence.MEDIUM)
                             .shortMessage("@Async is used but no custom Executor bean was found.")
                             .whyBadPractice(
-                                    "When no custom Executor bean is configured, Spring uses"
-                                        + " SimpleAsyncTaskExecutor by default, which creates a new"
-                                        + " OS thread for every @Async invocation without pooling.")
+                                    "In a Spring Boot application, @Async without explicit"
+                                        + " configuration uses the auto-configured"
+                                        + " applicationTaskExecutor: a ThreadPoolTaskExecutor with"
+                                        + " 8 core threads and an unbounded queue. Bursts of async"
+                                        + " work queue up without limit behind those 8 threads."
+                                        + " (Outside Boot, plain Spring falls back to"
+                                        + " SimpleAsyncTaskExecutor, which spawns a new thread per"
+                                        + " invocation.)")
                             .possibleImpact(
-                                    "Thread exhaustion and out-of-memory errors under sustained"
-                                            + " async load. Each invocation creates a new thread,"
-                                            + " bypassing any pool sizing or backpressure.")
+                                    "Unbounded queue growth consumes heap and silently delays tasks"
+                                        + " under sustained async load; there is no backpressure"
+                                        + " and no rejection signal until memory runs out.")
                             .recommendation(
-                                    "Configure a ThreadPoolTaskExecutor @Bean with explicit"
-                                        + " corePoolSize, maxPoolSize, and queueCapacity."
+                                    "Tune spring.task.execution.* (pool size, queue-capacity) or"
+                                        + " configure a bounded ThreadPoolTaskExecutor @Bean with"
+                                        + " explicit corePoolSize, maxPoolSize, and queueCapacity."
                                         + " Optionally implement AsyncConfigurer to set it as the"
                                         + " default executor.")
                             .evidence(

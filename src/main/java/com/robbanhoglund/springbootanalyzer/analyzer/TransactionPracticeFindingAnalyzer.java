@@ -113,15 +113,19 @@ public class TransactionPracticeFindingAnalyzer {
                                     + " unrelated transaction on the worker thread — completely"
                                     + " separate from any outer transaction the caller may have.")
                         .possibleImpact(
-                                "Database operations inside the async method run in a separate"
-                                    + " transaction that the caller cannot roll back. This silently"
-                                    + " breaks transactional guarantees and can leave data in an"
-                                    + " inconsistent state.")
+                                "Database operations inside the async method run in a new,"
+                                    + " independent transaction that the caller cannot roll back"
+                                    + " and whose failure the caller never observes. Work the"
+                                    + " caller assumed to be atomic with its own transaction is"
+                                    + " not.")
                         .recommendation(
-                                "Remove @Transactional from the @Async method and manage"
-                                        + " transactionality inside the async method explicitly, or"
-                                        + " delegate to a synchronous @Transactional helper method"
-                                        + " within the async body.")
+                                "If an independent transaction on the async thread is intended,"
+                                    + " keep the combination but make the decoupling explicit"
+                                    + " (naming, documentation, failure handling). If the work must"
+                                    + " share the caller's transaction, run it synchronously before"
+                                    + " dispatching the async part. If delegating to a"
+                                    + " @Transactional helper, place the helper in a separate bean"
+                                    + " so the proxy is not bypassed by self-invocation.")
                         .evidence(
                                 "Method "
                                         + target

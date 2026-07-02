@@ -586,6 +586,24 @@ public class SecurityPracticeFindingAnalyzer {
 
     private static final Set<String> WEAK_HASH_ALGORITHMS = Set.of("MD5", "SHA-1", "SHA-256");
 
+    /**
+     * Keywords indicating that the enclosing method/class handles passwords or credentials. The
+     * weak-hash rule only fires in such a context: MD5/SHA-1/SHA-256 are perfectly appropriate for
+     * checksums, ETags, and content addressing — they are only wrong for password storage.
+     */
+    private static final Set<String> PASSWORD_CONTEXT_KEYWORDS =
+            Set.of("password", "passwd", "pwd", "credential", "login", "secret");
+
+    private static boolean inPasswordContext(com.github.javaparser.ast.Node node) {
+        StringBuilder context = new StringBuilder();
+        node.findAncestor(MethodDeclaration.class)
+                .ifPresent(m -> context.append(m.getNameAsString()).append(' '));
+        node.findAncestor(ClassOrInterfaceDeclaration.class)
+                .ifPresent(c -> context.append(c.getNameAsString()));
+        String haystack = context.toString().toLowerCase(java.util.Locale.ROOT);
+        return PASSWORD_CONTEXT_KEYWORDS.stream().anyMatch(haystack::contains);
+    }
+
     private void detectWeakPasswordHash(
             CompilationUnit cu, String relativePath, List<Finding> findings) {
         for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
@@ -597,6 +615,9 @@ public class SecurityPracticeFindingAnalyzer {
                             .map(s -> simpleName(s.toString()).equals("MessageDigest"))
                             .orElse(false);
             if (!scopeIsMessageDigest) {
+                continue;
+            }
+            if (!inPasswordContext(call)) {
                 continue;
             }
             call.getArguments().stream()
@@ -648,12 +669,15 @@ public class SecurityPracticeFindingAnalyzer {
                                                             + " Never implement password hashing"
                                                             + " manually.")
                                                 .limitations(
-                                                        "Medium confidence — MessageDigest may be"
-                                                            + " used for non-password purposes such"
-                                                            + " as checksums, ETags, or content"
-                                                            + " addressing. Review the context to"
-                                                            + " confirm the hash result is used for"
-                                                            + " credential storage.")
+                                                        "Medium confidence — flagged because the"
+                                                            + " enclosing method/class name"
+                                                            + " suggests password or credential"
+                                                            + " handling. Non-password uses"
+                                                            + " (checksums, ETags, content"
+                                                            + " addressing) are not flagged. Review"
+                                                            + " the context to confirm the hash"
+                                                            + " result is used for credential"
+                                                            + " storage.")
                                                 .evidence(
                                                         "MessageDigest.getInstance(\""
                                                                 + algo
@@ -1045,11 +1069,14 @@ public class SecurityPracticeFindingAnalyzer {
     // Rule: SPRING_SECURITY_HEADERS_DISABLED
     // ---------------------------------------------------------------------------
 
+    // Note: "xssProtection" is deliberately absent. The X-XSS-Protection header is dead —
+    // browsers removed the XSS auditor, OWASP recommends sending "0", and Spring Security
+    // 5.8+/6 already defaults the header value to "0" — so disabling that writer removes no
+    // active protection and must not be reported as a security regression.
     private static final Set<String> HEADER_CONFIG_NAMES =
             Set.of(
                     "headers",
                     "frameOptions",
-                    "xssProtection",
                     "contentTypeOptions",
                     "httpStrictTransportSecurity",
                     "contentSecurityPolicy");
@@ -1087,11 +1114,11 @@ public class SecurityPracticeFindingAnalyzer {
                                             + ".")
                             .whyBadPractice(
                                     "Spring Security enables a small set of HTTP response headers"
-                                        + " (X-Frame-Options, X-Content-Type-Options,"
-                                        + " Strict-Transport-Security, an XSS reflection filter,"
-                                        + " and an optional Content-Security-Policy) by default."
-                                        + " They are browser-enforced defenses against"
-                                        + " clickjacking, content sniffing, and TLS downgrade.")
+                                            + " (X-Frame-Options, X-Content-Type-Options,"
+                                            + " Strict-Transport-Security, and an optional"
+                                            + " Content-Security-Policy) by default. They are"
+                                            + " browser-enforced defenses against clickjacking,"
+                                            + " content sniffing, and TLS downgrade.")
                             .possibleImpact(
                                     "The application becomes vulnerable to clickjacking via"
                                         + " iframe-embedding, content-type confusion attacks, and"

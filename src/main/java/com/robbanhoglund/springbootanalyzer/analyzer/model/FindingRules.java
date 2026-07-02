@@ -388,9 +388,10 @@ public final class FindingRules {
                     FindingCategory.MAINTAINABILITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** An {@code @Async void} method has no try/catch and no
-     *  {@code AsyncUncaughtExceptionHandler} configured. Exceptions thrown asynchronously
-     *  are silently discarded by the default executor. */
+    /** An {@code @Async void} method has no try/catch and no custom
+     *  {@code AsyncUncaughtExceptionHandler} configured. Exceptions thrown asynchronously never
+     *  propagate to the caller; the default {@code SimpleAsyncUncaughtExceptionHandler} only
+     *  logs them, so failures are easy to miss. */
     public static final FindingRule SPRING_ASYNC_VOID_SWALLOWED_EXCEPTION =
             rule(
                     "SPRING_ASYNC_VOID_SWALLOWED_EXCEPTION",
@@ -456,13 +457,15 @@ public final class FindingRules {
                     FindingCategory.PERSISTENCE,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** A {@code @OneToMany} or {@code @ManyToMany} relationship has no {@code mappedBy}
-     *  attribute, making it the owning side and silently causing a join-table to be created
-     *  or duplicate foreign-key columns to appear in the schema. */
+    /** A {@code @OneToMany} relationship has neither a {@code mappedBy} attribute nor an
+     *  explicit {@code @JoinColumn}/{@code @JoinTable}, so Hibernate maps it through an
+     *  additional join table even though a foreign-key column in the child table would suffice.
+     *  ({@code @ManyToMany} is not checked: its owning side must lack {@code mappedBy}, and
+     *  explicit {@code @JoinColumn} mappings are deliberate unidirectional designs.) */
     public static final FindingRule SPRING_JPA_ONETOMANY_MISSING_MAPPED_BY =
             rule(
                     "SPRING_JPA_ONETOMANY_MISSING_MAPPED_BY",
-                    "@OneToMany or @ManyToMany has no mappedBy attribute",
+                    "@OneToMany has neither mappedBy nor @JoinColumn",
                     FindingSeverity.WARNING,
                     FindingCategory.PERSISTENCE,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
@@ -479,8 +482,9 @@ public final class FindingRules {
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
     /** A Spring Data {@code @Modifying} query method has no enclosing {@code @Transactional}
-     *  annotation and is not called from a transactional service method. Without a transaction,
-     *  the modification may fail or be silently rolled back by some JPA providers. */
+     *  annotation and is not called from a transactional service method. Executing the modifying
+     *  query without an active transaction throws
+     *  {@code jakarta.persistence.TransactionRequiredException} at runtime. */
     public static final FindingRule SPRING_MODIFYING_NO_TRANSACTION =
             rule(
                     "SPRING_MODIFYING_NO_TRANSACTION",
@@ -511,9 +515,10 @@ public final class FindingRules {
                     FindingCategory.CONFIGURATION,
                     FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT);
 
-    /** {@code spring.jpa.open-in-view} is not explicitly set to {@code false}, so it defaults
-     *  to {@code true}. This keeps the Hibernate session open through the entire HTTP request
-     *  lifecycle, enabling lazy loading during serialization and masking N+1 query problems. */
+    /** {@code spring.jpa.open-in-view} is either explicitly set to {@code true}, or not set at
+     *  all in a project with a datasource (Spring Boot defaults it to {@code true}). Both keep
+     *  the Hibernate session open through the entire HTTP request lifecycle, enabling lazy
+     *  loading during serialization and masking N+1 query problems. */
     public static final FindingRule SPRING_JPA_OPEN_IN_VIEW =
             rule(
                     "SPRING_JPA_OPEN_IN_VIEW",
@@ -899,7 +904,7 @@ public final class FindingRules {
     public static final FindingRule SPRING_CACHEABLE_VOID_RETURN =
             rule(
                     "SPRING_CACHEABLE_VOID_RETURN",
-                    "@Cacheable on a void method has no effect",
+                    "@Cacheable on a void method caches null and skips later executions",
                     FindingSeverity.ERROR,
                     FindingCategory.CACHING,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
@@ -965,27 +970,16 @@ public final class FindingRules {
                     FindingCategory.CACHING,
                     FindingRuntimeDetection.RUNTIME_REQUIRED);
 
-    /** A method is annotated with both {@code @CachePut} and {@code @Cacheable}.
-     *  Spring's {@code CacheAspectSupport} throws {@code IllegalStateException} on the first call
-     *  because the two annotations have conflicting cache population semantics. */
+    /** A method is annotated with both {@code @CachePut} and {@code @Cacheable}. Spring's
+     *  {@code CacheAspectSupport} resolves the conflict by always invoking the method (the
+     *  {@code @CachePut} wins), so the {@code @Cacheable} never serves a hit — caching is
+     *  silently defeated. Spring's documentation strongly discourages the combination. */
     public static final FindingRule SPRING_CACHEPUT_AND_CACHEABLE_SAME_METHOD =
             rule(
                     "SPRING_CACHEPUT_AND_CACHEABLE_SAME_METHOD",
-                    "@CachePut and @Cacheable on the same method cause a runtime conflict",
-                    FindingSeverity.ERROR,
+                    "@CachePut and @Cacheable on the same method silently defeat caching",
+                    FindingSeverity.WARNING,
                     FindingCategory.CACHING,
-                    FindingRuntimeDetection.RUNTIME_REQUIRED);
-
-    /** {@code spring.jpa.hibernate.ddl-auto} or {@code spring.datasource.initialization-mode}
-     *  is set to {@code create} or {@code create-drop} in a production-oriented profile
-     *  ({@code prod}, {@code production}, {@code staging}). This drops and recreates all tables
-     *  on every startup, destroying all existing data. */
-    public static final FindingRule SPRING_JPA_DDL_AUTO_DANGEROUS =
-            rule(
-                    "SPRING_JPA_DDL_AUTO_DANGEROUS",
-                    "Destructive JPA DDL setting in production-oriented profile",
-                    FindingSeverity.ERROR,
-                    FindingCategory.CONFIGURATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
     // ── Transaction practices ─────────────────────────────────────────────────
@@ -1001,13 +995,15 @@ public final class FindingRules {
                     FindingCategory.TRANSACTION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** {@code @Transactional} appears on a {@code protected} or package-private method. Spring's
-     *  proxy applies transaction advice only to {@code public} methods, so the annotation is
-     *  silently ignored and no transaction is started — exactly like the private-method case. */
+    /** {@code @Transactional} appears on a {@code protected} or package-private method in a
+     *  project resolving Spring Boot 1.x/2.x (Spring Framework 5). There the proxy applies
+     *  transaction advice only to {@code public} methods, so the annotation is silently ignored
+     *  and no transaction is started. Not reported for Boot 3+ / Framework 6.0+, which supports
+     *  non-public {@code @Transactional} methods on class-based proxies by default. */
     public static final FindingRule SPRING_TRANSACTIONAL_NON_PUBLIC_METHOD =
             rule(
                     "SPRING_TRANSACTIONAL_NON_PUBLIC_METHOD",
-                    "@Transactional on a non-public method is silently ignored by Spring's proxy",
+                    "@Transactional on a non-public method is ignored on Spring Boot 2.x proxies",
                     FindingSeverity.ERROR,
                     FindingCategory.TRANSACTION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
@@ -1059,14 +1055,16 @@ public final class FindingRules {
                     FindingCategory.TRANSACTION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** A method is annotated with both {@code @Async} and {@code @Transactional}.
-     *  The transaction context is not propagated to the new thread; database operations
-     *  inside the async method run outside the transaction regardless of the annotation. */
+    /** A method is annotated with both {@code @Async} and {@code @Transactional}. The async
+     *  interceptor runs first, so the transaction interceptor executes on the worker thread and
+     *  starts a NEW, independent transaction there — decoupled from any transaction the caller
+     *  holds. The caller cannot roll it back and never observes its failure. */
     public static final FindingRule SPRING_ASYNC_TRANSACTIONAL =
             rule(
                     "SPRING_ASYNC_TRANSACTIONAL",
-                    "@Async and @Transactional on the same method — transaction is not propagated",
-                    FindingSeverity.ERROR,
+                    "@Async and @Transactional on the same method — independent transaction on the"
+                            + " async thread",
+                    FindingSeverity.WARNING,
                     FindingCategory.TRANSACTION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
@@ -1472,10 +1470,12 @@ public final class FindingRules {
                     FindingCategory.SECURITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** {@code MessageDigest.getInstance()} is called with a weak algorithm ({@code "MD5"},
-     *  {@code "SHA-1"}, or {@code "SHA-256"}) in production source code. These algorithms are
-     *  fast by design and are therefore unsuitable for password hashing: an attacker with a
-     *  modern GPU can try billions of candidates per second against a leaked hash. */
+    /** {@code MessageDigest.getInstance()} is called with a fast general-purpose algorithm
+     *  ({@code "MD5"}, {@code "SHA-1"}, or {@code "SHA-256"}) in a password/credential-handling
+     *  context (the enclosing method or class name mentions password, credential, login, …).
+     *  Fast hashes are unsuitable for password storage: an attacker with a modern GPU can try
+     *  billions of candidates per second against a leaked hash. Non-password uses (checksums,
+     *  ETags, content addressing) are not flagged. */
     public static final FindingRule SPRING_WEAK_PASSWORD_HASH =
             rule(
                     "SPRING_WEAK_PASSWORD_HASH",
@@ -1528,9 +1528,12 @@ public final class FindingRules {
      *  Jackson's {@code ObjectMapper.enableDefaultTyping(...)} or
      *  {@code activateDefaultTyping(LaissezFaireTypeValidator.instance, ...)}, raw
      *  {@code new ObjectInputStream(...)} for Java serialization, and SnakeYAML's
-     *  {@code new Yaml()} default constructor (which uses an unrestricted constructor and
-     *  can instantiate arbitrary Java classes). All three patterns are well-known remote
-     *  code execution vectors when the input is attacker-controlled. */
+     *  {@code new Yaml()} default constructor. The Jackson and Java-serialization patterns are
+     *  well-known remote-code-execution vectors for attacker-controlled input. The SnakeYAML
+     *  constructor allowed arbitrary class instantiation on SnakeYAML 1.x (CVE-2022-1471);
+     *  SnakeYAML 2.x (the Spring Boot 3.1+ default) rejects global tags by default, but
+     *  {@code SafeConstructor}/explicit {@code LoaderOptions} remain preferable for untrusted
+     *  input. */
     public static final FindingRule SPRING_INSECURE_DESERIALIZATION =
             rule(
                     "SPRING_INSECURE_DESERIALIZATION",
@@ -1541,9 +1544,12 @@ public final class FindingRules {
 
     /** A Spring Security configuration disables built-in HTTP response headers, e.g.
      *  {@code .headers(h -> h.disable())}, {@code .frameOptions().disable()},
-     *  {@code .xssProtection().disable()}, or {@code .contentTypeOptions().disable()}.
-     *  These headers are cheap, browser-enforced defenses against clickjacking and content
-     *  sniffing. Disabling them rarely has a defensible production reason. */
+     *  {@code .contentTypeOptions().disable()}, {@code .httpStrictTransportSecurity().disable()},
+     *  or {@code .contentSecurityPolicy(...).disable()}. These headers are cheap,
+     *  browser-enforced defenses against clickjacking, content sniffing, and TLS downgrade.
+     *  ({@code .xssProtection().disable()} is deliberately NOT flagged: the X-XSS-Protection
+     *  header is deprecated by browsers, and Spring Security 5.8+/6 already defaults it to
+     *  {@code 0} per OWASP guidance.) */
     public static final FindingRule SPRING_SECURITY_HEADERS_DISABLED =
             rule(
                     "SPRING_SECURITY_HEADERS_DISABLED",
@@ -1811,14 +1817,15 @@ public final class FindingRules {
                     FindingCategory.MIGRATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** A class is annotated with {@code @EnableGlobalMethodSecurity}, which was deprecated in
-     *  Spring Security 5.6 and superseded by {@code @EnableMethodSecurity} (the default in
-     *  Spring Security 6 / Spring Boot 3). */
+    /** A class is annotated with {@code @EnableGlobalMethodSecurity}. Its replacement,
+     *  {@code @EnableMethodSecurity}, was introduced in Spring Security 5.6; the old annotation
+     *  was deprecated in 5.8 and REMOVED in Spring Security 6 (Spring Boot 3), so the class no
+     *  longer compiles after the upgrade. */
     public static final FindingRule SPRING_SECURITY_ENABLE_GLOBAL_METHOD_SECURITY =
             rule(
                     "SPRING_SECURITY_ENABLE_GLOBAL_METHOD_SECURITY",
-                    "@EnableGlobalMethodSecurity is superseded by @EnableMethodSecurity",
-                    FindingSeverity.INFO,
+                    "@EnableGlobalMethodSecurity was removed in Spring Security 6",
+                    FindingSeverity.WARNING,
                     FindingCategory.MIGRATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 

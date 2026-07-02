@@ -209,6 +209,32 @@ class TestingPracticeFindingAnalyzerTest {
         assertThat(byRule(findings(), "SPRING_TEST_MOCKBEAN_OVERUSE")).isNull();
     }
 
+    @Test
+    void flagsTestClassWithMoreThanFiveMockitoBeans() throws IOException {
+        // @MockitoBean (Spring Boot 3.4+ replacement for the deprecated @MockBean) fragments the
+        // test-context cache the same way and must be counted too.
+        writeTestFile(
+                "src/test/java/com/example/BigMockitoTest.java",
+                """
+                package com.example;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import org.springframework.test.context.bean.override.mockito.MockitoBean;
+                @SpringBootTest
+                class BigMockitoTest {
+                    @MockitoBean ServiceA a;
+                    @MockitoBean ServiceB b;
+                    @MockitoBean ServiceC c;
+                    @MockitoBean ServiceD d;
+                    @MockitoBean ServiceE e;
+                    @MockitoBean ServiceF f;
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_TEST_MOCKBEAN_OVERUSE");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("BigMockitoTest");
+    }
+
     // ── SPRING_TEST_FIXED_CLOCK_MISSING ──────────────────────────────────────
 
     @Test

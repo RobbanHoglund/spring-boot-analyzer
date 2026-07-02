@@ -482,6 +482,66 @@ class SecurityPracticeFindingAnalyzerTest {
         assertThat(byRule(findings(), "SPRING_SECURITY_HEADERS_DISABLED")).isNull();
     }
 
+    @Test
+    void doesNotFlagXssProtectionDisable() throws IOException {
+        // X-XSS-Protection is deprecated by browsers; OWASP recommends value "0" and Spring
+        // Security 5.8+/6 already defaults to "0" — disabling the writer is not a regression.
+        writeSourceFile(
+                "src/main/java/com/example/SecurityConfig.java",
+                """
+                package com.example;
+                import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+                public class SecurityConfig {
+                    public void configure(HttpSecurity http) throws Exception {
+                        http.headers().xssProtection().disable();
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_SECURITY_HEADERS_DISABLED")).isNull();
+    }
+
+    // ── SPRING_WEAK_PASSWORD_HASH ─────────────────────────────────────────────
+
+    @Test
+    void flagsWeakHashInPasswordContext() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/PasswordService.java",
+                """
+                package com.example;
+                import java.security.MessageDigest;
+                public class PasswordService {
+                    public byte[] hashPassword(String raw) throws Exception {
+                        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                        return digest.digest(raw.getBytes());
+                    }
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_WEAK_PASSWORD_HASH");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("SHA-256");
+    }
+
+    @Test
+    void doesNotFlagWeakHashInChecksumContext() throws IOException {
+        // SHA-256 is the correct choice for integrity checks — only password contexts are wrong.
+        writeSourceFile(
+                "src/main/java/com/example/ChecksumUtil.java",
+                """
+                package com.example;
+                import java.security.MessageDigest;
+                public class ChecksumUtil {
+                    public byte[] computeChecksum(byte[] content) throws Exception {
+                        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                        return digest.digest(content);
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_WEAK_PASSWORD_HASH")).isNull();
+    }
+
     // ── SPRING_PERMIT_ALL_ANY_REQUEST ─────────────────────────────────────────
 
     @Test

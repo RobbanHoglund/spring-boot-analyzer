@@ -40,7 +40,7 @@ import org.springframework.stereotype.Component;
  *       no-arg method without {@code allEntries = true}.
  *   <li>{@link FindingRules#SPRING_CACHEABLE_SYNC_INCOMPATIBLE} — {@code @Cacheable(sync = true)}
  *       combined with {@code unless} or multiple cache names, both of which are unsupported and
- *       cause an {@code IllegalArgumentException} at runtime.
+ *       cause an {@code IllegalStateException} at runtime.
  * </ul>
  */
 @Component
@@ -464,7 +464,7 @@ public class CachingPracticeFindingAnalyzer {
     /**
      * Flags {@code @Cacheable(sync = true)} when combined with an {@code unless} expression or
      * more than one cache name. Spring's {@code CacheAspectSupport} validates these at the first
-     * method invocation and throws {@code IllegalArgumentException}; neither combination is
+     * method invocation and throws {@code IllegalStateException}; neither combination is
      * supported.
      *
      * <p>Detection strategy:
@@ -550,7 +550,7 @@ public class CachingPracticeFindingAnalyzer {
                                             + target
                                             + " is combined with "
                                             + problemList
-                                            + " — Spring will throw IllegalArgumentException at"
+                                            + " — Spring will throw IllegalStateException at"
                                             + " runtime.")
                             .whyBadPractice(
                                     "Spring's CacheAspectSupport explicitly rejects @Cacheable(sync"
@@ -561,7 +561,7 @@ public class CachingPracticeFindingAnalyzer {
                                         + " incompatible with the lock semantics), and coordinating"
                                         + " a lock across multiple caches is not supported.")
                             .possibleImpact(
-                                    "IllegalArgumentException thrown on the first invocation of the"
+                                    "IllegalStateException thrown on the first invocation of the"
                                             + " method, causing a 500 error or application startup"
                                             + " failure.")
                             .recommendation(
@@ -609,18 +609,21 @@ public class CachingPracticeFindingAnalyzer {
                         .shortMessage(
                                 "Method "
                                         + target
-                                        + " has both @CachePut and @Cacheable — Spring throws"
-                                        + " IllegalStateException at runtime.")
+                                        + " has both @CachePut and @Cacheable — the cache never"
+                                        + " serves a hit, silently defeating @Cacheable.")
                         .whyBadPractice(
                                 "@Cacheable reads from the cache and only executes the method on a"
                                     + " miss. @CachePut always executes the method and updates the"
-                                    + " cache. The two annotations have conflicting semantics:"
-                                    + " @Cacheable may skip the method body that @CachePut requires"
-                                    + " to run. Spring's CacheAspectSupport throws"
-                                    + " IllegalStateException when it encounters this conflict.")
+                                    + " cache. When both are present, Spring's CacheAspectSupport"
+                                    + " resolves the conflict by always invoking the method (the"
+                                    + " @CachePut wins), so the @Cacheable never short-circuits."
+                                    + " Spring's own documentation strongly discourages the"
+                                    + " combination.")
                         .possibleImpact(
-                                "IllegalStateException thrown on the first invocation of the"
-                                        + " method, causing a 500 error or application failure.")
+                                "The method body executes on every call while both annotations"
+                                        + " appear active — the intended caching is silently"
+                                        + " negated, masking the performance problem it was meant"
+                                        + " to solve.")
                         .recommendation(
                                 "Use only one of @Cacheable or @CachePut on a given method. If the"
                                         + " intent is to always update the cache and also return a"

@@ -606,10 +606,12 @@ public class ScalabilityPracticeFindingAnalyzer {
                                     "Configure a timeout-aware request factory:"
                                         + " HttpComponentsClientHttpRequestFactory or"
                                         + " SimpleClientHttpRequestFactory with explicit connect"
-                                        + " and read timeouts. Alternatively, inject and use the"
-                                        + " auto-configured RestTemplateBuilder which applies"
-                                        + " global timeout settings from"
-                                        + " spring.mvc.async.request-timeout.")
+                                        + " and read timeouts. Alternatively, inject the"
+                                        + " auto-configured RestTemplateBuilder and set"
+                                        + " connectTimeout/readTimeout on it; on Spring Boot 3.4+"
+                                        + " the global spring.http.client.connect-timeout and"
+                                        + " spring.http.client.read-timeout properties apply to"
+                                        + " auto-configured client request factories.")
                             .limitations(
                                     "Medium confidence — a timeout may be configured later by"
                                         + " calling setRequestFactory() on the returned instance."

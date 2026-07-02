@@ -29,7 +29,8 @@ import org.springframework.stereotype.Component;
  *   <li>{@link FindingRules#SPRING_SECURITY_ANTMATCHERS_REMOVED} — {@code antMatchers(...)},
  *       {@code mvcMatchers(...)}, or {@code regexMatchers(...)}, all removed in Spring Security 6.
  *   <li>{@link FindingRules#SPRING_SECURITY_ENABLE_GLOBAL_METHOD_SECURITY} —
- *       {@code @EnableGlobalMethodSecurity}, superseded by {@code @EnableMethodSecurity}.
+ *       {@code @EnableGlobalMethodSecurity}, removed in Spring Security 6 in favour of
+ *       {@code @EnableMethodSecurity}.
  *   <li>{@link FindingRules#SPRING_JAKARTA_NAMESPACE_ON_BOOT3} — a legacy {@code javax.*} EE import
  *       in a project whose detected Spring Boot version is 3.x or later.
  * </ul>
@@ -226,13 +227,14 @@ public class MigrationPracticeFindingAnalyzer {
                             + cls.getNameAsString()
                             + " in "
                             + relativePath
-                            + " is superseded by @EnableMethodSecurity.",
-                    "@EnableGlobalMethodSecurity was deprecated in Spring Security 5.6. Spring"
-                            + " Security 6 (Spring Boot 3) replaces it with @EnableMethodSecurity,"
-                            + " which enables @PreAuthorize/@PostAuthorize by default and no longer"
+                            + " was removed in Spring Security 6.",
+                    "@EnableMethodSecurity (introduced in Spring Security 5.6) replaces"
+                            + " @EnableGlobalMethodSecurity, which was deprecated in 5.8 and"
+                            + " removed in Spring Security 6 (Spring Boot 3). The replacement"
+                            + " enables @PreAuthorize/@PostAuthorize by default and no longer"
                             + " requires prePostEnabled = true.",
-                    "On Spring Boot 3 the annotation still works for now but is deprecated;"
-                            + " continuing to use it accumulates migration debt.",
+                    "Code using the annotation does not compile against Spring Security 6, so the"
+                            + " Spring Boot 3 upgrade is blocked until it is migrated.",
                     "Replace @EnableGlobalMethodSecurity(prePostEnabled = true) with"
                         + " @EnableMethodSecurity (prePost is enabled by default). Review"
                         + " securedEnabled / jsr250Enabled flags and carry them over explicitly.",

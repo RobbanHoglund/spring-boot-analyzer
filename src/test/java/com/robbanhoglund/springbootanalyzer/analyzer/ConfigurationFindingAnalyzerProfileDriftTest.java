@@ -319,68 +319,6 @@ class ConfigurationFindingAnalyzerProfileDriftTest {
         assertThat(byRule(findings(cfg), "SPRING_JPA_OPEN_IN_VIEW")).isNull();
     }
 
-    // ── SPRING_JPA_DDL_AUTO_DANGEROUS ─────────────────────────────────────────
-
-    @Test
-    void flagsDdlAutoCreateInProdProfile() {
-        ConfigurationAnalysis cfg = config(prop("spring.jpa.hibernate.ddl-auto", "create", "prod"));
-
-        Finding f = byRule(findings(cfg), "SPRING_JPA_DDL_AUTO_DANGEROUS");
-        assertThat(f).isNotNull();
-        assertThat(f.target()).isEqualTo("spring.jpa.hibernate.ddl-auto");
-        assertThat(f.message()).contains("create");
-    }
-
-    @Test
-    void flagsDdlAutoCreateDropInStagingProfile() {
-        ConfigurationAnalysis cfg =
-                config(prop("spring.jpa.hibernate.ddl-auto", "create-drop", "staging"));
-
-        Finding f = byRule(findings(cfg), "SPRING_JPA_DDL_AUTO_DANGEROUS");
-        assertThat(f).isNotNull();
-        assertThat(f.message()).contains("create-drop");
-    }
-
-    @Test
-    void flagsInitializationModeCreateInProductionProfile() {
-        ConfigurationAnalysis cfg =
-                config(prop("spring.datasource.initialization-mode", "create", "production"));
-
-        Finding f = byRule(findings(cfg), "SPRING_JPA_DDL_AUTO_DANGEROUS");
-        assertThat(f).isNotNull();
-        assertThat(f.target()).isEqualTo("spring.datasource.initialization-mode");
-    }
-
-    @Test
-    void doesNotFlagDdlAutoCreateInTestProfile() {
-        ConfigurationAnalysis cfg = config(prop("spring.jpa.hibernate.ddl-auto", "create", "test"));
-
-        assertThat(byRule(findings(cfg), "SPRING_JPA_DDL_AUTO_DANGEROUS")).isNull();
-    }
-
-    @Test
-    void doesNotFlagDdlAutoValidateInProdProfile() {
-        ConfigurationAnalysis cfg =
-                config(prop("spring.jpa.hibernate.ddl-auto", "validate", "prod"));
-
-        assertThat(byRule(findings(cfg), "SPRING_JPA_DDL_AUTO_DANGEROUS")).isNull();
-    }
-
-    @Test
-    void doesNotFlagDdlAutoNoneInProdProfile() {
-        ConfigurationAnalysis cfg = config(prop("spring.jpa.hibernate.ddl-auto", "none", "prod"));
-
-        assertThat(byRule(findings(cfg), "SPRING_JPA_DDL_AUTO_DANGEROUS")).isNull();
-    }
-
-    @Test
-    void doesNotFlagDdlAutoCreateInDefaultProfile() {
-        // Default profile is not a prod-like profile
-        ConfigurationAnalysis cfg = config(prop("spring.jpa.hibernate.ddl-auto", "create", null));
-
-        assertThat(byRule(findings(cfg), "SPRING_JPA_DDL_AUTO_DANGEROUS")).isNull();
-    }
-
     // ── SPRING_MULTIPART_NO_MAX_SIZE ──────────────────────────────────────────
 
     @Test

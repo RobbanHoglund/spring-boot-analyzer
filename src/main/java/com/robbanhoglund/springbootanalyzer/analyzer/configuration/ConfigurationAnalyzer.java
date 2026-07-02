@@ -976,7 +976,11 @@ public class ConfigurationAnalyzer {
             return;
         }
 
+        // spring.security.user.password is deliberately excluded here: the dedicated
+        // SPRING_DEFAULT_USER_PASSWORD_LITERAL rule reports that key, and reporting the same
+        // line under two IDs would duplicate the finding.
         if (property.valueRedacted()
+                && !"spring.security.user.password".equals(name)
                 && (secretFallback.literalDefault() || hasDirectSensitiveLiteral(rawValue))) {
             findings.add(
                     FindingFactory.builder(
