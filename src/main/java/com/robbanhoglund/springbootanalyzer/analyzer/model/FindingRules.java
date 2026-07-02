@@ -2093,6 +2093,78 @@ public final class FindingRules {
                     FindingCategory.MIGRATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
+    /** Liquibase ({@code org.liquibase:liquibase-core}) is on the classpath but no changelog file
+     *  exists at the configured {@code spring.liquibase.change-log} location (default
+     *  {@code classpath:/db/changelog/db.changelog-master.yaml}). Spring Boot fails at startup
+     *  with "Cannot find changelog location". */
+    public static final FindingRule SPRING_LIQUIBASE_MISSING_CHANGELOG =
+            rule(
+                    "SPRING_LIQUIBASE_MISSING_CHANGELOG",
+                    "Liquibase is enabled but the changelog file was not found",
+                    FindingSeverity.WARNING,
+                    FindingCategory.PERSISTENCE,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A class annotated {@code @Entity} (or {@code @Embeddable}) declares constructors but none
+     *  of them is no-arg, and no Lombok annotation generates one. JPA/Hibernate require a no-arg
+     *  constructor to materialise entities; the first SELECT that loads the entity throws
+     *  {@code org.hibernate.InstantiationException} ("No default constructor for entity"). */
+    public static final FindingRule SPRING_JPA_ENTITY_NO_NOARG_CONSTRUCTOR =
+            rule(
+                    "SPRING_JPA_ENTITY_NO_NOARG_CONSTRUCTOR",
+                    "@Entity has no no-arg constructor — Hibernate fails on the first load",
+                    FindingSeverity.ERROR,
+                    FindingCategory.PERSISTENCE,
+                    FindingRuntimeDetection.RUNTIME_REQUIRED);
+
+    /** An explicit {@code @PathVariable("name")} on a handler parameter matches no {@code {name}}
+     *  variable in the merged class+method mapping template. Spring throws
+     *  {@code MissingPathVariableException} (HTTP 500) on every invocation of the handler. */
+    public static final FindingRule SPRING_PATH_VARIABLE_TEMPLATE_MISMATCH =
+            rule(
+                    "SPRING_PATH_VARIABLE_TEMPLATE_MISMATCH",
+                    "@PathVariable name matches no {variable} in the mapping — 500 on every call",
+                    FindingSeverity.ERROR,
+                    FindingCategory.API_SURFACE,
+                    FindingRuntimeDetection.RUNTIME_REQUIRED);
+
+    /** A servlet {@code Cookie} is created and added to the response, but {@code setHttpOnly(true)}
+     *  is never called in the file. Servlet cookies default to {@code httpOnly=false} (and
+     *  {@code secure=false}), leaving them readable from JavaScript (XSS exfiltration) and sent
+     *  over plain HTTP. */
+    public static final FindingRule SPRING_COOKIE_MISSING_HTTPONLY =
+            rule(
+                    "SPRING_COOKIE_MISSING_HTTPONLY",
+                    "Cookie added to the response without HttpOnly (and possibly Secure)",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** An archive entry name ({@code ZipEntry.getName()}) flows into {@code new File(dir, name)}
+     *  or {@code Path.resolve(name)} without canonical-path containment validation. A malicious
+     *  archive whose entry names contain {@code ../} sequences then writes files outside the
+     *  extraction directory — the "Zip Slip" vulnerability (CWE-22). */
+    public static final FindingRule SPRING_ZIP_SLIP =
+            rule(
+                    "SPRING_ZIP_SLIP",
+                    "Archive entry name used in a file path without validation (Zip Slip)",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** Two component-scanned classes share the same simple name (in different packages) and
+     *  neither declares an explicit bean name. Spring's default bean-name generator derives the
+     *  name from the simple class name, so registration fails at startup with
+     *  {@code ConflictingBeanDefinitionException}. */
+    public static final FindingRule SPRING_BEAN_NAME_COLLISION =
+            rule(
+                    "SPRING_BEAN_NAME_COLLISION",
+                    "Two component classes share a simple name — startup fails with"
+                            + " ConflictingBeanDefinitionException",
+                    FindingSeverity.ERROR,
+                    FindingCategory.STARTUP,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
     private FindingRules() {}
 
     private static FindingRule rule(

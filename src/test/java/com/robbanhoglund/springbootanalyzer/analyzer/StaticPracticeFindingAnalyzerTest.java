@@ -5635,6 +5635,105 @@ interface InventoryClient {
                         FindingRules.SPRING_TRANSACTIONAL_CHECKED_EXCEPTION_NO_ROLLBACK.ruleId());
     }
 
+    // ── SPRING_PATH_VARIABLE_TEMPLATE_MISMATCH ────────────────────────────────
+
+    @Test
+    void flagsPathVariableNameMissingFromTemplate() throws IOException {
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("UserController.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.web.bind.annotation.GetMapping;
+                import org.springframework.web.bind.annotation.PathVariable;
+                import org.springframework.web.bind.annotation.RestController;
+
+                @RestController
+                public class UserController {
+                    @GetMapping("/users/{id}")
+                    public String user(@PathVariable("userId") String userId) {
+                        return userId;
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_PATH_VARIABLE_TEMPLATE_MISMATCH
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && "UserController#user".equals(finding.target()));
+    }
+
+    @Test
+    void doesNotFlagPathVariableMatchingClassLevelTemplate() throws IOException {
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("UserController.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.web.bind.annotation.GetMapping;
+                import org.springframework.web.bind.annotation.PathVariable;
+                import org.springframework.web.bind.annotation.RequestMapping;
+                import org.springframework.web.bind.annotation.RestController;
+
+                @RestController
+                @RequestMapping("/tenants/{tenantId}")
+                public class UserController {
+                    @GetMapping("/users/{id}")
+                    public String user(
+                            @PathVariable("tenantId") String tenantId,
+                            @PathVariable("id") String id) {
+                        return tenantId + id;
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_PATH_VARIABLE_TEMPLATE_MISMATCH.ruleId());
+    }
+
+    @Test
+    void doesNotFlagPathVariableWhenMappingPathIsNonLiteral() throws IOException {
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("UserController.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.web.bind.annotation.GetMapping;
+                import org.springframework.web.bind.annotation.PathVariable;
+                import org.springframework.web.bind.annotation.RestController;
+
+                @RestController
+                public class UserController {
+                    static final String PATH = "/users/{userId}";
+
+                    @GetMapping(PATH)
+                    public String user(@PathVariable("userId") String userId) {
+                        return userId;
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_PATH_VARIABLE_TEMPLATE_MISMATCH.ruleId());
+    }
+
     // ── SPRING_INJECTION_ON_STATIC_FIELD ──────────────────────────────────────
 
     @Test

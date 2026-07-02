@@ -245,6 +245,8 @@ public class SecurityPracticeFindingAnalyzer {
         detectSecurityIgnoringBroadPath(cu, relativePath, findings);
         detectJwtSignatureNotVerified(cu, relativePath, findings);
         detectInsecureTlsBypass(cu, relativePath, findings);
+        detectCookieMissingHttpOnly(cu, relativePath, findings);
+        detectZipSlip(cu, relativePath, findings);
 
         for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
             for (MethodDeclaration method : cls.getMethods()) {
@@ -1562,6 +1564,161 @@ public class SecurityPracticeFindingAnalyzer {
                 "Medium confidence — flags concatenation into a redirect target; confirm whether"
                         + " the value is attacker-controlled.",
                 shape + " with concatenated argument found in " + relativePath + ".");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_COOKIE_MISSING_HTTPONLY
+    // ---------------------------------------------------------------------------
+
+    private void detectCookieMissingHttpOnly(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        // Import gate: only servlet cookies are relevant; a domain class named Cookie is not.
+        boolean servletCookieImported =
+                cu.getImports().stream()
+                        .map(imp -> imp.getNameAsString())
+                        .anyMatch(
+                                name ->
+                                        name.equals("jakarta.servlet.http.Cookie")
+                                                || name.equals("javax.servlet.http.Cookie"));
+        if (!servletCookieImported) {
+            return;
+        }
+        // Only flag cookies that are actually sent to the client.
+        boolean addCookieCalled =
+                cu.findAll(MethodCallExpr.class).stream()
+                        .anyMatch(call -> "addCookie".equals(call.getNameAsString()));
+        if (!addCookieCalled) {
+            return;
+        }
+        // File-level flag search absorbs helper-method patterns (cookie built in one method,
+        // hardened in another).
+        boolean httpOnlySet =
+                cu.findAll(MethodCallExpr.class).stream()
+                        .anyMatch(
+                                call ->
+                                        "setHttpOnly".equals(call.getNameAsString())
+                                                && call.getArguments().size() == 1
+                                                && "true".equals(call.getArgument(0).toString()));
+        if (httpOnlySet) {
+            return;
+        }
+        ObjectCreationExpr creation =
+                cu.findAll(ObjectCreationExpr.class).stream()
+                        .filter(c -> "Cookie".equals(simpleName(c.getType().getNameAsString())))
+                        .findFirst()
+                        .orElse(null);
+        if (creation == null) {
+            return;
+        }
+        add(
+                findings,
+                FindingRules.SPRING_COOKIE_MISSING_HTTPONLY,
+                FindingConfidence.MEDIUM,
+                relativePath,
+                lineOf(creation),
+                "A servlet Cookie is added to the response in "
+                        + relativePath
+                        + " without setHttpOnly(true).",
+                "jakarta.servlet.http.Cookie defaults to httpOnly=false and secure=false. Without"
+                        + " setHttpOnly(true) the cookie is readable from JavaScript, so any XSS"
+                        + " vulnerability can exfiltrate it; without setSecure(true) it is also"
+                        + " sent over plain HTTP.",
+                "If the cookie carries a session id, token, or other credential, an XSS flaw"
+                        + " escalates to full session hijacking. Cookies sent over HTTP can be"
+                        + " intercepted in transit.",
+                "Call setHttpOnly(true) and setSecure(true) on the cookie before addCookie(...)"
+                        + " (or build it via ResponseCookie.from(...).httpOnly(true).secure(true))."
+                        + " Only omit HttpOnly for cookies that client-side script genuinely must"
+                        + " read.",
+                "Medium confidence — legitimately JavaScript-readable cookies (locale, theme,"
+                        + " consent) exist; review what the cookie carries. The flag may also be"
+                        + " set in another class not visible to this per-file check.",
+                "new Cookie(...) and response.addCookie(...) found in "
+                        + relativePath
+                        + " with no setHttpOnly(true) call anywhere in the file.");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_ZIP_SLIP
+    // ---------------------------------------------------------------------------
+
+    private void detectZipSlip(CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (MethodDeclaration method : cu.findAll(MethodDeclaration.class)) {
+            if (method.getBody().isEmpty()) {
+                continue;
+            }
+            String body = method.getBody().get().toString();
+            // Scope gate: only extraction code that iterates archive entries.
+            boolean archiveScope =
+                    body.contains("ZipEntry")
+                            || body.contains("getNextEntry")
+                            || body.contains("ZipFile")
+                            || body.contains("ArchiveEntry");
+            if (!archiveScope) {
+                continue;
+            }
+            // Suppress when the method shows containment-validation markers.
+            if (body.contains("getCanonicalPath")
+                    || body.contains("toRealPath")
+                    || (body.contains("normalize") && body.contains("startsWith"))
+                    || body.contains("contains(\"..\")")) {
+                continue;
+            }
+            com.github.javaparser.ast.Node riskySite = null;
+            for (ObjectCreationExpr creation :
+                    method.getBody().get().findAll(ObjectCreationExpr.class)) {
+                if ("File".equals(simpleName(creation.getType().getNameAsString()))
+                        && creation.getArguments().size() >= 2
+                        && creation.getArguments().stream()
+                                .anyMatch(arg -> arg.toString().contains(".getName()"))) {
+                    riskySite = creation;
+                    break;
+                }
+            }
+            if (riskySite == null) {
+                for (MethodCallExpr call : method.getBody().get().findAll(MethodCallExpr.class)) {
+                    if ("resolve".equals(call.getNameAsString())
+                            && call.getArguments().stream()
+                                    .anyMatch(arg -> arg.toString().contains(".getName()"))) {
+                        riskySite = call;
+                        break;
+                    }
+                }
+            }
+            if (riskySite == null) {
+                continue;
+            }
+            Integer line = riskySite.getBegin().map(p -> p.line).orElse(null);
+            add(
+                    findings,
+                    FindingRules.SPRING_ZIP_SLIP,
+                    FindingConfidence.MEDIUM,
+                    relativePath,
+                    line,
+                    "Archive entry name flows into a file path without validation in "
+                            + relativePath
+                            + " (Zip Slip).",
+                    "ZipEntry.getName() is attacker-controlled when the archive comes from"
+                            + " outside. Entry names may contain ../ sequences, so resolving them"
+                            + " against the extraction directory (new File(dir, name) /"
+                            + " dir.resolve(name)) writes files outside the intended target"
+                            + " directory.",
+                    "A malicious archive can overwrite arbitrary files writable by the process"
+                            + " (cron jobs, JARs, SSH keys) during extraction — the well-known Zip"
+                            + " Slip vulnerability (CWE-22). Extraction of benign archives works"
+                            + " fine, so the flaw stays invisible in testing.",
+                    "Resolve the entry name against the target directory, normalize the result,"
+                            + " and verify it still starts with the target directory's canonical"
+                            + " path before writing (e.g. Path dest ="
+                            + " destDir.resolve(name).normalize(); if"
+                            + " (!dest.startsWith(destDir)) throw ...).",
+                    "Medium confidence — flagged only inside methods that reference archive types"
+                            + " and show no containment-validation markers"
+                            + " (getCanonicalPath/toRealPath/normalize+startsWith).",
+                    "Archive-entry getName() used in a File/resolve path expression in "
+                            + relativePath
+                            + " without visible path-containment validation.");
+        }
     }
 
     // ---------------------------------------------------------------------------

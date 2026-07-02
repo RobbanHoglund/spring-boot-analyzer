@@ -42,6 +42,223 @@ class ScalabilityPracticeFindingAnalyzerTest {
         return findings.stream().filter(f -> ruleId.equals(f.ruleId())).toList();
     }
 
+    // ── SPRING_JPA_ENTITY_NO_NOARG_CONSTRUCTOR ────────────────────────────────
+
+    @Test
+    void flagsEntityWithOnlyParameterizedConstructor() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Order.java",
+                """
+                package com.example;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+                @Entity
+                public class Order {
+                    @Id private Long id;
+                    private String reference;
+                    public Order(String reference) {
+                        this.reference = reference;
+                    }
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_JPA_ENTITY_NO_NOARG_CONSTRUCTOR");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("Order");
+    }
+
+    @Test
+    void doesNotFlagEntityWithProtectedNoArgConstructor() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Order.java",
+                """
+                package com.example;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+                @Entity
+                public class Order {
+                    @Id private Long id;
+                    private String reference;
+                    protected Order() {}
+                    public Order(String reference) {
+                        this.reference = reference;
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_JPA_ENTITY_NO_NOARG_CONSTRUCTOR")).isNull();
+    }
+
+    @Test
+    void doesNotFlagEntityWithLombokNoArgsConstructor() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Order.java",
+                """
+                package com.example;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+                import lombok.NoArgsConstructor;
+                @Entity
+                @NoArgsConstructor
+                public class Order {
+                    @Id private Long id;
+                    private String reference;
+                    public Order(String reference) {
+                        this.reference = reference;
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_JPA_ENTITY_NO_NOARG_CONSTRUCTOR")).isNull();
+    }
+
+    @Test
+    void doesNotFlagEntityWithoutExplicitConstructors() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Order.java",
+                """
+                package com.example;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+                @Entity
+                public class Order {
+                    @Id private Long id;
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_JPA_ENTITY_NO_NOARG_CONSTRUCTOR")).isNull();
+    }
+
+    // ── SPRING_BEAN_NAME_COLLISION ────────────────────────────────────────────
+
+    @Test
+    void flagsTwoComponentClassesWithSameSimpleName() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/DemoApplication.java",
+                """
+                package com.example;
+                import org.springframework.boot.autoconfigure.SpringBootApplication;
+                @SpringBootApplication
+                public class DemoApplication {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/example/v1/PaymentService.java",
+                """
+                package com.example.v1;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentService {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/example/v2/PaymentService.java",
+                """
+                package com.example.v2;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentService {}
+                """);
+
+        Finding f = byRule(findings(), "SPRING_BEAN_NAME_COLLISION");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("PaymentService");
+        assertThat(f.message())
+                .contains("com.example.v1.PaymentService")
+                .contains("com.example.v2.PaymentService");
+    }
+
+    @Test
+    void doesNotFlagCollisionWhenOneClassHasExplicitBeanName() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/DemoApplication.java",
+                """
+                package com.example;
+                import org.springframework.boot.autoconfigure.SpringBootApplication;
+                @SpringBootApplication
+                public class DemoApplication {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/example/v1/PaymentService.java",
+                """
+                package com.example.v1;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentService {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/example/v2/PaymentService.java",
+                """
+                package com.example.v2;
+                import org.springframework.stereotype.Service;
+                @Service("paymentServiceV2")
+                public class PaymentService {}
+                """);
+
+        assertThat(byRule(findings(), "SPRING_BEAN_NAME_COLLISION")).isNull();
+    }
+
+    @Test
+    void doesNotFlagCollisionOutsideScanBasePackage() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/app/DemoApplication.java",
+                """
+                package com.example.app;
+                import org.springframework.boot.autoconfigure.SpringBootApplication;
+                @SpringBootApplication
+                public class DemoApplication {}
+                """);
+        // Same simple name, but one class lives outside the scan base package.
+        writeSourceFile(
+                "src/main/java/com/example/app/PaymentService.java",
+                """
+                package com.example.app;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentService {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/other/PaymentService.java",
+                """
+                package com.other;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentService {}
+                """);
+
+        assertThat(byRule(findings(), "SPRING_BEAN_NAME_COLLISION")).isNull();
+    }
+
+    @Test
+    void doesNotFlagCollisionWhenCustomComponentScanPresent() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/DemoApplication.java",
+                """
+                package com.example;
+                import org.springframework.boot.autoconfigure.SpringBootApplication;
+                import org.springframework.context.annotation.ComponentScan;
+                @SpringBootApplication
+                @ComponentScan(basePackages = "com.example.v1")
+                public class DemoApplication {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/example/v1/PaymentService.java",
+                """
+                package com.example.v1;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentService {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/example/v2/PaymentService.java",
+                """
+                package com.example.v2;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentService {}
+                """);
+
+        assertThat(byRule(findings(), "SPRING_BEAN_NAME_COLLISION")).isNull();
+    }
+
     // ── No sources ────────────────────────────────────────────────────────────
 
     @Test

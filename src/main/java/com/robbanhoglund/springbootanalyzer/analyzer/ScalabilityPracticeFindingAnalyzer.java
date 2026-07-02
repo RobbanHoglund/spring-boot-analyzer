@@ -7,6 +7,7 @@ import com.github.javaparser.ast.body.ConstructorDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.Parameter;
+import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
@@ -25,7 +26,9 @@ import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Component;
@@ -114,7 +117,155 @@ public class ScalabilityPracticeFindingAnalyzer {
                     requiresNewMethods,
                     findings);
         }
+        // Pass 3: cross-file bean-name collision detection.
+        detectBeanNameCollisions(sources, findings);
         return findings;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_BEAN_NAME_COLLISION
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> STEREOTYPE_ANNOTATIONS =
+            Set.of(
+                    "Component",
+                    "Service",
+                    "Repository",
+                    "Controller",
+                    "RestController",
+                    "Configuration");
+
+    private void detectBeanNameCollisions(JavaSources sources, List<Finding> findings) {
+        record BeanOccurrence(String fqcn, String path, Integer line) {}
+
+        // Scope guard: only when a @SpringBootApplication defines the scan root and no custom
+        // @ComponentScan redirects/narrows scanning — otherwise which classes are actually
+        // scanned cannot be determined statically.
+        String basePackage = null;
+        boolean customComponentScan = false;
+        for (JavaSources.JavaFile file : sources.files()) {
+            CompilationUnit cu = file.compilationUnit();
+            if (cu == null) {
+                continue;
+            }
+            for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
+                boolean isApplication =
+                        cls.getAnnotations().stream()
+                                .anyMatch(
+                                        a ->
+                                                "SpringBootApplication"
+                                                        .equals(simpleName(a.getNameAsString())));
+                if (isApplication && basePackage == null) {
+                    basePackage =
+                            cu.getPackageDeclaration().map(p -> p.getNameAsString()).orElse("");
+                }
+                for (AnnotationExpr annotation : cls.getAnnotations()) {
+                    if ("ComponentScan".equals(simpleName(annotation.getNameAsString()))
+                            && !annotation.isMarkerAnnotationExpr()) {
+                        customComponentScan = true;
+                    }
+                }
+            }
+        }
+        if (basePackage == null || customComponentScan) {
+            return;
+        }
+
+        Map<String, List<BeanOccurrence>> bySimpleName = new LinkedHashMap<>();
+        for (JavaSources.JavaFile file : sources.files()) {
+            CompilationUnit cu = file.compilationUnit();
+            if (cu == null) {
+                continue;
+            }
+            String pkg = cu.getPackageDeclaration().map(p -> p.getNameAsString()).orElse("");
+            if (!pkg.equals(basePackage) && !pkg.startsWith(basePackage + ".")) {
+                continue;
+            }
+            for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
+                if (cls.isInterface() || cls.isAbstract()) {
+                    continue;
+                }
+                AnnotationExpr stereotype =
+                        cls.getAnnotations().stream()
+                                .filter(
+                                        a ->
+                                                STEREOTYPE_ANNOTATIONS.contains(
+                                                        simpleName(a.getNameAsString())))
+                                .findFirst()
+                                .orElse(null);
+                if (stereotype == null || hasExplicitBeanName(stereotype)) {
+                    continue;
+                }
+                bySimpleName
+                        .computeIfAbsent(cls.getNameAsString(), key -> new ArrayList<>())
+                        .add(
+                                new BeanOccurrence(
+                                        pkg + "." + cls.getNameAsString(),
+                                        file.relativePath(),
+                                        cls.getBegin().map(p -> p.line).orElse(null)));
+            }
+        }
+
+        for (Map.Entry<String, List<BeanOccurrence>> entry : bySimpleName.entrySet()) {
+            List<BeanOccurrence> occurrences = entry.getValue();
+            if (occurrences.stream().map(BeanOccurrence::fqcn).distinct().count() < 2) {
+                continue;
+            }
+            BeanOccurrence reported = occurrences.get(1);
+            String allClasses =
+                    occurrences.stream()
+                            .map(BeanOccurrence::fqcn)
+                            .collect(java.util.stream.Collectors.joining(", "));
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_BEAN_NAME_COLLISION,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    "Component classes share the simple name '"
+                                            + entry.getKey()
+                                            + "' ("
+                                            + allClasses
+                                            + ") — bean registration fails at startup.")
+                            .whyBadPractice(
+                                    "Spring's default AnnotationBeanNameGenerator derives the bean"
+                                        + " name from the decapitalised simple class name. Two"
+                                        + " component-scanned classes with the same simple name in"
+                                        + " different packages therefore claim the same bean name,"
+                                        + " and the context fails with"
+                                        + " ConflictingBeanDefinitionException regardless of"
+                                        + " bean-overriding settings.")
+                            .possibleImpact(
+                                    "The application crashes at startup in every environment — a"
+                                            + " classic outcome of v1/v2 package splits or module"
+                                            + " refactorings that duplicate a class name.")
+                            .recommendation(
+                                    "Rename one of the classes, or give one an explicit bean name"
+                                            + " (e.g. @Service(\"orderServiceV2\")).")
+                            .evidence(
+                                    "Classes "
+                                            + allClasses
+                                            + " are all component-scanned under base package '"
+                                            + basePackage
+                                            + "' without explicit bean names.")
+                            .limitations(
+                                    "Assumes default component scanning from the"
+                                        + " @SpringBootApplication package; projects with custom"
+                                        + " @ComponentScan configuration are skipped entirely."
+                                        + " Excluded classes (e.g. via scan filters or profiles)"
+                                        + " are not visible statically.")
+                            .source(reported.path(), reported.line())
+                            .target(entry.getKey())
+                            .build());
+        }
+    }
+
+    private static boolean hasExplicitBeanName(AnnotationExpr annotation) {
+        if (annotation.isSingleMemberAnnotationExpr()) {
+            return true;
+        }
+        return annotation.isNormalAnnotationExpr()
+                && annotation.asNormalAnnotationExpr().getPairs().stream()
+                        .anyMatch(pair -> pair.getNameAsString().equals("value"));
     }
 
     private Set<String> collectRequiresNewMethods(JavaSources sources) {
@@ -195,6 +346,7 @@ public class ScalabilityPracticeFindingAnalyzer {
             detectFilterComponentRegistrationLeak(cls, relativePath, findings);
             detectNonThreadSafeFormatterField(cls, relativePath, findings);
             detectEntityMissingId(cls, relativePath, findings);
+            detectEntityNoArgConstructor(cls, relativePath, findings);
             detectExecutorNoShutdown(cls, relativePath, findings);
             if (!prototypeTypes.isEmpty()) {
                 detectPrototypeBeanInSingleton(cls, relativePath, prototypeTypes, findings);
@@ -1064,6 +1216,93 @@ public class ScalabilityPracticeFindingAnalyzer {
             return fae.getNameAsString();
         }
         return null;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_JPA_ENTITY_NO_NOARG_CONSTRUCTOR
+    // ---------------------------------------------------------------------------
+
+    /**
+     * Lombok annotations that (conservatively) may generate a usable constructor. Suppressing on
+     * any of them keeps false positives near zero at the cost of a few missed cases.
+     */
+    private static final Set<String> LOMBOK_CONSTRUCTOR_ANNOTATIONS =
+            Set.of(
+                    "NoArgsConstructor",
+                    "Data",
+                    "Value",
+                    "RequiredArgsConstructor",
+                    "AllArgsConstructor",
+                    "Builder");
+
+    private void detectEntityNoArgConstructor(
+            ClassOrInterfaceDeclaration cls, String relativePath, List<Finding> findings) {
+        boolean entityLike =
+                cls.getAnnotations().stream()
+                        .map(a -> simpleName(a.getNameAsString()))
+                        .anyMatch(name -> "Entity".equals(name) || "Embeddable".equals(name));
+        if (!entityLike) {
+            return;
+        }
+        var constructors = cls.getConstructors();
+        // No explicit constructor -> the compiler provides the implicit default one.
+        if (constructors.isEmpty()) {
+            return;
+        }
+        if (constructors.stream().anyMatch(c -> c.getParameters().isEmpty())) {
+            return;
+        }
+        boolean lombokMayGenerate =
+                cls.getAnnotations().stream()
+                        .anyMatch(
+                                a ->
+                                        LOMBOK_CONSTRUCTOR_ANNOTATIONS.contains(
+                                                simpleName(a.getNameAsString())));
+        if (lombokMayGenerate) {
+            return;
+        }
+        Integer line = cls.getBegin().map(p -> p.line).orElse(null);
+        String target = cls.getNameAsString();
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_JPA_ENTITY_NO_NOARG_CONSTRUCTOR,
+                                FindingConfidence.HIGH)
+                        .shortMessage(
+                                "@Entity "
+                                        + target
+                                        + " declares only parameterized constructors — Hibernate"
+                                        + " cannot instantiate it.")
+                        .whyBadPractice(
+                                "JPA requires every entity to have a no-arg constructor (at least"
+                                    + " protected). Declaring any constructor removes the implicit"
+                                    + " default one, so Hibernate can no longer instantiate the"
+                                    + " class when materialising query results.")
+                        .possibleImpact(
+                                "The application starts cleanly and writes may even work, but the"
+                                        + " first SELECT that loads the entity throws"
+                                        + " org.hibernate.InstantiationException ('No default"
+                                        + " constructor for entity') — often on a code path first"
+                                        + " exercised in production.")
+                        .recommendation(
+                                "Add a protected no-arg constructor (or Lombok's"
+                                        + " @NoArgsConstructor(access = AccessLevel.PROTECTED))"
+                                        + " alongside the parameterized ones.")
+                        .evidence(
+                                "@Entity "
+                                        + target
+                                        + " in "
+                                        + relativePath
+                                        + " declares "
+                                        + constructors.size()
+                                        + " constructor(s), none of which is no-arg.")
+                        .limitations(
+                                "Suppressed when any Lombok constructor-generating annotation is"
+                                        + " present, even ones that do not actually produce a"
+                                        + " no-arg constructor — conservative to avoid false"
+                                        + " positives.")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
     }
 
     // ---------------------------------------------------------------------------

@@ -63,6 +63,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -558,6 +559,10 @@ public class StaticPracticeFindingAnalyzer {
                         legacyTransactionalVisibility,
                         signals,
                         findings);
+            }
+
+            if (controllerLike) {
+                detectPathVariableTemplateMismatch(relativePath, declaration, method, findings);
             }
 
             if (controllerLike) {
@@ -1448,6 +1453,211 @@ public class StaticPracticeFindingAnalyzer {
                             .target(target)
                             .build());
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_PATH_VARIABLE_TEMPLATE_MISMATCH
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> REQUEST_MAPPING_ANNOTATIONS =
+            Set.of(
+                    "RequestMapping",
+                    "GetMapping",
+                    "PostMapping",
+                    "PutMapping",
+                    "DeleteMapping",
+                    "PatchMapping");
+
+    private static final java.util.regex.Pattern TEMPLATE_VARIABLE_PATTERN =
+            java.util.regex.Pattern.compile("\\{([^}/]+)\\}");
+
+    /**
+     * Flags handler parameters whose explicit {@code @PathVariable("name")} matches no
+     * {@code {name}} variable in the merged class+method mapping template. Spring throws
+     * {@code MissingPathVariableException} (HTTP 500) on every invocation of such a handler.
+     * Skipped entirely when any mapping path is a non-literal expression or contains a property
+     * placeholder, and for {@code @PathVariable} parameters without an explicit name (their
+     * binding depends on compiled parameter names, which static analysis cannot judge).
+     */
+    private void detectPathVariableTemplateMismatch(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            MethodDeclaration method,
+            List<Finding> findings) {
+        AnnotationExpr mapping =
+                method.getAnnotations().stream()
+                        .filter(
+                                a ->
+                                        REQUEST_MAPPING_ANNOTATIONS.contains(
+                                                simpleName(a.getNameAsString())))
+                        .findFirst()
+                        .orElse(null);
+        if (mapping == null) {
+            return;
+        }
+        List<String> methodPaths = mappingPathLiterals(mapping);
+        if (methodPaths == null) {
+            return;
+        }
+        List<String> allPaths = new ArrayList<>(methodPaths);
+        for (AnnotationExpr classAnnotation : declaration.getAnnotations()) {
+            if (!REQUEST_MAPPING_ANNOTATIONS.contains(
+                    simpleName(classAnnotation.getNameAsString()))) {
+                continue;
+            }
+            List<String> classPaths = mappingPathLiterals(classAnnotation);
+            if (classPaths == null) {
+                return;
+            }
+            allPaths.addAll(classPaths);
+        }
+        Set<String> templateVariables = new HashSet<>();
+        for (String path : allPaths) {
+            if (path.contains("${")) {
+                return;
+            }
+            var matcher = TEMPLATE_VARIABLE_PATTERN.matcher(path);
+            while (matcher.find()) {
+                String variable = matcher.group(1);
+                int colon = variable.indexOf(':');
+                if (colon >= 0) {
+                    variable = variable.substring(0, colon);
+                }
+                if (variable.startsWith("*")) {
+                    variable = variable.substring(1);
+                }
+                templateVariables.add(variable.trim());
+            }
+        }
+        for (Parameter parameter : method.getParameters()) {
+            AnnotationExpr pathVariable =
+                    parameter.getAnnotationByName("PathVariable").orElse(null);
+            if (pathVariable == null) {
+                continue;
+            }
+            String explicitName = null;
+            if (pathVariable.isSingleMemberAnnotationExpr()
+                    && pathVariable
+                            .asSingleMemberAnnotationExpr()
+                            .getMemberValue()
+                            .isStringLiteralExpr()) {
+                explicitName =
+                        pathVariable
+                                .asSingleMemberAnnotationExpr()
+                                .getMemberValue()
+                                .asStringLiteralExpr()
+                                .asString();
+            } else if (pathVariable.isNormalAnnotationExpr()) {
+                for (var pair : pathVariable.asNormalAnnotationExpr().getPairs()) {
+                    String pairName = pair.getNameAsString();
+                    if (("value".equals(pairName) || "name".equals(pairName))
+                            && pair.getValue().isStringLiteralExpr()) {
+                        explicitName = pair.getValue().asStringLiteralExpr().asString();
+                    }
+                }
+            }
+            if (explicitName == null || templateVariables.contains(explicitName)) {
+                continue;
+            }
+            Integer line = parameter.getBegin().map(p -> p.line).orElse(null);
+            String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_PATH_VARIABLE_TEMPLATE_MISMATCH,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "@PathVariable(\""
+                                            + explicitName
+                                            + "\") on "
+                                            + target
+                                            + " matches no {variable} in the mapping template.")
+                            .whyBadPractice(
+                                    "Spring resolves @PathVariable values from the URI template"
+                                            + " variables of the merged class+method mapping. A"
+                                            + " variable name that appears in no template cannot be"
+                                            + " resolved, so the handler throws"
+                                            + " MissingPathVariableException on every request —"
+                                            + " typically after a rename touched only one side.")
+                            .possibleImpact(
+                                    "The endpoint deploys cleanly but returns HTTP 500 on every"
+                                            + " single invocation.")
+                            .recommendation(
+                                    "Align the names: add {"
+                                            + explicitName
+                                            + "} to the mapping path or correct the @PathVariable"
+                                            + " value to one of the declared template variables ("
+                                            + (templateVariables.isEmpty()
+                                                    ? "none declared"
+                                                    : String.join(", ", templateVariables))
+                                            + ").")
+                            .evidence(
+                                    "@PathVariable(\""
+                                            + explicitName
+                                            + "\") found on "
+                                            + target
+                                            + " in "
+                                            + relativePath
+                                            + "; mapping paths: "
+                                            + (allPaths.isEmpty()
+                                                    ? "(none)"
+                                                    : String.join(", ", allPaths))
+                                            + ".")
+                            .limitations(
+                                    "Only literal mapping paths are checked; handlers whose paths"
+                                        + " come from constants, expressions, or placeholders are"
+                                        + " skipped. @PathVariable parameters without an explicit"
+                                        + " name are not checked.")
+                            .source(relativePath, line)
+                            .target(target)
+                            .build());
+        }
+    }
+
+    /**
+     * Returns the literal path strings of a mapping annotation: empty list for a marker
+     * annotation, the collected string literals for single-member/normal forms, or {@code null}
+     * when any path value is a non-literal expression (constant reference, concatenation, …).
+     */
+    private List<String> mappingPathLiterals(AnnotationExpr annotation) {
+        if (annotation.isMarkerAnnotationExpr()) {
+            return List.of();
+        }
+        if (annotation.isSingleMemberAnnotationExpr()) {
+            return literalStrings(annotation.asSingleMemberAnnotationExpr().getMemberValue());
+        }
+        if (annotation.isNormalAnnotationExpr()) {
+            List<String> paths = new ArrayList<>();
+            for (var pair : annotation.asNormalAnnotationExpr().getPairs()) {
+                String pairName = pair.getNameAsString();
+                if (!"value".equals(pairName) && !"path".equals(pairName)) {
+                    continue;
+                }
+                List<String> literals = literalStrings(pair.getValue());
+                if (literals == null) {
+                    return null;
+                }
+                paths.addAll(literals);
+            }
+            return paths;
+        }
+        return List.of();
+    }
+
+    private List<String> literalStrings(com.github.javaparser.ast.expr.Expression expression) {
+        if (expression.isStringLiteralExpr()) {
+            return List.of(expression.asStringLiteralExpr().asString());
+        }
+        if (expression.isArrayInitializerExpr()) {
+            List<String> values = new ArrayList<>();
+            for (var value : expression.asArrayInitializerExpr().getValues()) {
+                if (!value.isStringLiteralExpr()) {
+                    return null;
+                }
+                values.add(value.asStringLiteralExpr().asString());
+            }
+            return values;
+        }
+        return null;
     }
 
     /**

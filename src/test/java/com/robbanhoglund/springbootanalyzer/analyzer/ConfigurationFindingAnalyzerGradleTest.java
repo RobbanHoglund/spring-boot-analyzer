@@ -446,6 +446,85 @@ class ConfigurationFindingAnalyzerGradleTest {
                 "HIGH");
     }
 
+    private static BuildInfo liquibaseBuild() {
+        return new BuildInfo(
+                BuildTool.GRADLE,
+                true,
+                "17",
+                List.of("org.liquibase:liquibase-core"),
+                "3.5.1",
+                "Gradle plugins",
+                "HIGH");
+    }
+
+    // ── SPRING_LIQUIBASE_MISSING_CHANGELOG ────────────────────────────────────
+
+    @Test
+    void flagsLiquibaseMissingChangelogAtDefaultLocation() {
+        List<Finding> result =
+                analyzer.analyze(repoRoot, liquibaseBuild(), emptyConfig(), buildGradleNone());
+        Finding f = byRule(result, "SPRING_LIQUIBASE_MISSING_CHANGELOG");
+        assertThat(f).isNotNull();
+        assertThat(f.evidence()).contains("db/changelog/db.changelog-master.yaml");
+    }
+
+    @Test
+    void doesNotFlagLiquibaseWhenDefaultChangelogExists() throws IOException {
+        Path dir = Files.createDirectories(repoRoot.resolve("src/main/resources/db/changelog"));
+        Files.writeString(dir.resolve("db.changelog-master.yaml"), "databaseChangeLog: []");
+
+        List<Finding> result =
+                analyzer.analyze(repoRoot, liquibaseBuild(), emptyConfig(), buildGradleNone());
+        assertThat(byRule(result, "SPRING_LIQUIBASE_MISSING_CHANGELOG")).isNull();
+    }
+
+    @Test
+    void doesNotFlagLiquibaseWhenCustomChangelogExists() throws IOException {
+        Path dir = Files.createDirectories(repoRoot.resolve("src/main/resources/db/changelog"));
+        Files.writeString(dir.resolve("master.xml"), "<databaseChangeLog/>");
+
+        List<Finding> result =
+                analyzer.analyze(
+                        repoRoot,
+                        liquibaseBuild(),
+                        configWithProperty(
+                                "spring.liquibase.change-log", "classpath:db/changelog/master.xml"),
+                        buildGradleNone());
+        assertThat(byRule(result, "SPRING_LIQUIBASE_MISSING_CHANGELOG")).isNull();
+    }
+
+    @Test
+    void flagsLiquibaseWhenCustomChangelogMissing() {
+        List<Finding> result =
+                analyzer.analyze(
+                        repoRoot,
+                        liquibaseBuild(),
+                        configWithProperty(
+                                "spring.liquibase.change-log", "classpath:db/changelog/master.xml"),
+                        buildGradleNone());
+        Finding f = byRule(result, "SPRING_LIQUIBASE_MISSING_CHANGELOG");
+        assertThat(f).isNotNull();
+        assertThat(f.evidence()).contains("db/changelog/master.xml");
+    }
+
+    @Test
+    void doesNotFlagLiquibaseWhenExplicitlyDisabled() {
+        List<Finding> result =
+                analyzer.analyze(
+                        repoRoot,
+                        liquibaseBuild(),
+                        configWithProperty("spring.liquibase.enabled", "false"),
+                        buildGradleNone());
+        assertThat(byRule(result, "SPRING_LIQUIBASE_MISSING_CHANGELOG")).isNull();
+    }
+
+    @Test
+    void doesNotFlagLiquibaseWhenDependencyAbsent() {
+        List<Finding> result =
+                analyzer.analyze(repoRoot, buildInfoBoot3, emptyConfig(), buildGradleNone());
+        assertThat(byRule(result, "SPRING_LIQUIBASE_MISSING_CHANGELOG")).isNull();
+    }
+
     private static ConfigurationAnalysis configWithFlywayLocations(String value) {
         ApplicationProperty property =
                 new ApplicationProperty(

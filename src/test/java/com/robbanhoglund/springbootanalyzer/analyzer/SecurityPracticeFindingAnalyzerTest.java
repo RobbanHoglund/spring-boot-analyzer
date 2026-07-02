@@ -542,6 +542,146 @@ class SecurityPracticeFindingAnalyzerTest {
         assertThat(byRule(findings(), "SPRING_WEAK_PASSWORD_HASH")).isNull();
     }
 
+    // ── SPRING_COOKIE_MISSING_HTTPONLY ────────────────────────────────────────
+
+    @Test
+    void flagsCookieAddedWithoutHttpOnly() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/SessionController.java",
+                """
+                package com.example;
+                import jakarta.servlet.http.Cookie;
+                import jakarta.servlet.http.HttpServletResponse;
+                public class SessionController {
+                    public void issue(HttpServletResponse response, String token) {
+                        Cookie cookie = new Cookie("session", token);
+                        response.addCookie(cookie);
+                    }
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_COOKIE_MISSING_HTTPONLY");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("setHttpOnly");
+    }
+
+    @Test
+    void doesNotFlagCookieWithHttpOnlySet() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/SessionController.java",
+                """
+                package com.example;
+                import jakarta.servlet.http.Cookie;
+                import jakarta.servlet.http.HttpServletResponse;
+                public class SessionController {
+                    public void issue(HttpServletResponse response, String token) {
+                        Cookie cookie = new Cookie("session", token);
+                        cookie.setHttpOnly(true);
+                        cookie.setSecure(true);
+                        response.addCookie(cookie);
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_COOKIE_MISSING_HTTPONLY")).isNull();
+    }
+
+    @Test
+    void doesNotFlagCookieNeverAddedToResponse() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/CookieParser.java",
+                """
+                package com.example;
+                import jakarta.servlet.http.Cookie;
+                public class CookieParser {
+                    public Cookie parse(String name, String value) {
+                        return new Cookie(name, value);
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_COOKIE_MISSING_HTTPONLY")).isNull();
+    }
+
+    // ── SPRING_ZIP_SLIP ───────────────────────────────────────────────────────
+
+    @Test
+    void flagsZipEntryNameUsedInFilePathWithoutValidation() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ArchiveExtractor.java",
+                """
+                package com.example;
+                import java.io.File;
+                import java.io.InputStream;
+                import java.util.zip.ZipEntry;
+                import java.util.zip.ZipInputStream;
+                public class ArchiveExtractor {
+                    public void extract(InputStream in, File destDir) throws Exception {
+                        try (ZipInputStream zip = new ZipInputStream(in)) {
+                            ZipEntry entry;
+                            while ((entry = zip.getNextEntry()) != null) {
+                                File out = new File(destDir, entry.getName());
+                                write(zip, out);
+                            }
+                        }
+                    }
+                    private void write(InputStream in, File out) {}
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_ZIP_SLIP");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("Zip Slip");
+    }
+
+    @Test
+    void doesNotFlagZipExtractionWithCanonicalPathValidation() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ArchiveExtractor.java",
+                """
+                package com.example;
+                import java.io.File;
+                import java.io.IOException;
+                import java.io.InputStream;
+                import java.util.zip.ZipEntry;
+                import java.util.zip.ZipInputStream;
+                public class ArchiveExtractor {
+                    public void extract(InputStream in, File destDir) throws Exception {
+                        try (ZipInputStream zip = new ZipInputStream(in)) {
+                            ZipEntry entry;
+                            while ((entry = zip.getNextEntry()) != null) {
+                                File out = new File(destDir, entry.getName());
+                                if (!out.getCanonicalPath().startsWith(destDir.getCanonicalPath())) {
+                                    throw new IOException("Zip slip attempt: " + entry.getName());
+                                }
+                                write(zip, out);
+                            }
+                        }
+                    }
+                    private void write(InputStream in, File out) {}
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_ZIP_SLIP")).isNull();
+    }
+
+    @Test
+    void doesNotFlagFileCreationOutsideArchiveContext() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ReportWriter.java",
+                """
+                package com.example;
+                import java.io.File;
+                public class ReportWriter {
+                    public File reportFile(File dir, java.io.File source) {
+                        return new File(dir, source.getName());
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_ZIP_SLIP")).isNull();
+    }
+
     // ── SPRING_PERMIT_ALL_ANY_REQUEST ─────────────────────────────────────────
 
     @Test

@@ -142,6 +142,8 @@ public class ConfigurationFindingAnalyzer {
         detectConditionalBeanMatrixIssues(configurationAnalysis, findings);
         detectFlywaySchemaRisks(
                 repositoryRoot, buildInfo, configurationAnalysis, gradleModelAnalysis, findings);
+        detectLiquibaseMissingChangelog(
+                repositoryRoot, buildInfo, configurationAnalysis, gradleModelAnalysis, findings);
         detectMissingSecurityStarter(buildInfo, findings);
         detectOpenInViewNotDisabled(configurationAnalysis, findings);
         detectActuatorExposure(configurationAnalysis, findings);
@@ -1730,6 +1732,104 @@ public class ConfigurationFindingAnalyzer {
      * locations are mapped to repository paths; locations resolving outside the repository (e.g.
      * absolute filesystem paths) are dropped because they cannot be inspected statically.
      */
+    private static final String LIQUIBASE_DEFAULT_CHANGELOG =
+            "db/changelog/db.changelog-master.yaml";
+
+    private void detectLiquibaseMissingChangelog(
+            Path repositoryRoot,
+            BuildInfo buildInfo,
+            ConfigurationAnalysis configurationAnalysis,
+            GradleModelAnalysis gradleModelAnalysis,
+            List<Finding> findings) {
+        boolean liquibasePresent =
+                dependencyPresent(
+                        buildInfo, gradleModelAnalysis, "org.liquibase", "liquibase-core");
+        if (!liquibasePresent) {
+            return;
+        }
+        ApplicationProperty enabled =
+                findProperty(configurationAnalysis, "spring.liquibase.enabled");
+        if (enabled != null
+                && enabled.value() != null
+                && "false".equalsIgnoreCase(enabled.value().trim())) {
+            return;
+        }
+        ApplicationProperty changeLogProperty =
+                findProperty(configurationAnalysis, "spring.liquibase.change-log");
+        String configured =
+                changeLogProperty == null || changeLogProperty.value() == null
+                        ? null
+                        : changeLogProperty.value().trim();
+        String location = configured != null ? configured : LIQUIBASE_DEFAULT_CHANGELOG;
+        // Values static analysis cannot judge: placeholders and non-classpath resource URLs.
+        if (location.contains("${")) {
+            return;
+        }
+        String lower = location.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("file:")
+                || lower.startsWith("optional:")
+                || lower.startsWith("http")) {
+            return;
+        }
+        String relative =
+                lower.startsWith("classpath:")
+                        ? location.substring("classpath:".length())
+                        : location;
+        relative = relative.replace('\\', '/');
+        while (relative.startsWith("/")) {
+            relative = relative.substring(1);
+        }
+        if (relative.isEmpty() || isAbsolutePath(relative)) {
+            return;
+        }
+        Path resolved = repositoryRoot.resolve("src/main/resources").resolve(relative).normalize();
+        if (!resolved.startsWith(repositoryRoot.normalize()) || Files.exists(resolved)) {
+            return;
+        }
+        String describedLocation = "src/main/resources/" + relative;
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_LIQUIBASE_MISSING_CHANGELOG,
+                                FindingConfidence.MEDIUM)
+                        .shortMessage(
+                                "Liquibase is on the classpath but no changelog was found at "
+                                        + describedLocation
+                                        + ".")
+                        .whyBadPractice(
+                                "With liquibase-core on the classpath and a DataSource present,"
+                                    + " Spring Boot auto-configures Liquibase against the changelog"
+                                    + " at spring.liquibase.change-log (default"
+                                    + " classpath:/db/changelog/db.changelog-master.yaml). When the"
+                                    + " file does not exist, startup fails with 'Cannot find"
+                                    + " changelog location'.")
+                        .possibleImpact(
+                                "The application fails to start in every environment — typically"
+                                        + " discovered only at deploy time.")
+                        .recommendation(
+                                configured == null
+                                        ? "Create db/changelog/db.changelog-master.yaml under"
+                                                + " src/main/resources, or point"
+                                                + " spring.liquibase.change-log at the actual"
+                                                + " changelog file."
+                                        : "Create the changelog at the configured location, or"
+                                                + " correct spring.liquibase.change-log to point at"
+                                                + " the actual file.")
+                        .evidence(
+                                "liquibase-core was detected in the build dependencies, but no file"
+                                        + " exists at "
+                                        + describedLocation
+                                        + (configured == null
+                                                ? " (the Spring Boot default location)."
+                                                : " (from spring.liquibase.change-log)."))
+                        .limitations(
+                                "Multi-module builds that package resources elsewhere, or"
+                                        + " changelogs provided by another module/jar, are not"
+                                        + " visible to this check.")
+                        .location(describedLocation)
+                        .target("liquibase changelog")
+                        .build());
+    }
+
     private List<Path> flywayMigrationRoots(
             Path repositoryRoot, ConfigurationAnalysis configurationAnalysis) {
         String configured = flywayLocationsValue(configurationAnalysis);
