@@ -319,6 +319,68 @@ class ConfigurationFindingAnalyzerProfileDriftTest {
         assertThat(byRule(findings(cfg), "SPRING_JPA_OPEN_IN_VIEW")).isNull();
     }
 
+    // ── SPRING_PROFILES_ACTIVE_IN_PROFILE_SPECIFIC_FILE ───────────────────────
+
+    @Test
+    void flagsProfilesActiveInProfileSpecificFile() {
+        ConfigurationAnalysis cfg = config(prop("spring.profiles.active", "extra", "prod"));
+
+        Finding f = byRule(findings(cfg), "SPRING_PROFILES_ACTIVE_IN_PROFILE_SPECIFIC_FILE");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("spring.profiles.active");
+        assertThat(f.message()).contains("prod");
+    }
+
+    @Test
+    void flagsProfilesIncludeInProfileSpecificFile() {
+        ConfigurationAnalysis cfg = config(prop("spring.profiles.include", "common", "staging"));
+
+        assertThat(byRule(findings(cfg), "SPRING_PROFILES_ACTIVE_IN_PROFILE_SPECIFIC_FILE"))
+                .isNotNull();
+    }
+
+    @Test
+    void doesNotFlagProfilesActiveInDefaultFile() {
+        // Activating profiles from the default application.properties is the supported pattern.
+        ConfigurationAnalysis cfg = config(prop("spring.profiles.active", "prod", null));
+
+        assertThat(byRule(findings(cfg), "SPRING_PROFILES_ACTIVE_IN_PROFILE_SPECIFIC_FILE"))
+                .isNull();
+    }
+
+    @Test
+    void doesNotFlagProfilesGroupInProfileSpecificFile() {
+        ConfigurationAnalysis cfg = config(prop("spring.profiles.group.prod", "prod,db", "prod"));
+
+        assertThat(byRule(findings(cfg), "SPRING_PROFILES_ACTIVE_IN_PROFILE_SPECIFIC_FILE"))
+                .isNull();
+    }
+
+    // ── SPRING_SQL_INIT_ALWAYS_PROD ───────────────────────────────────────────
+
+    @Test
+    void flagsSqlInitAlwaysInProdProfile() {
+        ConfigurationAnalysis cfg = config(prop("spring.sql.init.mode", "always", "prod"));
+
+        Finding f = byRule(findings(cfg), "SPRING_SQL_INIT_ALWAYS_PROD");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("spring.sql.init.mode");
+    }
+
+    @Test
+    void doesNotFlagSqlInitAlwaysInDefaultProfile() {
+        ConfigurationAnalysis cfg = config(prop("spring.sql.init.mode", "always", null));
+
+        assertThat(byRule(findings(cfg), "SPRING_SQL_INIT_ALWAYS_PROD")).isNull();
+    }
+
+    @Test
+    void doesNotFlagSqlInitEmbeddedInProdProfile() {
+        ConfigurationAnalysis cfg = config(prop("spring.sql.init.mode", "embedded", "prod"));
+
+        assertThat(byRule(findings(cfg), "SPRING_SQL_INIT_ALWAYS_PROD")).isNull();
+    }
+
     // ── SPRING_MULTIPART_NO_MAX_SIZE ──────────────────────────────────────────
 
     @Test

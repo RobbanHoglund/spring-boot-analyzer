@@ -1929,6 +1929,69 @@ class PriceRefreshJob {
     }
 
     @Test
+    void flagsOneToOneMappedByWithLazyFetch() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("User.java"),
+                """
+                package com.example.demo;
+
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.FetchType;
+                import jakarta.persistence.OneToOne;
+
+                @Entity
+                class User {
+                    @OneToOne(mappedBy = "user", fetch = FetchType.LAZY)
+                    private Profile profile;
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .anyMatch(
+                        finding ->
+                                FindingRules.SPRING_JPA_ONETOONE_MAPPEDBY_LAZY_IGNORED
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && "User.profile".equals(finding.target()));
+    }
+
+    @Test
+    void doesNotFlagOwningSideOneToOneWithLazyFetch() throws IOException {
+        // The owning side (no mappedBy) of a @OneToOne is lazy-capable — must not be flagged.
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Profile.java"),
+                """
+                package com.example.demo;
+
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.FetchType;
+                import jakarta.persistence.JoinColumn;
+                import jakarta.persistence.OneToOne;
+
+                @Entity
+                class Profile {
+                    @OneToOne(fetch = FetchType.LAZY)
+                    @JoinColumn(name = "user_id")
+                    private User user;
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_JPA_ONETOONE_MAPPEDBY_LAZY_IGNORED.ruleId());
+    }
+
+    @Test
     void flagsManyToOneWithoutFetchType() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
         Path sourceRoot =

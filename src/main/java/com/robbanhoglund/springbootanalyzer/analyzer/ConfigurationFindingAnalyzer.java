@@ -152,6 +152,8 @@ public class ConfigurationFindingAnalyzer {
         detectJdbcUrlEmbeddedCredentials(configurationAnalysis, findings);
         detectDefaultUserPasswordLiteral(configurationAnalysis, findings);
         detectDeprecatedSpringProfiles(configurationAnalysis, findings);
+        detectProfilesActiveInProfileSpecificFile(configurationAnalysis, findings);
+        detectSqlInitAlwaysProd(configurationAnalysis, findings);
         detectActuatorHttptraceRenamed(configurationAnalysis, findings);
         detectDataRestExposedRepositories(
                 buildInfo, configurationAnalysis, gradleModelAnalysis, findings);
@@ -364,6 +366,121 @@ public class ConfigurationFindingAnalyzer {
                                             + " remain valid.")
                             .source(property.sourceFile(), property.line())
                             .target("spring.profiles")
+                            .build());
+        }
+    }
+
+    private void detectProfilesActiveInProfileSpecificFile(
+            ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {
+        if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
+            return;
+        }
+        for (ApplicationProperty property : configurationAnalysis.properties()) {
+            if (property == null || property.name() == null) {
+                continue;
+            }
+            String name = property.name();
+            if (!"spring.profiles.active".equals(name) && !"spring.profiles.include".equals(name)) {
+                continue;
+            }
+            // Only invalid when the property lives in a profile-specific file
+            // (application-<profile>.*) or an on-profile-guarded document.
+            String profile = normalizedProfile(property.profile());
+            if ("default".equals(profile)) {
+                continue;
+            }
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_PROFILES_ACTIVE_IN_PROFILE_SPECIFIC_FILE,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    name
+                                            + " is set inside profile-specific configuration"
+                                            + " (profile '"
+                                            + profile
+                                            + "') — Spring Boot fails at startup.")
+                            .whyBadPractice(
+                                    "Since the Spring Boot 2.4 config-data model (all of Boot 3.x),"
+                                        + " spring.profiles.active and spring.profiles.include are"
+                                        + " invalid inside profile-specific files and"
+                                        + " spring.config.activate.on-profile documents. Boot"
+                                        + " throws InvalidConfigDataPropertyException while loading"
+                                        + " the configuration.")
+                            .possibleImpact(
+                                    "The application fails to start every time the profile is"
+                                            + " activated — a deterministic startup crash that"
+                                            + " typically surfaces at deploy time.")
+                            .recommendation(
+                                    "Activate additional profiles from the default"
+                                        + " application.properties/yaml, the SPRING_PROFILES_ACTIVE"
+                                        + " environment variable, or compose profiles with"
+                                        + " spring.profiles.group.<name> in the default document.")
+                            .evidence(
+                                    name
+                                            + " was found in "
+                                            + property.sourceFile()
+                                            + " attributed to profile '"
+                                            + profile
+                                            + "'.")
+                            .source(property.sourceFile(), property.line())
+                            .target(name)
+                            .build());
+        }
+    }
+
+    private void detectSqlInitAlwaysProd(
+            ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {
+        if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
+            return;
+        }
+        for (ApplicationProperty property : configurationAnalysis.properties()) {
+            if (property == null || property.name() == null || property.value() == null) {
+                continue;
+            }
+            if (!"spring.sql.init.mode".equals(property.name())
+                    || !"always".equalsIgnoreCase(property.value().trim())) {
+                continue;
+            }
+            String profile = normalizedProfile(property.profile());
+            if (!isProdLikeProfile(profile)) {
+                continue;
+            }
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_SQL_INIT_ALWAYS_PROD,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "spring.sql.init.mode=always in production-oriented profile '"
+                                            + profile
+                                            + "' re-runs SQL init scripts on every startup.")
+                            .whyBadPractice(
+                                    "With mode=always, Spring Boot executes schema.sql/data.sql (or"
+                                        + " the configured spring.sql.init.*-locations) against the"
+                                        + " real datasource on every application startup — the"
+                                        + " default 'embedded' runs them only for in-memory"
+                                        + " databases. Init scripts are rarely idempotent.")
+                            .possibleImpact(
+                                    "Duplicate or overwritten rows on every restart, or a startup"
+                                            + " abort when a script fails against existing data"
+                                            + " (continue-on-error defaults to false) — a"
+                                            + " data-corruption class risk in production.")
+                            .recommendation(
+                                    "Use Flyway or Liquibase for production schema/data changes."
+                                            + " If SQL init scripts are needed for local bootstrap,"
+                                            + " keep mode=always out of production profiles or make"
+                                            + " every script strictly idempotent.")
+                            .evidence(
+                                    "spring.sql.init.mode=always was found in "
+                                            + property.sourceFile()
+                                            + " (profile: "
+                                            + profile
+                                            + ").")
+                            .limitations(
+                                    "Static analysis cannot verify whether the profile's datasource"
+                                            + " is a disposable/embedded database or whether the"
+                                            + " scripts are idempotent.")
+                            .source(property.sourceFile(), property.line())
+                            .target("spring.sql.init.mode")
                             .build());
         }
     }

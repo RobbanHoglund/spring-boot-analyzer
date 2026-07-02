@@ -32,6 +32,12 @@ import org.springframework.stereotype.Component;
  *       declares parameters; Spring requires no-arg methods and fails at startup.
  *   <li>{@link FindingRules#SPRING_ASYNC_SELF_INVOCATION} — an {@code @Async} method is called via
  *       self-invocation, bypassing the proxy so it runs synchronously.
+ *   <li>{@link FindingRules#SPRING_RETRYABLE_WITHOUT_ENABLE_RETRY} — {@code @Retryable}/
+ *       {@code @Recover} are used but no {@code @EnableRetry} is present anywhere, so no retries
+ *       ever happen (same proxy-enablement mechanism as the scheduling/async rules above).
+ *   <li>{@link FindingRules#SPRING_SCHEDULED_CRON_INVALID_EXPRESSION} — a {@code @Scheduled} cron
+ *       literal does not have the six fields Spring requires (or uses an unknown macro), so task
+ *       registration fails at startup.
  * </ul>
  *
  * <p>{@code @Async} on a private method is detected separately by {@link
@@ -59,28 +65,46 @@ public class SchedulingPracticeFindingAnalyzer {
     public List<Finding> analyze(JavaSources sources) {
         List<Finding> findings = new ArrayList<>();
 
-        // Cross-file enablement signals for the "@Scheduled/@Async used but not enabled" rules:
-        // whether any class enables the feature, and the first place the feature is actually used.
+        // Cross-file enablement signals for the "@Scheduled/@Async/@Retryable used but not
+        // enabled" rules: whether any class enables the feature, and the first place the feature
+        // is actually used.
         boolean enableScheduling = false;
         boolean enableAsync = false;
+        boolean enableRetry = false;
         String scheduledUsagePath = null;
         Integer scheduledUsageLine = null;
         String scheduledUsageTarget = null;
         String asyncUsagePath = null;
         Integer asyncUsageLine = null;
         String asyncUsageTarget = null;
+        String retryUsagePath = null;
+        Integer retryUsageLine = null;
+        String retryUsageTarget = null;
 
         for (JavaSources.JavaFile file : sources.files()) {
             CompilationUnit cu = file.compilationUnit();
             if (cu == null) {
                 continue;
             }
+            // Guard the spring-retry rule on the import to avoid clashing with same-named
+            // annotations from other libraries (resilience4j uses @Retry, so overlap is rare).
+            boolean springRetryImported = file.content().contains("org.springframework.retry");
             for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
                 if (hasAnnotation(cls.getAnnotations(), "EnableScheduling")) {
                     enableScheduling = true;
                 }
                 if (hasAnnotation(cls.getAnnotations(), "EnableAsync")) {
                     enableAsync = true;
+                }
+                if (hasAnnotation(cls.getAnnotations(), "EnableRetry")) {
+                    enableRetry = true;
+                }
+                if (retryUsageTarget == null
+                        && springRetryImported
+                        && hasAnnotation(cls.getAnnotations(), "Retryable")) {
+                    retryUsageTarget = cls.getNameAsString();
+                    retryUsageLine = cls.getBegin().map(p -> p.line).orElse(null);
+                    retryUsagePath = file.relativePath();
                 }
 
                 // @Async method names in this class drive self-invocation detection. Private
@@ -104,6 +128,8 @@ public class SchedulingPracticeFindingAnalyzer {
                             scheduledUsagePath = file.relativePath();
                         }
                         detectScheduledInvalidSignature(cls, method, file.relativePath(), findings);
+                        detectScheduledInvalidCronExpression(
+                                cls, method, file.relativePath(), findings);
                     }
                     if (asyncUsageTarget == null
                             && !method.isPrivate()
@@ -111,6 +137,14 @@ public class SchedulingPracticeFindingAnalyzer {
                         asyncUsageTarget = cls.getNameAsString() + "#" + method.getNameAsString();
                         asyncUsageLine = method.getBegin().map(p -> p.line).orElse(null);
                         asyncUsagePath = file.relativePath();
+                    }
+                    if (retryUsageTarget == null
+                            && springRetryImported
+                            && (hasAnnotation(method.getAnnotations(), "Retryable")
+                                    || hasAnnotation(method.getAnnotations(), "Recover"))) {
+                        retryUsageTarget = cls.getNameAsString() + "#" + method.getNameAsString();
+                        retryUsageLine = method.getBegin().map(p -> p.line).orElse(null);
+                        retryUsagePath = file.relativePath();
                     }
                     detectAsyncSelfInvocation(
                             cls, method, asyncMethodNames, file.relativePath(), findings);
@@ -126,7 +160,157 @@ public class SchedulingPracticeFindingAnalyzer {
             addAsyncWithoutEnableAsyncFinding(
                     asyncUsagePath, asyncUsageLine, asyncUsageTarget, findings);
         }
+        if (retryUsageTarget != null && !enableRetry) {
+            addRetryableWithoutEnableRetryFinding(
+                    retryUsagePath, retryUsageLine, retryUsageTarget, findings);
+        }
         return findings;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_RETRYABLE_WITHOUT_ENABLE_RETRY
+    // ---------------------------------------------------------------------------
+
+    private void addRetryableWithoutEnableRetryFinding(
+            String relativePath, Integer line, String target, List<Finding> findings) {
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_RETRYABLE_WITHOUT_ENABLE_RETRY,
+                                FindingConfidence.MEDIUM)
+                        .shortMessage(
+                                "@Retryable is used (first seen on "
+                                        + target
+                                        + ") but no @EnableRetry was found — no retries happen.")
+                        .whyBadPractice(
+                                "Spring Boot does not auto-configure spring-retry. @Retryable and"
+                                    + " @Recover only take effect when a configuration class is"
+                                    + " annotated with @EnableRetry, which registers the retry AOP"
+                                    + " advisor. Without it the annotations are parsed but no"
+                                    + " interceptor is applied: the method executes exactly once"
+                                    + " and @Recover callbacks never run.")
+                        .possibleImpact(
+                                "The resilience the code visibly declares does not exist. The happy"
+                                        + " path works, so the missing retries surface only when a"
+                                        + " transient production failure is not retried and the"
+                                        + " recovery path never executes.")
+                        .recommendation(
+                                "Add @EnableRetry to a @Configuration class (or the main"
+                                        + " application class) and verify retry behaviour with a"
+                                        + " test that forces a transient failure.")
+                        .evidence(
+                                "@Retryable/@Recover is used (first seen on "
+                                        + target
+                                        + " in "
+                                        + relativePath
+                                        + ") but no @EnableRetry annotation was found in"
+                                        + " src/main/java.")
+                        .limitations(
+                                "Static analysis only sees src/main/java. If @EnableRetry is"
+                                        + " applied through an imported library configuration or a"
+                                        + " meta-annotation, this finding is a false positive.")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_SCHEDULED_CRON_INVALID_EXPRESSION
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> VALID_CRON_MACROS =
+            Set.of("@yearly", "@annually", "@monthly", "@weekly", "@daily", "@midnight", "@hourly");
+
+    private void detectScheduledInvalidCronExpression(
+            ClassOrInterfaceDeclaration cls,
+            MethodDeclaration method,
+            String relativePath,
+            List<Finding> findings) {
+        AnnotationExpr annotation = method.getAnnotationByName("Scheduled").orElse(null);
+        if (annotation == null || !annotation.isNormalAnnotationExpr()) {
+            return;
+        }
+        String cron = null;
+        for (com.github.javaparser.ast.expr.MemberValuePair pair :
+                annotation.asNormalAnnotationExpr().getPairs()) {
+            if ("cron".equals(pair.getNameAsString()) && pair.getValue().isStringLiteralExpr()) {
+                cron = pair.getValue().asStringLiteralExpr().asString();
+            }
+        }
+        if (cron == null) {
+            return;
+        }
+        String trimmed = cron.trim();
+        // Skip values static analysis cannot judge: property/SpEL placeholders and Spring's
+        // documented "-" disabled sentinel.
+        if (trimmed.isEmpty()
+                || "-".equals(trimmed)
+                || trimmed.contains("${")
+                || trimmed.contains("#{")) {
+            return;
+        }
+        String problem = null;
+        if (trimmed.startsWith("@")) {
+            if (!VALID_CRON_MACROS.contains(trimmed.toLowerCase(java.util.Locale.ROOT))) {
+                problem = "unknown macro '" + trimmed + "'";
+            }
+        } else {
+            int fieldCount = trimmed.split("\\s+").length;
+            if (fieldCount != 6) {
+                String hint =
+                        fieldCount == 5
+                                ? " — this looks like a 5-field Unix crontab; Spring adds a"
+                                        + " leading seconds field"
+                                : fieldCount == 7
+                                        ? " — this looks like a 7-field Quartz expression; Spring"
+                                                + " has no trailing year field"
+                                        : "";
+                problem = fieldCount + " fields instead of the required 6" + hint;
+            }
+        }
+        if (problem == null) {
+            return;
+        }
+        Integer line = method.getBegin().map(p -> p.line).orElse(null);
+        String target = cls.getNameAsString() + "#" + method.getNameAsString();
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_SCHEDULED_CRON_INVALID_EXPRESSION,
+                                FindingConfidence.HIGH)
+                        .shortMessage(
+                                "@Scheduled cron expression \""
+                                        + trimmed
+                                        + "\" on "
+                                        + target
+                                        + " is invalid: "
+                                        + problem
+                                        + ".")
+                        .whyBadPractice(
+                                "Spring's CronExpression requires exactly six space-separated"
+                                    + " fields (second, minute, hour, day-of-month, month,"
+                                    + " day-of-week) or a supported macro such as @hourly or"
+                                    + " @daily. Expressions copied from a Unix crontab (5 fields)"
+                                    + " or Quartz (7 fields) do not parse.")
+                        .possibleImpact(
+                                "ScheduledAnnotationBeanPostProcessor throws IllegalStateException"
+                                        + " while registering the task, so the whole application"
+                                        + " context fails to start — not just the one job.")
+                        .recommendation(
+                                "Rewrite the expression with six fields (prepend a seconds field"
+                                        + " to a Unix crontab, drop the year field from a Quartz"
+                                        + " expression), or use a supported macro. Validate with"
+                                        + " org.springframework.scheduling.support.CronExpression"
+                                        + ".parse(...) in a unit test.")
+                        .evidence(
+                                "@Scheduled(cron = \""
+                                        + trimmed
+                                        + "\") found on "
+                                        + target
+                                        + " in "
+                                        + relativePath
+                                        + ".")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
     }
 
     // ---------------------------------------------------------------------------

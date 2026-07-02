@@ -8,6 +8,7 @@ import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.MemberValuePair;
 import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
@@ -41,6 +42,9 @@ import org.springframework.stereotype.Component;
  *   <li>{@link FindingRules#SPRING_TEST_SPRINGBOOTTEST_WEBENV_NONE_MISSING} — {@code
  *       @SpringBootTest} defaults to {@code MOCK} web environment but the test does not use
  *       {@code MockMvc}, {@code WebTestClient}, or {@code TestRestTemplate}.
+ *   <li>{@link FindingRules#SPRING_MOCKBEAN_DEPRECATED} — {@code @MockBean}/{@code @SpyBean} used
+ *       on Spring Boot 3.4+, where both are deprecated for removal in favour of
+ *       {@code @MockitoBean}/{@code @MockitoSpyBean}.
  * </ul>
  */
 @Component
@@ -80,18 +84,31 @@ public class TestingPracticeFindingAnalyzer {
      * @return list of findings; never null
      */
     public List<Finding> analyze(Path repositoryRoot) {
+        return analyze(repositoryRoot, null);
+    }
+
+    /**
+     * Analyzes all Java source files under {@code src/test/java} within the given repository root.
+     *
+     * @param repositoryRoot root directory of the locally checked-out repository
+     * @param buildInfo resolved build information (used to gate version-dependent rules); may be
+     *     null when unknown
+     * @return list of findings; never null
+     */
+    public List<Finding> analyze(Path repositoryRoot, BuildInfo buildInfo) {
         List<Finding> findings = new ArrayList<>();
         Path testRoot = repositoryRoot.resolve("src/test/java");
         if (Files.notExists(testRoot)) {
             return findings;
         }
+        boolean bootAtLeast34 = isBootVersionAtLeast(buildInfo, 3, 4);
         try (Stream<Path> files = Files.walk(testRoot)) {
             for (Path testFile :
                     files.filter(Files::isRegularFile)
                             .filter(p -> p.toString().endsWith(".java"))
                             .sorted(Comparator.naturalOrder())
                             .toList()) {
-                analyzeTestFile(repositoryRoot, testFile, findings);
+                analyzeTestFile(repositoryRoot, testFile, bootAtLeast34, findings);
             }
         } catch (IOException e) {
             // Best-effort — skip unreadable files
@@ -99,11 +116,28 @@ public class TestingPracticeFindingAnalyzer {
         return findings;
     }
 
+    private static boolean isBootVersionAtLeast(BuildInfo buildInfo, int major, int minor) {
+        String version = buildInfo == null ? null : buildInfo.springBootVersion();
+        if (version == null || version.isBlank()) {
+            return false;
+        }
+        String[] parts = version.split("\\.");
+        try {
+            int actualMajor = Integer.parseInt(parts[0].replaceAll("[^0-9].*$", ""));
+            int actualMinor =
+                    parts.length > 1 ? Integer.parseInt(parts[1].replaceAll("[^0-9].*$", "")) : 0;
+            return actualMajor > major || (actualMajor == major && actualMinor >= minor);
+        } catch (NumberFormatException exception) {
+            return false;
+        }
+    }
+
     // ---------------------------------------------------------------------------
     // Per-file analysis
     // ---------------------------------------------------------------------------
 
-    private void analyzeTestFile(Path repositoryRoot, Path testFile, List<Finding> findings)
+    private void analyzeTestFile(
+            Path repositoryRoot, Path testFile, boolean bootAtLeast34, List<Finding> findings)
             throws IOException {
         var parseResult = javaParser.parse(testFile);
         if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
@@ -118,7 +152,76 @@ public class TestingPracticeFindingAnalyzer {
             detectMockBeanOveruse(cls, relativePath, findings);
             detectFixedClockMissing(cls, relativePath, findings);
             detectWebEnvNoneMissing(cu, cls, relativePath, findings);
+            if (bootAtLeast34) {
+                detectMockBeanDeprecated(cu, cls, relativePath, findings);
+            }
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_MOCKBEAN_DEPRECATED
+    // ---------------------------------------------------------------------------
+
+    private void detectMockBeanDeprecated(
+            CompilationUnit cu,
+            ClassOrInterfaceDeclaration cls,
+            String relativePath,
+            List<Finding> findings) {
+        // Import gate: only the Spring Boot mockito package is deprecated; a same-named custom
+        // annotation must not trigger the rule.
+        boolean bootMockitoImported =
+                cu.getImports().stream()
+                        .anyMatch(
+                                imp ->
+                                        imp.getNameAsString()
+                                                .startsWith(
+                                                        "org.springframework.boot.test.mock.mockito"));
+        if (!bootMockitoImported) {
+            return;
+        }
+        Optional<FieldDeclaration> firstDeprecated =
+                cls.getFields().stream()
+                        .filter(f -> hasAnnotation(f, "MockBean") || hasAnnotation(f, "SpyBean"))
+                        .findFirst();
+        if (firstDeprecated.isEmpty()) {
+            return;
+        }
+        Integer line = firstDeprecated.get().getBegin().map(p -> p.line).orElse(null);
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_MOCKBEAN_DEPRECATED, FindingConfidence.HIGH)
+                        .shortMessage(
+                                "@MockBean/@SpyBean used in "
+                                        + cls.getNameAsString()
+                                        + " — deprecated since Spring Boot 3.4.")
+                        .whyBadPractice(
+                                "org.springframework.boot.test.mock.mockito.@MockBean and @SpyBean"
+                                    + " are deprecated for removal since Spring Boot 3.4 in favour"
+                                    + " of Spring Framework 6.2's @MockitoBean and @MockitoSpyBean"
+                                    + " (org.springframework.test.context.bean.override.mockito)."
+                                    + " They are removed in Spring Boot 4.")
+                        .possibleImpact(
+                                "The tests keep passing today, so the deprecation is easy to miss —"
+                                        + " until the Spring Boot 4 upgrade, where the classes no"
+                                        + " longer exist and every affected test fails to compile.")
+                        .recommendation(
+                                "Replace @MockBean with @MockitoBean and @SpyBean with"
+                                        + " @MockitoSpyBean, importing from"
+                                        + " org.springframework.test.context.bean.override.mockito."
+                                        + " The semantics are equivalent for typical usage.")
+                        .evidence(
+                                "@MockBean/@SpyBean (org.springframework.boot.test.mock.mockito)"
+                                        + " found in "
+                                        + cls.getNameAsString()
+                                        + " in "
+                                        + relativePath
+                                        + " while the resolved Spring Boot version is 3.4+.")
+                        .limitations(
+                                "Reported once per test class. Only reported when the resolved"
+                                        + " Spring Boot version is 3.4 or later.")
+                        .source(relativePath, line)
+                        .target(cls.getNameAsString())
+                        .build());
     }
 
     // ---------------------------------------------------------------------------

@@ -1450,6 +1450,73 @@ public class StaticPracticeFindingAnalyzer {
         }
     }
 
+    /**
+     * Flags {@code @OneToOne} associations declaring both {@code mappedBy} and
+     * {@code fetch = FetchType.LAZY}. Hibernate cannot honour LAZY on the inverse (non-owning)
+     * side of a one-to-one without bytecode enhancement: the foreign key lives in the owning
+     * table, so Hibernate must query it anyway to decide between {@code null} and a proxy — the
+     * association silently loads eagerly.
+     */
+    private void detectOneToOneMappedByLazy(
+            String relativePath,
+            AnnotationExpr annotation,
+            String annotationName,
+            String target,
+            Integer line,
+            List<Finding> findings) {
+        if (!"OneToOne".equals(annotationName) || !annotation.isNormalAnnotationExpr()) {
+            return;
+        }
+        var pairs = annotation.asNormalAnnotationExpr().getPairs();
+        boolean hasMappedBy = pairs.stream().anyMatch(p -> p.getNameAsString().equals("mappedBy"));
+        boolean lazyFetch =
+                pairs.stream()
+                        .anyMatch(
+                                p ->
+                                        p.getNameAsString().equals("fetch")
+                                                && p.getValue().toString().endsWith("LAZY"));
+        if (!hasMappedBy || !lazyFetch) {
+            return;
+        }
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_JPA_ONETOONE_MAPPEDBY_LAZY_IGNORED,
+                                FindingConfidence.HIGH)
+                        .shortMessage(
+                                "@OneToOne(mappedBy, fetch = LAZY) on "
+                                        + target
+                                        + " — LAZY is silently ignored on the inverse side.")
+                        .whyBadPractice(
+                                "The inverse (mappedBy) side of a @OneToOne cannot be lazy without"
+                                    + " bytecode enhancement. The foreign key lives in the owning"
+                                    + " table, so Hibernate must query it anyway to decide whether"
+                                    + " to populate null or a proxy — and therefore loads the"
+                                    + " association eagerly despite the explicit LAZY hint.")
+                        .possibleImpact(
+                                "Every load of this entity issues an extra query the developer"
+                                    + " believes is deferred — a hidden N+1 source that is hard to"
+                                    + " spot because the mapping looks correctly lazy.")
+                        .recommendation(
+                                "Model the association from the owning side (@OneToOne with"
+                                    + " @JoinColumn is lazy-capable), map it as a @ManyToOne, use"
+                                    + " @MapsId to share the primary key, or enable Hibernate"
+                                    + " bytecode enhancement if inverse-side laziness is truly"
+                                    + " required.")
+                        .evidence(
+                                "@OneToOne with both mappedBy and fetch = FetchType.LAZY found on "
+                                        + target
+                                        + " in "
+                                        + relativePath
+                                        + ".")
+                        .limitations(
+                                "Projects using the Hibernate bytecode-enhancement plugin can make"
+                                        + " the inverse side genuinely lazy; that build-level setup"
+                                        + " is not visible to this check.")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+    }
+
     private void detectJpaRelationshipRisks(
             String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
         String className = declaration.getNameAsString();
@@ -1531,6 +1598,8 @@ public class StaticPracticeFindingAnalyzer {
                     detectManyToManyCascadeRemove(
                             relativePath, annotation, annotationName, target, line, findings);
                 } else {
+                    detectOneToOneMappedByLazy(
+                            relativePath, annotation, annotationName, target, line, findings);
                     boolean hasFetchType =
                             annotation.isNormalAnnotationExpr()
                                     && annotation.asNormalAnnotationExpr().getPairs().stream()

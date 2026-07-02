@@ -2,6 +2,8 @@ package com.robbanhoglund.springbootanalyzer.analyzer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildTool;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -36,6 +38,19 @@ class TestingPracticeFindingAnalyzerTest {
 
     private static Finding byRule(List<Finding> findings, String ruleId) {
         return findings.stream().filter(f -> ruleId.equals(f.ruleId())).findFirst().orElse(null);
+    }
+
+    private List<Finding> findingsWithBootVersion(String bootVersion) {
+        return analyzer.analyze(
+                repoRoot,
+                new BuildInfo(
+                        BuildTool.GRADLE,
+                        true,
+                        "21",
+                        List.of(),
+                        bootVersion,
+                        "build.gradle plugin",
+                        "HIGH"));
     }
 
     // ── No test sources ───────────────────────────────────────────────────────
@@ -233,6 +248,65 @@ class TestingPracticeFindingAnalyzerTest {
         Finding f = byRule(findings(), "SPRING_TEST_MOCKBEAN_OVERUSE");
         assertThat(f).isNotNull();
         assertThat(f.target()).isEqualTo("BigMockitoTest");
+    }
+
+    // ── SPRING_MOCKBEAN_DEPRECATED ────────────────────────────────────────────
+
+    @Test
+    void flagsMockBeanOnBoot34Plus() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/UserServiceTest.java",
+                """
+                package com.example;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import org.springframework.boot.test.mock.mockito.MockBean;
+                @SpringBootTest
+                class UserServiceTest {
+                    @MockBean UserRepository userRepository;
+                }
+                """);
+
+        Finding f = byRule(findingsWithBootVersion("3.5.0"), "SPRING_MOCKBEAN_DEPRECATED");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("UserServiceTest");
+        assertThat(f.message()).contains("3.4");
+    }
+
+    @Test
+    void doesNotFlagMockBeanOnBoot2() throws IOException {
+        // @MockBean is not deprecated before Spring Boot 3.4 — the rule must stay silent.
+        writeTestFile(
+                "src/test/java/com/example/UserServiceTest.java",
+                """
+                package com.example;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import org.springframework.boot.test.mock.mockito.MockBean;
+                @SpringBootTest
+                class UserServiceTest {
+                    @MockBean UserRepository userRepository;
+                }
+                """);
+
+        assertThat(byRule(findingsWithBootVersion("2.7.18"), "SPRING_MOCKBEAN_DEPRECATED"))
+                .isNull();
+    }
+
+    @Test
+    void doesNotFlagMockitoBeanOnBoot34Plus() throws IOException {
+        // The replacement annotation must not trigger the deprecation rule.
+        writeTestFile(
+                "src/test/java/com/example/UserServiceTest.java",
+                """
+                package com.example;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import org.springframework.test.context.bean.override.mockito.MockitoBean;
+                @SpringBootTest
+                class UserServiceTest {
+                    @MockitoBean UserRepository userRepository;
+                }
+                """);
+
+        assertThat(byRule(findingsWithBootVersion("3.5.0"), "SPRING_MOCKBEAN_DEPRECATED")).isNull();
     }
 
     // ── SPRING_TEST_FIXED_CLOCK_MISSING ──────────────────────────────────────

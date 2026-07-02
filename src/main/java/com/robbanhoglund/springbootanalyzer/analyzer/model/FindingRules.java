@@ -2016,6 +2016,83 @@ public final class FindingRules {
                     FindingCategory.TRANSACTION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
+    // ── Silent-failure & startup-crash rules (catalog review 2026-07) ─────────
+
+    /** {@code @Retryable}/{@code @Recover} (spring-retry) are used, but no class is annotated
+     *  with {@code @EnableRetry}. Spring Boot does not auto-configure spring-retry, so without
+     *  the enabler the annotations are silently inert: methods execute exactly once and
+     *  {@code @Recover} callbacks never run. */
+    public static final FindingRule SPRING_RETRYABLE_WITHOUT_ENABLE_RETRY =
+            rule(
+                    "SPRING_RETRYABLE_WITHOUT_ENABLE_RETRY",
+                    "@Retryable is used but @EnableRetry is missing — no retries happen",
+                    FindingSeverity.WARNING,
+                    FindingCategory.EXCEPTION_HANDLING,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @Scheduled(cron = ...)} literal is not a valid Spring cron expression: Spring
+     *  requires exactly six space-separated fields (seconds first) or a supported macro
+     *  ({@code @hourly}, {@code @daily}, ...). A five-field Unix crontab or seven-field Quartz
+     *  expression makes task registration throw {@code IllegalStateException} at startup and the
+     *  application context fails to load. */
+    public static final FindingRule SPRING_SCHEDULED_CRON_INVALID_EXPRESSION =
+            rule(
+                    "SPRING_SCHEDULED_CRON_INVALID_EXPRESSION",
+                    "@Scheduled cron expression is invalid — startup fails (6 fields required)",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SCHEDULING,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code spring.profiles.active} or {@code spring.profiles.include} appears in a
+     *  profile-specific configuration file or an {@code on-profile} document. Since the Spring
+     *  Boot 2.4 config-data model (all of Boot 3.x), these keys are invalid there: startup fails
+     *  with {@code InvalidConfigDataPropertyException} whenever that profile is activated. */
+    public static final FindingRule SPRING_PROFILES_ACTIVE_IN_PROFILE_SPECIFIC_FILE =
+            rule(
+                    "SPRING_PROFILES_ACTIVE_IN_PROFILE_SPECIFIC_FILE",
+                    "spring.profiles.active in a profile-specific file fails at startup",
+                    FindingSeverity.ERROR,
+                    FindingCategory.CONFIGURATION,
+                    FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT);
+
+    /** A {@code @OneToOne} association declares both {@code mappedBy} and
+     *  {@code fetch = FetchType.LAZY}. Hibernate cannot honour LAZY on the inverse (non-owning)
+     *  side of a one-to-one without bytecode enhancement — the foreign key lives in the other
+     *  table, so Hibernate must query it anyway to decide between {@code null} and a proxy. The
+     *  association silently loads eagerly. */
+    public static final FindingRule SPRING_JPA_ONETOONE_MAPPEDBY_LAZY_IGNORED =
+            rule(
+                    "SPRING_JPA_ONETOONE_MAPPEDBY_LAZY_IGNORED",
+                    "LAZY on the inverse side of @OneToOne is silently ignored",
+                    FindingSeverity.WARNING,
+                    FindingCategory.PERSISTENCE,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code spring.sql.init.mode=always} is set in a production-oriented profile. Spring Boot
+     *  then executes {@code schema.sql}/{@code data.sql} (or the configured script locations)
+     *  against the real datasource on EVERY startup; non-idempotent scripts duplicate or
+     *  overwrite data, or abort startup. */
+    public static final FindingRule SPRING_SQL_INIT_ALWAYS_PROD =
+            rule(
+                    "SPRING_SQL_INIT_ALWAYS_PROD",
+                    "spring.sql.init.mode=always re-runs SQL init scripts in production",
+                    FindingSeverity.WARNING,
+                    FindingCategory.CONFIGURATION,
+                    FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT);
+
+    /** A test class uses {@code @MockBean}/{@code @SpyBean}
+     *  (org.springframework.boot.test.mock.mockito) on a project resolving Spring Boot 3.4+.
+     *  Both annotations are deprecated for removal in favour of {@code @MockitoBean}/
+     *  {@code @MockitoSpyBean} (Spring Framework 6.2 bean overrides) and are removed in Spring
+     *  Boot 4, so the tests stop compiling on the next major upgrade. */
+    public static final FindingRule SPRING_MOCKBEAN_DEPRECATED =
+            rule(
+                    "SPRING_MOCKBEAN_DEPRECATED",
+                    "@MockBean/@SpyBean are deprecated since Spring Boot 3.4 — use @MockitoBean",
+                    FindingSeverity.INFO,
+                    FindingCategory.MIGRATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
     private FindingRules() {}
 
     private static FindingRule rule(

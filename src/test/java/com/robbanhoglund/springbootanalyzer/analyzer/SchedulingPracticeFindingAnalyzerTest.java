@@ -251,6 +251,169 @@ class SchedulingPracticeFindingAnalyzerTest {
         assertThat(f.message()).contains("notifyAsync");
     }
 
+    // ── SPRING_RETRYABLE_WITHOUT_ENABLE_RETRY ─────────────────────────────────
+
+    @Test
+    void flagsRetryableWhenEnableRetryMissing() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/PaymentClient.java",
+                """
+                package com.example;
+                import org.springframework.retry.annotation.Retryable;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentClient {
+                    @Retryable
+                    public void charge() {}
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_RETRYABLE_WITHOUT_ENABLE_RETRY");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("PaymentClient#charge");
+        assertThat(f.message()).contains("@EnableRetry");
+    }
+
+    @Test
+    void doesNotFlagRetryableWhenEnableRetryPresent() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/PaymentClient.java",
+                """
+                package com.example;
+                import org.springframework.retry.annotation.Retryable;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentClient {
+                    @Retryable
+                    public void charge() {}
+                }
+                """);
+        writeSourceFile(
+                "src/main/java/com/example/RetryConfig.java",
+                """
+                package com.example;
+                import org.springframework.context.annotation.Configuration;
+                import org.springframework.retry.annotation.EnableRetry;
+                @Configuration
+                @EnableRetry
+                public class RetryConfig {}
+                """);
+
+        assertThat(byRule(findings(), "SPRING_RETRYABLE_WITHOUT_ENABLE_RETRY")).isNull();
+    }
+
+    @Test
+    void doesNotFlagRetryableFromOtherLibraryWithoutSpringRetryImport() throws IOException {
+        // A same-named annotation from another library must not trigger the spring-retry rule.
+        writeSourceFile(
+                "src/main/java/com/example/PaymentClient.java",
+                """
+                package com.example;
+                import com.acme.resilience.Retryable;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentClient {
+                    @Retryable
+                    public void charge() {}
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_RETRYABLE_WITHOUT_ENABLE_RETRY")).isNull();
+    }
+
+    // ── SPRING_SCHEDULED_CRON_INVALID_EXPRESSION ──────────────────────────────
+
+    @Test
+    void flagsFiveFieldUnixCronExpression() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/NightlyJob.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.EnableScheduling;
+                import org.springframework.scheduling.annotation.Scheduled;
+                import org.springframework.stereotype.Component;
+                @Component
+                @EnableScheduling
+                public class NightlyJob {
+                    @Scheduled(cron = "0 2 * * *")
+                    public void run() {}
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_SCHEDULED_CRON_INVALID_EXPRESSION");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("NightlyJob#run");
+        assertThat(f.message()).contains("5 fields");
+    }
+
+    @Test
+    void flagsUnknownCronMacro() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/NightlyJob.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.EnableScheduling;
+                import org.springframework.scheduling.annotation.Scheduled;
+                import org.springframework.stereotype.Component;
+                @Component
+                @EnableScheduling
+                public class NightlyJob {
+                    @Scheduled(cron = "@reboot")
+                    public void run() {}
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_SCHEDULED_CRON_INVALID_EXPRESSION");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("@reboot");
+    }
+
+    @Test
+    void doesNotFlagValidSixFieldCronExpression() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/NightlyJob.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.EnableScheduling;
+                import org.springframework.scheduling.annotation.Scheduled;
+                import org.springframework.stereotype.Component;
+                @Component
+                @EnableScheduling
+                public class NightlyJob {
+                    @Scheduled(cron = "0 0 2 * * *")
+                    public void run() {}
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_SCHEDULED_CRON_INVALID_EXPRESSION")).isNull();
+    }
+
+    @Test
+    void doesNotFlagCronPlaceholderOrKnownMacroOrDisabledSentinel() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Jobs.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.EnableScheduling;
+                import org.springframework.scheduling.annotation.Scheduled;
+                import org.springframework.stereotype.Component;
+                @Component
+                @EnableScheduling
+                public class Jobs {
+                    @Scheduled(cron = "${jobs.cleanup.cron}")
+                    public void fromProperty() {}
+
+                    @Scheduled(cron = "@daily")
+                    public void daily() {}
+
+                    @Scheduled(cron = "-")
+                    public void disabled() {}
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_SCHEDULED_CRON_INVALID_EXPRESSION")).isNull();
+    }
+
     @Test
     void doesNotFlagAsyncMethodWithoutSelfInvocation() throws IOException {
         writeSourceFile(
