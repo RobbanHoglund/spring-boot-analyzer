@@ -4,7 +4,7 @@ import { renderAnalyzeView, type AnalyzeViewActions, type AnalyzeViewModel } fro
 import type { ResultsViewState } from './resultsView';
 import type { AnalysisMode } from '../types';
 
-function model(analysisMode: AnalysisMode): AnalyzeViewModel {
+function model(analysisMode: AnalysisMode, overrides: Partial<AnalyzeViewModel> = {}): AnalyzeViewModel {
   return {
     analyzeMode: 'saved',
     repositoryProfiles: [],
@@ -21,7 +21,8 @@ function model(analysisMode: AnalysisMode): AnalyzeViewModel {
     analysisProgressIndex: 0,
     result: null,
     resultsViewState: {} as ResultsViewState,
-    sidebarCollapsed: false
+    sidebarCollapsed: false,
+    ...overrides
   };
 }
 
@@ -107,5 +108,21 @@ describe('renderAnalyzeView analysis mode copy', () => {
 
     expect(document.body.textContent).toContain('Static + Gradle model runs Gradle build logic in an isolated workspace');
     expect(document.body.textContent).toContain("Only use this with repositories you trust.");
+  });
+
+  it('shows the full one-time repository URL after a value is entered', () => {
+    const repositoryUrl = 'https://github.com/RobbanHoglund/spring-boot-analyzer.git';
+    const view = renderAnalyzeView(
+      model('STATIC_ONLY', {
+        analyzeMode: 'oneTime',
+        oneTimeRepositoryUrl: repositoryUrl
+      }),
+      actions()
+    );
+    document.body.appendChild(view);
+
+    const preview = document.querySelector('.repository-url-preview');
+    expect(preview?.textContent).toBe(repositoryUrl);
+    expect((document.getElementById('analyze-one-time-repository-url') as HTMLInputElement).title).toBe(repositoryUrl);
   });
 });

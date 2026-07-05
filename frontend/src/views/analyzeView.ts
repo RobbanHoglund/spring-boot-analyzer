@@ -326,6 +326,7 @@ function renderSavedRepositoryMode(model: AnalyzeViewModel, actions: AnalyzeView
 
 function renderOneTimeRepositoryMode(model: AnalyzeViewModel, actions: AnalyzeViewActions): HTMLElement {
   const wrapper = element('div', { className: 'stack' });
+  const trimmedRepositoryUrl = model.oneTimeRepositoryUrl.trim();
 
   const repositoryUrlInput = element('input', {
     className: 'text-input',
@@ -338,6 +339,7 @@ function renderOneTimeRepositoryMode(model: AnalyzeViewModel, actions: AnalyzeVi
   }) as HTMLInputElement;
   repositoryUrlInput.value = model.oneTimeRepositoryUrl;
   repositoryUrlInput.addEventListener('input', () => actions.onUpdateOneTimeRepositoryUrl(repositoryUrlInput.value));
+  repositoryUrlInput.title = trimmedRepositoryUrl;
 
   const branchInput = element('input', {
     className: 'text-input',
@@ -364,16 +366,31 @@ function renderOneTimeRepositoryMode(model: AnalyzeViewModel, actions: AnalyzeVi
   tokenSelect.value = model.oneTimeTokenProfileId;
   tokenSelect.addEventListener('change', () => actions.onUpdateOneTimeTokenProfileId(tokenSelect.value));
 
-  wrapper.append(
-    element(
-      'label',
-      { className: 'field' },
-      element('span', { text: 'Repository URL' }),
-      repositoryUrlInput,
+  const repositoryUrlField = element(
+    'label',
+    { className: 'field' },
+    element('span', { text: 'Repository URL' }),
+    repositoryUrlInput
+  );
+
+  if (trimmedRepositoryUrl) {
+    repositoryUrlField.appendChild(
+      element('div', {
+        className: 'helper-list compact-helper-list repository-url-preview',
+        text: trimmedRepositoryUrl,
+        attributes: { title: trimmedRepositoryUrl }
+      })
+    );
+  } else {
+    repositoryUrlField.append(
       element('div', { className: 'helper-list compact-helper-list' }, 'https://github.com/example/app.git'),
       element('div', { className: 'helper-list compact-helper-list' }, 'git@github.com:example/app.git'),
       element('div', { className: 'helper-list compact-helper-list' }, 'ssh://git@github.com/example/app.git')
-    ),
+    );
+  }
+
+  wrapper.append(
+    repositoryUrlField,
     element('label', { className: 'field' }, element('span', { text: 'Branch optional' }), branchInput),
     element('label', { className: 'field' }, element('span', { text: 'Token profile optional' }), tokenSelect),
     element('p', {

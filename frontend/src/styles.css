@@ -518,6 +518,18 @@ a:focus-visible {
   font-size: 0.86rem;
 }
 
+.repository-url-preview {
+  margin-top: 5px;
+  padding: 5px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-subtle);
+  color: var(--color-text-soft);
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  line-height: 1.35;
+}
+
 .status-text {
   color: var(--color-accent);
 }
@@ -586,20 +598,20 @@ a:focus-visible {
 .secondary-button:disabled,
 .danger-button:disabled {
   opacity: 1;
-  cursor: wait;
+  cursor: not-allowed;
   background: var(--color-button-disabled-bg);
   border-color: var(--color-button-disabled-border);
   color: var(--color-button-disabled-text);
   box-shadow: none;
 }
 
-.primary-button:hover {
+.primary-button:not(:disabled):hover {
   filter: none;
   transform: translateY(-0.5px);
 }
 
-.secondary-button:hover,
-.danger-button:hover {
+.secondary-button:not(:disabled):hover,
+.danger-button:not(:disabled):hover {
   background: var(--color-button-secondary-hover-bg);
   border-color: var(--color-button-secondary-hover-border);
 }
@@ -1876,6 +1888,9 @@ a:focus-visible {
 }
 
 .results-jump-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
   border: 0;
   border-bottom: 1px solid transparent;
   border-radius: 0;
@@ -3859,6 +3874,17 @@ details[open] > summary {
     grid-template-columns: 1fr;
   }
 
+  .rule-management-overview,
+  .rule-count-summary {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .rule-count-meta {
+    flex: 0 1 auto;
+  }
+
   .configuration-files-row {
     grid-template-columns: 1fr;
   }
@@ -4250,6 +4276,7 @@ details[open] .rule-category-summary::before {
 .severity-toggle-button {
   font-size: 12px;
   font-weight: 600;
+  min-height: 30px;
   padding: 4px 10px;
   border-radius: 4px;
   border: 1px solid transparent;

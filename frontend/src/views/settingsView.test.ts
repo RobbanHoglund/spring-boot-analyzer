@@ -216,6 +216,41 @@ describe('renderSettingsView rule management', () => {
     expect(document.body.textContent).toContain('Enter the new repository URL');
   });
 
+  it('disables selected-delete actions until an existing profile is selected', () => {
+    const view = renderSettingsView(model(), defaultActions());
+    document.body.appendChild(view);
+
+    const deleteRepositoryButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Delete selected repository'
+    ) as HTMLButtonElement | undefined;
+    const deleteTokenButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Delete selected token'
+    ) as HTMLButtonElement | undefined;
+
+    expect(deleteRepositoryButton?.disabled).toBe(true);
+    expect(deleteTokenButton?.disabled).toBe(true);
+  });
+
+  it('enables selected-delete actions while editing existing profiles', () => {
+    const repositoryForm = defaultRepositoryForm();
+    repositoryForm.id = 'repo-1';
+    const tokenForm = defaultTokenForm();
+    tokenForm.id = 'token-1';
+
+    const view = renderSettingsView(model({ repositoryForm, tokenForm }), defaultActions());
+    document.body.appendChild(view);
+
+    const deleteRepositoryButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Delete selected repository'
+    ) as HTMLButtonElement | undefined;
+    const deleteTokenButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Delete selected token'
+    ) as HTMLButtonElement | undefined;
+
+    expect(deleteRepositoryButton?.disabled).toBe(false);
+    expect(deleteTokenButton?.disabled).toBe(false);
+  });
+
   it('filters rules by text, severity, and disabled status', () => {
     const view = renderSettingsView(
       model({

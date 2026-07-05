@@ -234,6 +234,7 @@ function renderRepositorySection(
     text: 'Delete selected repository',
     attributes: { type: 'button' }
   });
+  deleteButton.toggleAttribute('disabled', !model.repositoryForm.id);
   deleteButton.addEventListener('click', actions.onDeleteSelectedRepository);
 
   const clearButton = element('button', {
@@ -397,6 +398,7 @@ function renderTokenSection(
     text: 'Delete selected token',
     attributes: { type: 'button' }
   });
+  deleteButton.toggleAttribute('disabled', !model.tokenForm.id);
   deleteButton.addEventListener('click', actions.onDeleteSelectedToken);
 
   const clearButton = element('button', {
