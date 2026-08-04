@@ -1,3 +1,37 @@
+// Optional internal repository mirror, for networks where plugins.gradle.org is unreachable
+// (for example a proxy/bypass that does not answer HTTP HEAD, which Gradle issues before every
+// download — see "Building behind a corporate proxy" in README.md).
+//
+// Set corpRepoUrl in ~/.gradle/gradle.properties — never in this repository, so the public build
+// and CI keep resolving from the public repositories:
+//
+//   corpRepoUrl=https://artifactory.example.com/artifactory/gradle-remote
+//   corpRepoUsername=<user>        # optional
+//   corpRepoPassword=<token>       # optional
+//
+// When the property is absent this block behaves exactly like the default configuration.
+// pluginManagement must be the first block in settings.gradle.
+pluginManagement {
+    def corpRepoUrl = providers.gradleProperty('corpRepoUrl').orNull
+    def corpRepoUsername = providers.gradleProperty('corpRepoUsername').orNull
+    def corpRepoPassword = providers.gradleProperty('corpRepoPassword').orNull
+    repositories {
+        if (corpRepoUrl) {
+            maven {
+                url = corpRepoUrl
+                if (corpRepoUsername && corpRepoPassword) {
+                    credentials {
+                        username = corpRepoUsername
+                        password = corpRepoPassword
+                    }
+                }
+            }
+        }
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
 plugins {
     id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
 }

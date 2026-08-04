@@ -294,9 +294,30 @@ systemProp.javax.net.ssl.trustStore=C:/certs/corp-truststore.jks
 systemProp.javax.net.ssl.trustStorePassword=changeit
 ```
 
-An internal Artifactory/Nexus mirror is the more robust option: add it to `settings.gradle`
-(`pluginManagement.repositories`) and `build.gradle` (`repositories`) so neither plugin nor
-dependency resolution needs the public internet.
+**If the proxy or bypass does not answer HTTP `HEAD`** (symptom: `Could not HEAD '…'` followed by
+`Connection reset`), no Gradle setting can work around it. Gradle issues a `HEAD` before every
+download to check the artifact's existence and metadata, and there is no supported flag to make it
+use `GET` instead —
+[gradle/gradle#5322](https://github.com/gradle/gradle/issues/5322) was closed as *not planned*.
+(`--no-validate-url` only affects the `gradle wrapper` task's distribution-URL check, not plugin or
+dependency resolution.) Either have `HEAD` allowed for `plugins.gradle.org` and `repo1.maven.org`,
+or route through a repository mirror that terminates HTTP itself.
+
+**Using an internal Artifactory/Nexus mirror** — this build supports one without any repository
+change. Set `corpRepoUrl` in `~/.gradle/gradle.properties` (never in this repository, so CI and
+external contributors keep using the public repositories):
+
+```properties
+corpRepoUrl=https://artifactory.example.com/artifactory/gradle-remote
+corpRepoUsername=your-user
+corpRepoPassword=your-api-token
+```
+
+`settings.gradle` (`pluginManagement`) and `build.gradle` (`repositories`) both prepend that
+repository when the property is present, keeping `gradlePluginPortal()`/`mavenCentral()` as
+fallbacks. Username and password are optional; omit them for an anonymous mirror. If the mirror
+URL is unreachable the build fails and lists every repository it searched, rather than silently
+falling back.
 
 **Analyzing repositories behind the same proxy** — the analyzer runs Gradle against the projects
 it inspects, so it has its own proxy settings (see `src/main/resources/application.properties`):

@@ -12,6 +12,22 @@ version = '0.1.0'
 description = 'spring-boot-analyzer'
 
 repositories {
+    // Optional internal mirror for dependency resolution; see the pluginManagement block in
+    // settings.gradle for how corpRepoUrl is configured. Absent property = public repositories.
+    def corpRepoUrl = providers.gradleProperty('corpRepoUrl').orNull
+    def corpRepoUsername = providers.gradleProperty('corpRepoUsername').orNull
+    def corpRepoPassword = providers.gradleProperty('corpRepoPassword').orNull
+    if (corpRepoUrl) {
+        maven {
+            url = corpRepoUrl
+            if (corpRepoUsername && corpRepoPassword) {
+                credentials {
+                    username = corpRepoUsername
+                    password = corpRepoPassword
+                }
+            }
+        }
+    }
     maven { url = 'https://repo.gradle.org/gradle/libs-releases' }
     mavenCentral()
 }
