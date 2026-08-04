@@ -711,7 +711,7 @@ public final class FindingRules {
             rule(
                     "SPRING_SQL_INJECTION_QUERY_CONCATENATION",
                     "Native SQL query built with string concatenation",
-                    FindingSeverity.WARNING,
+                    FindingSeverity.ERROR,
                     FindingCategory.SECURITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
@@ -1017,7 +1017,7 @@ public final class FindingRules {
             rule(
                     "SPRING_TRANSACTIONAL_READONLY_WITH_WRITES",
                     "Writes inside a readOnly=true transaction are silently dropped",
-                    FindingSeverity.WARNING,
+                    FindingSeverity.ERROR,
                     FindingCategory.TRANSACTION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
@@ -2189,6 +2189,147 @@ public final class FindingRules {
                     "Actuator show-values=always unmasks secrets on env/configprops",
                     FindingSeverity.WARNING,
                     FindingCategory.ACTUATOR,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    // ── Previously unregistered findings (catalog review 4) ──────────────────
+    // These were emitted through the legacy rule-less Finding constructor, so they had no rule
+    // ID, no catalog entry, and could not be suppressed or configured per rule.
+
+    /** Inbound HTTP endpoints ({@code @RestController}, {@code @RequestMapping}, …) exist in the
+     *  source, but the resolved runtime stack is non-web (or could not be determined). The
+     *  endpoints are then never served. */
+    public static final FindingRule SPRING_INBOUND_ENDPOINTS_IN_NON_WEB_APP =
+            rule(
+                    "SPRING_INBOUND_ENDPOINTS_IN_NON_WEB_APP",
+                    "HTTP endpoints exist but the application is not a web application",
+                    FindingSeverity.WARNING,
+                    FindingCategory.API_SURFACE,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A web runtime stack (Servlet MVC or WebFlux) was detected but no inbound HTTP endpoints
+     *  were found — the embedded server starts and serves nothing. */
+    public static final FindingRule SPRING_WEB_STACK_WITHOUT_ENDPOINTS =
+            rule(
+                    "SPRING_WEB_STACK_WITHOUT_ENDPOINTS",
+                    "Web stack detected but no inbound HTTP endpoints were found",
+                    FindingSeverity.INFO,
+                    FindingCategory.API_SURFACE,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** Configured or outbound URLs carry credential-like query parameters
+     *  ({@code ?password=}, {@code ?token=}, …). Full URLs are routinely written to proxy, CDN,
+     *  and application logs, so the credential leaks into log storage. */
+    public static final FindingRule SPRING_OUTBOUND_URL_CREDENTIALS_IN_QUERY =
+            rule(
+                    "SPRING_OUTBOUND_URL_CREDENTIALS_IN_QUERY",
+                    "Outbound URL carries credentials in query parameters",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** Virtual threads are enabled and scheduled work exists, but {@code spring.main.keep-alive}
+     *  is not set. A non-web application whose only non-daemon work runs on virtual threads can
+     *  exit immediately after startup. */
+    public static final FindingRule SPRING_VIRTUAL_THREADS_NO_KEEP_ALIVE =
+            rule(
+                    "SPRING_VIRTUAL_THREADS_NO_KEEP_ALIVE",
+                    "Virtual threads with scheduled work but no spring.main.keep-alive",
+                    FindingSeverity.INFO,
+                    FindingCategory.CONFIGURATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** Both Spring MVC/Servlet and WebFlux starters are on the classpath. Spring MVC wins unless
+     *  {@code spring.main.web-application-type} says otherwise, so the reactive stack may be
+     *  silently inactive. */
+    public static final FindingRule SPRING_MIXED_MVC_AND_WEBFLUX =
+            rule(
+                    "SPRING_MIXED_MVC_AND_WEBFLUX",
+                    "Both MVC and WebFlux starters present — MVC takes precedence",
+                    FindingSeverity.INFO,
+                    FindingCategory.CONFIGURATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** Servlet/web dependencies are present but configuration forces a non-web application type,
+     *  so the embedded server never starts despite the dependencies being packaged. */
+    public static final FindingRule SPRING_WEB_DEPENDENCIES_IN_NON_WEB_APP =
+            rule(
+                    "SPRING_WEB_DEPENDENCIES_IN_NON_WEB_APP",
+                    "Web dependencies present but application type is non-web",
+                    FindingSeverity.INFO,
+                    FindingCategory.CONFIGURATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A configuration property marked deprecated in Spring Boot's configuration metadata is
+     *  used. Deprecated properties are removed in later releases, silently losing their effect. */
+    public static final FindingRule SPRING_DEPRECATED_CONFIGURATION_PROPERTY =
+            rule(
+                    "SPRING_DEPRECATED_CONFIGURATION_PROPERTY",
+                    "Deprecated Spring Boot configuration property is used",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MIGRATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A configured property looks application-specific (it is referenced from source) but has no
+     *  matching {@code @ConfigurationProperties} metadata, so it is bound ad hoc via
+     *  {@code @Value} with no validation or IDE support. */
+    public static final FindingRule SPRING_UNMAPPED_CUSTOM_PROPERTY =
+            rule(
+                    "SPRING_UNMAPPED_CUSTOM_PROPERTY",
+                    "Custom property has no @ConfigurationProperties metadata",
+                    FindingSeverity.INFO,
+                    FindingCategory.CONFIGURATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @ConfigurationProperties} prefix is declared in code but no configured property
+     *  uses it, so the binding class is populated entirely from defaults. */
+    public static final FindingRule SPRING_CONFIGURATION_PROPERTIES_PREFIX_UNUSED =
+            rule(
+                    "SPRING_CONFIGURATION_PROPERTIES_PREFIX_UNUSED",
+                    "@ConfigurationProperties prefix has no configured properties",
+                    FindingSeverity.INFO,
+                    FindingCategory.CONFIGURATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A class is declared in the default (unnamed) package. Spring Boot's component scanning
+     *  then scans the entire classpath, and several framework features misbehave. */
+    public static final FindingRule SPRING_CLASS_IN_DEFAULT_PACKAGE =
+            rule(
+                    "SPRING_CLASS_IN_DEFAULT_PACKAGE",
+                    "Class declared in the default package",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** No {@code @SpringBootApplication} class was found under {@code src/main/java}. Either the
+     *  project is not a Spring Boot application, or the entry point lives outside the scanned
+     *  source root — in which case the analysis is necessarily incomplete. */
+    public static final FindingRule SPRING_NO_MAIN_APPLICATION_CLASS =
+            rule(
+                    "SPRING_NO_MAIN_APPLICATION_CLASS",
+                    "No @SpringBootApplication class was found",
+                    FindingSeverity.WARNING,
+                    FindingCategory.STARTUP,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** More than one {@code @SpringBootApplication} class exists. Each defines its own component
+     *  scan root, and tests may bootstrap an unintended one. */
+    public static final FindingRule SPRING_MULTIPLE_MAIN_APPLICATION_CLASSES =
+            rule(
+                    "SPRING_MULTIPLE_MAIN_APPLICATION_CLASSES",
+                    "Multiple @SpringBootApplication classes were found",
+                    FindingSeverity.INFO,
+                    FindingCategory.STARTUP,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A Spring stereotype component lives outside the main application class's package tree.
+     *  Default component scanning starts at the application package, so the bean is never
+     *  registered unless an explicit {@code @ComponentScan} includes it. */
+    public static final FindingRule SPRING_COMPONENT_OUTSIDE_MAIN_PACKAGE =
+            rule(
+                    "SPRING_COMPONENT_OUTSIDE_MAIN_PACKAGE",
+                    "Component lives outside the main application package — not scanned",
+                    FindingSeverity.WARNING,
+                    FindingCategory.STARTUP,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
     private FindingRules() {}

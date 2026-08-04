@@ -7,12 +7,9 @@ import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.DetectedClass;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
-import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingCategory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
-import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRuntimeDetection;
-import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ApplicationProperty;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleJavaToolchainModel;
@@ -351,11 +348,35 @@ public class RuntimeStackAnalyzer {
                 && analysis.scheduledWorkDetected()
                 && !analysis.keepAliveConfigured()) {
             findings.add(
-                    new Finding(
-                            FindingSeverity.INFO,
-                            "Virtual threads are enabled and scheduled work was detected, but"
-                                    + " spring.main.keep-alive=true was not found.",
-                            null));
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_VIRTUAL_THREADS_NO_KEEP_ALIVE,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    "Virtual threads are enabled and scheduled work was detected,"
+                                            + " but spring.main.keep-alive=true was not found.")
+                            .whyBadPractice(
+                                    "Virtual threads are daemon threads. In a non-web application"
+                                        + " whose only remaining work runs on them, nothing keeps"
+                                        + " the JVM alive once the main thread finishes, so the"
+                                        + " process can exit right after startup.")
+                            .possibleImpact(
+                                    "Scheduled jobs never run because the application terminates"
+                                        + " immediately after the context is ready — and it exits"
+                                        + " with a success code, so orchestrators may not alert.")
+                            .recommendation(
+                                    "Set spring.main.keep-alive=true so the application keeps"
+                                            + " running for scheduled work, or keep a non-daemon"
+                                            + " thread alive explicitly.")
+                            .evidence(
+                                    "spring.threads.virtual.enabled=true and scheduled work were"
+                                            + " detected without spring.main.keep-alive.")
+                            .limitations(
+                                    "A web application's server thread already keeps the JVM"
+                                            + " alive, in which case this finding is informational"
+                                            + " only.")
+                            .target("spring.main.keep-alive")
+                            .location("Runtime configuration")
+                            .build());
         }
     }
 
@@ -443,12 +464,37 @@ public class RuntimeStackAnalyzer {
             List<Finding> findings) {
         if (webStack == WebStack.MIXED_MVC_AND_WEBFLUX) {
             findings.add(
-                    new Finding(
-                            FindingSeverity.INFO,
-                            "Both Spring MVC/Servlet and WebFlux dependencies were detected. Spring"
-                                    + " MVC usually takes precedence unless"
-                                    + " spring.main.web-application-type overrides it.",
-                            null));
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_MIXED_MVC_AND_WEBFLUX,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "Both Spring MVC/Servlet and WebFlux dependencies were"
+                                            + " detected.")
+                            .whyBadPractice(
+                                    "When both starters are present Spring Boot builds a Servlet"
+                                            + " web application: MVC wins unless"
+                                            + " spring.main.web-application-type=reactive says"
+                                            + " otherwise. WebClient still works, but WebFlux"
+                                            + " controllers and the reactive server do not run.")
+                            .possibleImpact(
+                                    "Reactive endpoints may be silently unserved, and code written"
+                                        + " for non-blocking execution runs on the Servlet thread"
+                                        + " model instead.")
+                            .recommendation(
+                                    "Keep only the starter matching the intended stack. If"
+                                        + " WebClient is the only reason for the WebFlux"
+                                        + " dependency, that is fine — set"
+                                        + " spring.main.web-application-type explicitly to make the"
+                                        + " choice visible.")
+                            .evidence(
+                                    "Both Servlet/MVC and WebFlux dependencies were resolved for"
+                                            + " this project.")
+                            .limitations(
+                                    "Using WebFlux solely for WebClient is a common and valid"
+                                            + " pattern; review before removing dependencies.")
+                            .target("web stack")
+                            .location("Runtime stack")
+                            .build());
         }
         if (webStack == WebStack.SERVLET_MVC && evidence.reactiveSignalDetected()) {
             String reactiveEvidence =
@@ -462,11 +508,7 @@ public class RuntimeStackAnalyzer {
                             .orElse("Reactive types or routing APIs were detected in source code.");
             findings.add(
                     FindingFactory.builder(
-                                    "SPRING_REACTIVE_API_IN_SERVLET_APP",
-                                    "Reactive API usage in Servlet application",
-                                    FindingSeverity.INFO,
-                                    FindingCategory.API_SURFACE,
-                                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED,
+                                    FindingRules.SPRING_REACTIVE_API_IN_SERVLET_APP,
                                     FindingConfidence.MEDIUM)
                             .shortMessage(
                                     "Reactive APIs were detected in code, but the build currently"
@@ -493,11 +535,34 @@ public class RuntimeStackAnalyzer {
         if (webStack == WebStack.NON_WEB
                 && dependencyCoordinates.stream().anyMatch(this::isServletDependency)) {
             findings.add(
-                    new Finding(
-                            FindingSeverity.INFO,
-                            "Web dependencies were detected, but configuration indicates a non-web"
-                                    + " application type.",
-                            null));
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_WEB_DEPENDENCIES_IN_NON_WEB_APP,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    "Web dependencies were detected, but configuration indicates a"
+                                            + " non-web application type.")
+                            .whyBadPractice(
+                                    "spring.main.web-application-type=none prevents the embedded"
+                                        + " server from starting even though the servlet stack is"
+                                        + " packaged, so the web dependencies add startup cost and"
+                                        + " attack surface without serving anything.")
+                            .possibleImpact(
+                                    "A larger artifact and classpath than needed; developers may"
+                                            + " also expect endpoints to be reachable when they are"
+                                            + " not.")
+                            .recommendation(
+                                    "Remove the web starter if the application is intentionally"
+                                        + " non-web, or drop the web-application-type override if"
+                                        + " the server should start.")
+                            .evidence(
+                                    "Servlet/web dependencies were resolved while the application"
+                                            + " type resolves to non-web.")
+                            .limitations(
+                                    "The web dependency may be required transitively for a client"
+                                            + " (e.g. RestTemplate) rather than for serving.")
+                            .target("web dependencies")
+                            .location("Runtime stack")
+                            .build());
         }
     }
 

@@ -1211,6 +1211,9 @@ public class StaticPracticeFindingAnalyzer {
         }
     }
 
+    private static final java.util.regex.Pattern NO_ARG_REST_TEMPLATE_PATTERN =
+            java.util.regex.Pattern.compile("new\\s+RestTemplate\\s*\\(\\s*\\)");
+
     private void detectHttpClientGaps(
             String relativePath,
             String fileContent,
@@ -1233,8 +1236,12 @@ public class StaticPracticeFindingAnalyzer {
                         || normalized.contains("retrywhen")
                         || normalized.contains("@retryable")
                         || normalized.contains("backoff");
+        // A no-arg `new RestTemplate()` in the same file is already reported, with a more
+        // specific message, as SPRING_REST_TEMPLATE_NO_TIMEOUT — don't report the same missing
+        // timeout twice.
+        boolean noArgRestTemplateInFile = NO_ARG_REST_TEMPLATE_PATTERN.matcher(fileContent).find();
         OutboundEndpoint representative = outboundEndpoints.get(0);
-        if (!timeoutConfigured) {
+        if (!timeoutConfigured && !noArgRestTemplateInFile) {
             findings.add(
                     FindingFactory.builder(
                                     FindingRules.SPRING_HTTP_CLIENT_NO_TIMEOUT,

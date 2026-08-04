@@ -1275,6 +1275,12 @@ public class ScalabilityPracticeFindingAnalyzer {
         if (lombokMayGenerate) {
             return;
         }
+        String annotationName =
+                cls.getAnnotations().stream()
+                        .map(a -> simpleName(a.getNameAsString()))
+                        .filter(name -> "Entity".equals(name) || "Embeddable".equals(name))
+                        .findFirst()
+                        .orElse("Entity");
         Integer line = cls.getBegin().map(p -> p.line).orElse(null);
         String target = cls.getNameAsString();
         findings.add(
@@ -1282,7 +1288,9 @@ public class ScalabilityPracticeFindingAnalyzer {
                                 FindingRules.SPRING_JPA_ENTITY_NO_NOARG_CONSTRUCTOR,
                                 FindingConfidence.HIGH)
                         .shortMessage(
-                                "@Entity "
+                                "@"
+                                        + annotationName
+                                        + " "
                                         + target
                                         + " declares only parameterized constructors — Hibernate"
                                         + " cannot instantiate it.")

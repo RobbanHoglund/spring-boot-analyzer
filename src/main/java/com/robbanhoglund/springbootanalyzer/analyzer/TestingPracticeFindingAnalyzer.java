@@ -415,6 +415,21 @@ public class TestingPracticeFindingAnalyzer {
                                         hasAnnotation(f, "MockBean")
                                                 || hasAnnotation(f, "MockitoBean"))
                         .count();
+        // Class-level @MockBean(A.class, B.class) / @MockitoBean(types = {...}) fragment the
+        // context cache the same way, so count those type arguments too.
+        long classLevelMocks =
+                cls.getAnnotations().stream()
+                        .filter(
+                                a -> {
+                                    String name = simpleName(a.getNameAsString());
+                                    return "MockBean".equals(name)
+                                            || "MockitoBean".equals(name)
+                                            || "SpyBean".equals(name)
+                                            || "MockitoSpyBean".equals(name);
+                                })
+                        .mapToLong(a -> a.toString().chars().filter(c -> c == ',').count() + 1)
+                        .sum();
+        mockBeanCount += classLevelMocks;
         if (mockBeanCount <= MOCKBEAN_THRESHOLD) {
             return;
         }
@@ -447,7 +462,8 @@ public class TestingPracticeFindingAnalyzer {
                                 cls.getNameAsString()
                                         + " declares "
                                         + mockBeanCount
-                                        + " @MockBean fields (threshold: "
+                                        + " mocked beans (@MockBean/@MockitoBean, fields and"
+                                        + " class-level types; threshold: "
                                         + MOCKBEAN_THRESHOLD
                                         + ").")
                         .source(relativePath, line)

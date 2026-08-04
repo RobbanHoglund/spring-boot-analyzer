@@ -209,7 +209,7 @@ class SpringBootProjectAnalyzerTest {
                 .contains(FindingSeverity.WARNING);
         assertThat(result.findings())
                 .extracting(finding -> finding.message())
-                .anyMatch(message -> message.contains("component scanning issues"));
+                .anyMatch(message -> message.contains("outside the main application package"));
         assertThat(result.configurationAnalysis()).isNotNull();
         assertThat(result.runtimeStackAnalysis()).isNotNull();
         assertThat(result.httpSurfaceAnalysis()).isNotNull();

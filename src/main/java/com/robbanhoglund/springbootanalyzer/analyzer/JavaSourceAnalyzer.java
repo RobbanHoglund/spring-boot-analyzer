@@ -11,7 +11,9 @@ import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.DetectedClass;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
-import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.SpringComponentType;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -146,11 +148,33 @@ public class JavaSourceAnalyzer {
 
         if (packageName.isBlank()) {
             findings.add(
-                    new Finding(
-                            FindingSeverity.WARNING,
-                            "Class is declared in the default package. Spring Boot recommends"
-                                    + " avoiding the default package.",
-                            normalizePath(repositoryRoot, sourceFile)));
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_CLASS_IN_DEFAULT_PACKAGE,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "Class is declared in the default package. Spring Boot"
+                                            + " recommends avoiding the default package.")
+                            .whyBadPractice(
+                                    "A @SpringBootApplication in the default package makes"
+                                        + " component scanning start at the classpath root, so"
+                                        + " Spring scans every class of every dependency."
+                                        + " Annotation processing and several framework features"
+                                        + " also behave inconsistently for default-package types.")
+                            .possibleImpact(
+                                    "Dramatically slower startup, accidental registration of"
+                                            + " third-party beans, and confusing context-loading"
+                                            + " failures.")
+                            .recommendation(
+                                    "Move the class into a named package that reflects the"
+                                            + " application's group id, e.g."
+                                            + " com.example.myapp.")
+                            .evidence(
+                                    "No package declaration in "
+                                            + normalizePath(repositoryRoot, sourceFile)
+                                            + ".")
+                            .location(normalizePath(repositoryRoot, sourceFile))
+                            .target("default package")
+                            .build());
         }
 
         for (TypeDeclaration<?> typeDeclaration : compilationUnit.findAll(TypeDeclaration.class)) {

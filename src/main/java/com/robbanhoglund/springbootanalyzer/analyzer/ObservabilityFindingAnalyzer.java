@@ -4,6 +4,7 @@ import com.github.javaparser.ast.NodeList;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
@@ -58,7 +59,35 @@ public class ObservabilityFindingAnalyzer {
      * @return all detected observability-gap findings; never null, may be empty
      */
     public List<Finding> analyze(Path repositoryRoot, RuntimeStackAnalysis runtimeStackAnalysis) {
-        return analyze(JavaSources.from(repositoryRoot), runtimeStackAnalysis);
+        return analyze(JavaSources.from(repositoryRoot), runtimeStackAnalysis, null);
+    }
+
+    /**
+     * @deprecated use {@link #analyze(JavaSources, RuntimeStackAnalysis, BuildInfo)} so the
+     *     "missing observability annotation" rules can be gated on an observability stack.
+     */
+    @Deprecated
+    public List<Finding> analyze(JavaSources sources, RuntimeStackAnalysis runtimeStackAnalysis) {
+        return analyze(sources, runtimeStackAnalysis, null);
+    }
+
+    /**
+     * Recommending {@code @Observed}/{@code @Timed} only makes sense when Micrometer or actuator
+     * is on the classpath — without them the annotations are inert, so the advice would be noise.
+     */
+    private static boolean hasObservabilityStack(BuildInfo buildInfo) {
+        if (buildInfo == null || buildInfo.dependencies() == null) {
+            return false;
+        }
+        return buildInfo.dependencies().stream()
+                .anyMatch(
+                        dep -> {
+                            String lower = dep.toLowerCase(java.util.Locale.ROOT);
+                            return lower.contains("micrometer")
+                                    || lower.contains("spring-boot-starter-actuator")
+                                    || lower.contains("opentelemetry")
+                                    || lower.contains("spring-cloud-starter-sleuth");
+                        });
     }
 
     /**
@@ -68,9 +97,11 @@ public class ObservabilityFindingAnalyzer {
      * @param runtimeStackAnalysis the detected runtime stacks; used for version gating
      * @return all detected observability-gap findings; never null, may be empty
      */
-    public List<Finding> analyze(JavaSources sources, RuntimeStackAnalysis runtimeStackAnalysis) {
+    public List<Finding> analyze(
+            JavaSources sources, RuntimeStackAnalysis runtimeStackAnalysis, BuildInfo buildInfo) {
         List<Finding> findings = new ArrayList<>();
         boolean springBoot3Plus = isSpringBoot3Plus(runtimeStackAnalysis);
+        boolean observabilityStackPresent = hasObservabilityStack(buildInfo);
         for (JavaSources.JavaFile file : sources.files()) {
             if (file.compilationUnit() == null) {
                 continue;
@@ -88,6 +119,7 @@ public class ObservabilityFindingAnalyzer {
                                                                     cls,
                                                                     method,
                                                                     springBoot3Plus,
+                                                                    observabilityStackPresent,
                                                                     findings)));
         }
         return findings;
@@ -98,6 +130,7 @@ public class ObservabilityFindingAnalyzer {
             ClassOrInterfaceDeclaration declaration,
             MethodDeclaration method,
             boolean springBoot3Plus,
+            boolean observabilityStackPresent,
             List<Finding> findings) {
         boolean isScheduled = hasAnnotation(method.getAnnotations(), "Scheduled");
         boolean isListener =
@@ -107,7 +140,8 @@ public class ObservabilityFindingAnalyzer {
         Integer line = method.getBegin().map(p -> p.line).orElse(null);
         String target = declaration.getNameAsString() + "#" + method.getNameAsString();
 
-        if (hasTimed && springBoot3Plus) {
+        // Already migrated: a method carrying both annotations needs no migration advice.
+        if (hasTimed && !hasObserved && springBoot3Plus) {
             findings.add(
                     FindingFactory.builder(
                                     FindingRules.SPRING_TIMED_PREFER_OBSERVED,
@@ -144,7 +178,7 @@ public class ObservabilityFindingAnalyzer {
                             .build());
         }
 
-        if (isScheduled && !hasTimed && !hasObserved) {
+        if (isScheduled && !hasTimed && !hasObserved && observabilityStackPresent) {
             findings.add(
                     FindingFactory.builder(
                                     FindingRules.SPRING_SCHEDULED_NO_OBSERVABILITY,
@@ -184,7 +218,7 @@ public class ObservabilityFindingAnalyzer {
                             .build());
         }
 
-        if (isListener && !hasTimed && !hasObserved) {
+        if (isListener && !hasTimed && !hasObserved && observabilityStackPresent) {
             String presentAnnotation =
                     MESSAGING_LISTENER_ANNOTATIONS.stream()
                             .filter(name -> hasAnnotation(method.getAnnotations(), name))

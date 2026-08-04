@@ -1414,9 +1414,14 @@ public class ConfigurationFindingAnalyzer {
                 configurationAnalysis.properties().stream()
                         .anyMatch(p -> "spring.jpa.open-in-view".equals(p.name()));
         if (!openInViewExplicit) {
+            // Not-set is the Spring Boot default in every JPA web project, so this variant is
+            // informational; the explicit =true case stays at the rule's WARNING severity.
             findings.add(
                     FindingFactory.builder(
                                     FindingRules.SPRING_JPA_OPEN_IN_VIEW, FindingConfidence.MEDIUM)
+                            .severity(
+                                    com.robbanhoglund.springbootanalyzer.analyzer.model
+                                            .FindingSeverity.INFO)
                             .shortMessage(
                                     "spring.jpa.open-in-view is not explicitly set and defaults to"
                                             + " true.")

@@ -1376,7 +1376,11 @@ class PriceRefreshJob {
                         configurationResult.configurationAnalysis(),
                         gradleAnalysis);
         List<Finding> observabilityFindings =
-                observabilityFindingAnalyzer.analyze(repositoryRoot, runtimeAnalysis);
+                observabilityFindingAnalyzer.analyze(
+                        com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources.from(
+                                repositoryRoot),
+                        runtimeAnalysis,
+                        buildInfo);
         return java.util.stream.Stream.of(
                         staticFindings,
                         httpResult.findings(),
@@ -1423,7 +1427,11 @@ class PriceRefreshJob {
                         configurationResult.configurationAnalysis(),
                         gradleAnalysis);
         List<Finding> observabilityFindings =
-                observabilityFindingAnalyzer.analyze(repositoryRoot, runtimeAnalysis);
+                observabilityFindingAnalyzer.analyze(
+                        com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources.from(
+                                repositoryRoot),
+                        runtimeAnalysis,
+                        buildInfo);
         return java.util.stream.Stream.of(staticFindings, configFindings, observabilityFindings)
                 .flatMap(java.util.Collection::stream)
                 .toList();
@@ -3984,7 +3992,7 @@ class UserRepository {
                                 FindingRules.SPRING_SQL_INJECTION_QUERY_CONCATENATION
                                                 .ruleId()
                                                 .equals(finding.ruleId())
-                                        && finding.severity() == FindingSeverity.WARNING
+                                        && finding.severity() == FindingSeverity.ERROR
                                         && finding.primaryLocation() != null);
     }
 
@@ -4663,7 +4671,12 @@ interface InventoryClient {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+        // The "missing observability annotation" rules require an observability stack.
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-actuator")));
 
         assertThat(findings)
                 .extracting(Finding::ruleId)
@@ -4719,7 +4732,12 @@ interface InventoryClient {
                 }
                 """);
 
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+        // The "missing observability annotation" rules require an observability stack.
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-actuator")));
 
         assertThat(findings)
                 .extracting(Finding::ruleId)

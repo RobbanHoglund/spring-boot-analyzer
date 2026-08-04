@@ -18,7 +18,6 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingOccurrence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
-import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.HighlightRange;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.SourceLocation;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ApplicationProperty;
@@ -795,11 +794,38 @@ public class HttpSurfaceAnalyzer {
         if (!inboundEndpoints.isEmpty()
                 && (webStack == WebStack.NON_WEB || webStack == WebStack.UNKNOWN)) {
             findings.add(
-                    new Finding(
-                            FindingSeverity.WARNING,
-                            "Inbound HTTP endpoints were detected in code, but the runtime stack"
-                                    + " does not look like a web application.",
-                            inboundEndpoints.get(0).sourceFile()));
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_INBOUND_ENDPOINTS_IN_NON_WEB_APP,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    "Inbound HTTP endpoints were detected in code, but the runtime"
+                                            + " stack does not look like a web application.")
+                            .whyBadPractice(
+                                    "Controller mappings are only served when a web application"
+                                            + " context starts. Without a web starter — or with"
+                                            + " spring.main.web-application-type=none — no embedded"
+                                            + " server is created and the mappings are never"
+                                            + " registered.")
+                            .possibleImpact(
+                                    "Endpoints that look implemented return nothing because no"
+                                            + " server is listening; callers see connection"
+                                            + " failures rather than HTTP errors.")
+                            .recommendation(
+                                    "Add spring-boot-starter-web (or webflux) if the endpoints are"
+                                        + " meant to be served, or remove the controllers if the"
+                                        + " application is intentionally non-web.")
+                            .evidence(
+                                    inboundEndpoints.size()
+                                            + " inbound endpoints were detected while the resolved"
+                                            + " web stack is "
+                                            + webStack
+                                            + ".")
+                            .limitations(
+                                    "The web stack is inferred from dependencies and configuration;"
+                                        + " a custom server setup may still serve the endpoints.")
+                            .location(inboundEndpoints.get(0).sourceFile())
+                            .target("inbound HTTP endpoints")
+                            .build());
         }
 
         if (inboundEndpoints.isEmpty()
@@ -807,24 +833,37 @@ public class HttpSurfaceAnalyzer {
                         || webStack == WebStack.REACTIVE_WEBFLUX
                         || webStack == WebStack.MIXED_MVC_AND_WEBFLUX)) {
             findings.add(
-                    new Finding(
-                            FindingSeverity.INFO,
-                            "A web runtime stack was detected, but no inbound HTTP endpoints were"
-                                    + " found.",
-                            null));
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_WEB_STACK_WITHOUT_ENDPOINTS,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    "A web runtime stack was detected, but no inbound HTTP"
+                                            + " endpoints were found.")
+                            .whyBadPractice(
+                                    "The application starts an embedded web server and holds the"
+                                        + " port, but exposes no application endpoints of its own.")
+                            .possibleImpact(
+                                    "Wasted memory and an open port with only framework/actuator"
+                                            + " endpoints reachable. In a non-web service this is"
+                                            + " usually an unintended dependency.")
+                            .recommendation(
+                                    "Remove the web starter if the application does not serve HTTP,"
+                                            + " or set spring.main.web-application-type=none.")
+                            .evidence(
+                                    "Resolved web stack "
+                                            + webStack
+                                            + " with no @RequestMapping"
+                                            + "-style inbound endpoints detected.")
+                            .limitations(
+                                    "Endpoints registered programmatically (RouterFunction beans,"
+                                            + " servlet registrations) may not be detected.")
+                            .target("HTTP surface")
+                            .location("HTTP surface")
+                            .build());
         }
 
-        if (webStack == WebStack.MIXED_MVC_AND_WEBFLUX
-                && outboundEndpoints.stream()
-                        .anyMatch(endpoint -> "WebClient".equals(endpoint.clientType()))) {
-            findings.add(
-                    new Finding(
-                            FindingSeverity.INFO,
-                            "WebFlux APIs were detected while the build includes both MVC and"
-                                + " WebFlux starters. Spring MVC normally wins unless configuration"
-                                + " overrides it.",
-                            null));
-        }
+        // Note: the MVC+WebFlux mix is reported once by RuntimeStackAnalyzer as
+        // SPRING_MIXED_MVC_AND_WEBFLUX (the web-stack authority); it is not duplicated here.
 
         long insecureUrlCount =
                 Stream.concat(
@@ -907,28 +946,40 @@ public class HttpSurfaceAnalyzer {
                         .count();
         if (querySecretCount > 0) {
             findings.add(
-                    new Finding(
-                            FindingSeverity.WARNING,
-                            querySecretCount
-                                    + " outbound URLs contain credential-like query parameters.",
-                            null));
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_OUTBOUND_URL_CREDENTIALS_IN_QUERY,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    querySecretCount
+                                            + " outbound URLs contain credential-like query"
+                                            + " parameters.")
+                            .whyBadPractice(
+                                    "Query strings are part of the request line, so proxies, load"
+                                        + " balancers, CDNs, and the application's own access logs"
+                                        + " record them verbatim. A credential placed there is"
+                                        + " copied into every one of those log stores.")
+                            .possibleImpact(
+                                    "API keys and tokens end up in log aggregation systems with"
+                                        + " weaker access control than the secret store, and stay"
+                                        + " there for the full retention period.")
+                            .recommendation(
+                                    "Send credentials in an Authorization header or request body"
+                                            + " instead of the URL, and rotate any secret that has"
+                                            + " already been logged.")
+                            .evidence(
+                                    querySecretCount
+                                            + " configured or outbound URLs matched a"
+                                            + " credential-like query parameter pattern.")
+                            .limitations(
+                                    "Parameter names are matched heuristically; a parameter named"
+                                            + " like a credential may hold a harmless value.")
+                            .target("outbound URLs")
+                            .location("HTTP surface")
+                            .build());
         }
 
-        boolean actuatorWildcard =
-                actuatorExposures.stream()
-                        .anyMatch(
-                                exposure ->
-                                        "management.endpoints.web.exposure.include"
-                                                        .equals(exposure.propertyName())
-                                                && exposure.exposedEndpoints().contains("*"));
-        if (actuatorWildcard) {
-            findings.add(
-                    new Finding(
-                            FindingSeverity.WARNING,
-                            "Actuator web exposure includes '*', which publishes every endpoint"
-                                    + " over HTTP.",
-                            null));
-        }
+        // Note: wildcard actuator exposure is reported by SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD
+        // in ConfigurationFindingAnalyzer; it is not duplicated here.
     }
 
     private ConfiguredUrlMetadata classifyConfiguredUrl(

@@ -9,7 +9,9 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.AnalysisResult;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.DetectedClass;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
-import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.SpringComponentType;
 import com.robbanhoglund.springbootanalyzer.analyzer.runtime.RuntimeStackAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.scheduling.SchedulingAnalyzer;
@@ -214,7 +216,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
                         gradleResult.gradleModelAnalysis()));
         findings.addAll(
                 observabilityFindingAnalyzer.analyze(
-                        javaSources, runtimeResult.runtimeStackAnalysis()));
+                        javaSources, runtimeResult.runtimeStackAnalysis(), buildInfo));
         findings.addAll(testingPracticeFindingAnalyzer.analyze(repositoryRoot, buildInfo));
         findings.addAll(cachingPracticeFindingAnalyzer.analyze(javaSources));
         findings.addAll(observabilityGapFindingAnalyzer.analyze(javaSources, buildInfo));
@@ -250,23 +252,67 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
             List<Finding> findings) {
         if (mainApplicationClasses.isEmpty()) {
             findings.add(
-                    new Finding(
-                            FindingSeverity.WARNING,
-                            "No @SpringBootApplication class was found. The project may not be a"
-                                    + " Spring Boot application or the main class may be outside"
-                                    + " src/main/java.",
-                            null));
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_NO_MAIN_APPLICATION_CLASS,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "No @SpringBootApplication class was found. The project may not"
+                                        + " be a Spring Boot application or the main class may be"
+                                        + " outside src/main/java.")
+                            .whyBadPractice(
+                                    "The @SpringBootApplication class defines the component scan"
+                                        + " root that most of this analysis depends on. Without it,"
+                                        + " package-scoped rules cannot determine which classes"
+                                        + " Spring would actually register.")
+                            .possibleImpact(
+                                    "Findings that depend on the scan root are skipped, so the"
+                                            + " report is less complete than it appears.")
+                            .recommendation(
+                                    "If this is a Spring Boot application, confirm the entry point"
+                                        + " lives under src/main/java. For a library module this"
+                                        + " finding is expected and can be suppressed.")
+                            .evidence(
+                                    "No class annotated @SpringBootApplication was found under"
+                                            + " src/main/java.")
+                            .limitations(
+                                    "Multi-module builds may declare the entry point in another"
+                                            + " module that is not part of this analysis.")
+                            .target("application entry point")
+                            .location("Application structure")
+                            .build());
             return;
         }
 
         if (mainApplicationClasses.size() > 1) {
             findings.add(
-                    new Finding(
-                            FindingSeverity.INFO,
-                            "Multiple @SpringBootApplication classes were found. Review the"
-                                    + " intended application entry point and component scan"
-                                    + " boundaries.",
-                            null));
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_MULTIPLE_MAIN_APPLICATION_CLASSES,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "Multiple @SpringBootApplication classes were found. Review the"
+                                            + " intended application entry point and component scan"
+                                            + " boundaries.")
+                            .whyBadPractice(
+                                    "Each @SpringBootApplication defines its own component scan"
+                                        + " root and auto-configuration set. Tests using"
+                                        + " @SpringBootTest without an explicit classes attribute"
+                                        + " pick one by search order, which may not be the one that"
+                                        + " runs in production.")
+                            .possibleImpact(
+                                    "Tests can bootstrap a different context than production, so"
+                                        + " configuration problems are masked until deployment.")
+                            .recommendation(
+                                    "Keep a single @SpringBootApplication per deployable"
+                                            + " application. Use plain @Configuration classes for"
+                                            + " test-only or auxiliary contexts.")
+                            .evidence(
+                                    mainApplicationClasses.size()
+                                            + " @SpringBootApplication classes were detected: "
+                                            + String.join(", ", mainApplicationClasses)
+                                            + ".")
+                            .target("application entry points")
+                            .location("Application structure")
+                            .build());
         }
 
         Set<String> mainPackages = new LinkedHashSet<>();
@@ -291,11 +337,45 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
                                             detectedClass.packageName().startsWith(mainPackage));
             if (!underMainPackage) {
                 findings.add(
-                        new Finding(
-                                FindingSeverity.WARNING,
-                                "Detected component appears outside the main application package."
-                                        + " This may cause component scanning issues.",
-                                detectedClass.filePath()));
+                        FindingFactory.builder(
+                                        FindingRules.SPRING_COMPONENT_OUTSIDE_MAIN_PACKAGE,
+                                        FindingConfidence.MEDIUM)
+                                .shortMessage(
+                                        "Component "
+                                                + detectedClass.fullyQualifiedClassName()
+                                                + " lives outside the main application package —"
+                                                + " it may never be scanned.")
+                                .whyBadPractice(
+                                        "Default component scanning starts at the"
+                                            + " @SpringBootApplication class's package and covers"
+                                            + " only its sub-packages. A stereotype class outside"
+                                            + " that tree is not registered as a bean unless an"
+                                            + " explicit @ComponentScan or auto-configuration"
+                                            + " import includes it.")
+                                .possibleImpact(
+                                        "The bean silently does not exist: injection points fail at"
+                                            + " startup, or a @ConditionalOnMissingBean default"
+                                            + " takes over and the intended implementation never"
+                                            + " runs.")
+                                .recommendation(
+                                        "Move the class under the application package, or add it"
+                                            + " explicitly via @ComponentScan/@Import (for a"
+                                            + " library, register it through an auto-configuration"
+                                            + " entry).")
+                                .evidence(
+                                        detectedClass.fullyQualifiedClassName()
+                                                + " is in package "
+                                                + detectedClass.packageName()
+                                                + ", outside the main application package(s): "
+                                                + String.join(", ", mainPackages)
+                                                + ".")
+                                .limitations(
+                                        "An explicit @ComponentScan, @Import, or"
+                                                + " auto-configuration registration elsewhere may"
+                                                + " already include this package.")
+                                .location(detectedClass.filePath())
+                                .target(detectedClass.fullyQualifiedClassName())
+                                .build());
             }
         }
     }

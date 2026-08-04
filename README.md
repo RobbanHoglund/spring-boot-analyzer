@@ -5,7 +5,7 @@
 [![Java](https://img.shields.io/badge/java-25-orange.svg)](build.gradle)
 [![Spring Boot](https://img.shields.io/badge/spring--boot-3.5-brightgreen.svg)](build.gradle)
 
-A static analysis tool for Spring Boot projects. Point it at any Git repository and get a structured report of findings, component inventory, HTTP surface, configuration risks, and anti-patterns — without running the analyzed application. 185 rules across 19 categories out of the box.
+A static analysis tool for Spring Boot projects. Point it at any Git repository and get a structured report of findings, component inventory, HTTP surface, configuration risks, and anti-patterns — without running the analyzed application. 198 rules across 19 categories out of the box.
 
 **Safe by default.** The default `STATIC_ONLY` mode clones the repository into a temporary workspace and performs static analysis only. It does not run Gradle tasks, Maven goals, tests, or the analyzed Spring Boot application. See [SECURITY.md](SECURITY.md) for the full security model.
 
@@ -66,29 +66,29 @@ Detects Spring stereotypes and maps the application's component structure:
 
 ## Findings
 
-The analyzer produces **185 rules** across 19 categories. Each finding includes severity, confidence, why it matters, recommended action, evidence, and — for Gradle-model-backed rules — the exact resolved library versions involved.
+The analyzer produces **198 rules** across 19 categories. Each finding includes severity, confidence, why it matters, recommended action, evidence, and — for Gradle-model-backed rules — the exact resolved library versions involved.
 
 | Category | Rules | Highest severity |
 |----------|------:|-----------------|
-| Security | 42 | ERROR |
-| Maintainability | 19 | ERROR |
+| Security | 43 | ERROR |
+| Maintainability | 20 | ERROR |
 | Persistence | 19 | ERROR |
 | Transaction | 15 | ERROR |
+| Configuration | 13 | ERROR |
 | Exception handling | 11 | ERROR |
 | Scheduling | 11 | ERROR |
 | Caching | 9 | ERROR |
 | Observability | 9 | WARNING |
-| Configuration | 8 | ERROR |
 | Profile drift | 8 | WARNING |
+| Spring Boot 3 migration | 8 | WARNING |
 | HTTP clients | 7 | WARNING |
-| Spring Boot 3 migration | 7 | WARNING |
+| API surface | 6 | ERROR |
+| Startup | 5 | ERROR |
 | Testing practice | 5 | WARNING |
-| API surface | 4 | ERROR |
 | Validation | 3 | INFO |
 | Actuator | 2 | WARNING |
 | Conditional beans | 2 | WARNING |
 | Dependency compatibility | 2 | ERROR |
-| Startup | 2 | ERROR |
 
 See [docs/RULES.md](docs/RULES.md) for the complete rule catalog including detection logic, recommendations, and false-positive guidance.
 
@@ -266,6 +266,45 @@ automatically):
 ./gradlew integrationTest        # macOS / Linux
 .\gradlew.bat integrationTest    # Windows
 ```
+
+### Building behind a corporate proxy
+
+Gradle resolves the Spring Boot plugin from `plugins.gradle.org` during *configuration*, before
+any project code runs, so a blocked or TLS-intercepting proxy fails the build with
+`Could not download spring-boot-gradle-plugin` / `Got socket exception during request. It might be
+caused by SSL misconfiguration`.
+
+Gradle does not read `HTTP_PROXY`/`HTTPS_PROXY`; it needs JVM system properties. Put them in
+`~/.gradle/gradle.properties` (user-level, so they apply to every project and stay out of the
+repository):
+
+```properties
+systemProp.https.proxyHost=proxy.corp.example.com
+systemProp.https.proxyPort=8080
+systemProp.http.proxyHost=proxy.corp.example.com
+systemProp.http.proxyPort=8080
+systemProp.http.nonProxyHosts=localhost|127.0.0.1|*.corp.example.com
+```
+
+If the proxy terminates TLS with its own root certificate, also import that certificate into a
+truststore and point the JVM at it:
+
+```properties
+systemProp.javax.net.ssl.trustStore=C:/certs/corp-truststore.jks
+systemProp.javax.net.ssl.trustStorePassword=changeit
+```
+
+An internal Artifactory/Nexus mirror is the more robust option: add it to `settings.gradle`
+(`pluginManagement.repositories`) and `build.gradle` (`repositories`) so neither plugin nor
+dependency resolution needs the public internet.
+
+**Analyzing repositories behind the same proxy** — the analyzer runs Gradle against the projects
+it inspects, so it has its own proxy settings (see `src/main/resources/application.properties`):
+`analyzer.gradle.proxy.enabled`/`host`/`port`/`username`/`password` inject explicit JVM proxy
+settings, `analyzer.gradle.copy-host-gradle-proxy-properties=true` (the default) reuses the proxy
+entries from your own `~/.gradle/gradle.properties`, and `analyzer.gradle.pass-through-environment`
+forwards `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`. If a target project still cannot resolve, run the
+analysis in `STATIC_ONLY` mode — it then never invokes Gradle.
 
 **Run frontend tests**
 

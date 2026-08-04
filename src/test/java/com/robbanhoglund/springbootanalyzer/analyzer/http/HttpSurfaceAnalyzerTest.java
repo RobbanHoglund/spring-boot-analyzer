@@ -190,10 +190,11 @@ class ApiClient {
         assertThat(result.httpSurfaceAnalysis().actuatorExposures())
                 .extracting(exposure -> exposure.propertyName())
                 .contains("management.endpoints.web.exposure.include");
+        // Wildcard actuator exposure is reported by SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD in
+        // ConfigurationFindingAnalyzer, not duplicated here — only the inventory is asserted.
         assertThat(result.findings())
                 .extracting(finding -> finding.message())
-                .anyMatch(message -> message.contains("plain http://"))
-                .anyMatch(message -> message.contains("publishes every endpoint"));
+                .anyMatch(message -> message.contains("plain http://"));
         assertThat(result.findings())
                 .filteredOn(finding -> "SPRING_HTTP_PLAIN_URL".equals(finding.ruleId()))
                 .singleElement()

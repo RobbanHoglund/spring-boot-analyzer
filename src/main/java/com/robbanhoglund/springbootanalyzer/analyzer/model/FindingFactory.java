@@ -99,7 +99,7 @@ public final class FindingFactory {
     public static final class Builder {
         private final String ruleId;
         private final String title;
-        private final FindingSeverity severity;
+        private FindingSeverity severity;
         private final FindingCategory category;
         private final FindingRuntimeDetection runtimeDetection;
         private final FindingConfidence confidence;
@@ -130,6 +130,16 @@ public final class FindingFactory {
             this.category = category;
             this.runtimeDetection = runtimeDetection;
             this.confidence = confidence;
+        }
+
+        /**
+         * Overrides the rule's default severity for this particular occurrence. Use sparingly —
+         * only when one rule legitimately covers variants of differing seriousness (for example a
+         * property explicitly set to a risky value versus merely relying on a risky default).
+         */
+        public Builder severity(FindingSeverity severity) {
+            this.severity = severity;
+            return this;
         }
 
         /** Sets the short human-readable message displayed as the finding headline. */

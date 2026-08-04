@@ -718,10 +718,34 @@ public class ConfigurationAnalyzer {
             if (property.documentation().deprecated()
                     && deprecatedPropertyNames.add(property.name())) {
                 findings.add(
-                        new Finding(
-                                FindingSeverity.WARNING,
-                                "Deprecated configuration property is used: " + property.name(),
-                                property.sourceFile()));
+                        FindingFactory.builder(
+                                        FindingRules.SPRING_DEPRECATED_CONFIGURATION_PROPERTY,
+                                        FindingConfidence.HIGH)
+                                .shortMessage(
+                                        "Deprecated configuration property is used: "
+                                                + property.name())
+                                .whyBadPractice(
+                                        "Spring Boot's configuration metadata marks this property"
+                                            + " as deprecated. Deprecated properties are removed in"
+                                            + " a later release, and a removed property is ignored"
+                                            + " silently rather than reported.")
+                                .possibleImpact(
+                                        "After an upgrade the setting stops taking effect without"
+                                            + " any error, so the application silently falls back"
+                                            + " to the default behaviour.")
+                                .recommendation(
+                                        "Replace the property with its documented successor before"
+                                                + " upgrading Spring Boot; check the metadata"
+                                                + " replacement hint or the release notes.")
+                                .evidence(
+                                        property.name()
+                                                + " is marked deprecated in the configuration"
+                                                + " metadata and is set in "
+                                                + property.sourceFile()
+                                                + ".")
+                                .source(property.sourceFile(), property.line())
+                                .target(property.name())
+                                .build());
             }
 
             addRiskFinding(property, rawConfiguredProperties, findings);
@@ -730,12 +754,36 @@ public class ConfigurationAnalyzer {
                     && !property.references().isEmpty()
                     && customLookingOrphans.add(property.name())) {
                 findings.add(
-                        new Finding(
-                                FindingSeverity.INFO,
-                                "Configured property looks application-specific but has no matching"
-                                        + " @ConfigurationProperties metadata: "
-                                        + property.name(),
-                                property.sourceFile()));
+                        FindingFactory.builder(
+                                        FindingRules.SPRING_UNMAPPED_CUSTOM_PROPERTY,
+                                        FindingConfidence.MEDIUM)
+                                .shortMessage(
+                                        "Configured property looks application-specific but has no"
+                                                + " matching @ConfigurationProperties metadata: "
+                                                + property.name())
+                                .whyBadPractice(
+                                        "A property bound only through scattered @Value expressions"
+                                                + " has no single owner, no type safety, no Bean"
+                                                + " Validation, and no IDE completion. Typos are"
+                                                + " discovered at runtime.")
+                                .possibleImpact(
+                                        "A renamed or misspelled key silently falls back to a"
+                                                + " default (or fails startup), and the property's"
+                                                + " valid range is documented nowhere.")
+                                .recommendation(
+                                        "Group related keys in a @ConfigurationProperties class"
+                                            + " with @Validated constraints; the generated metadata"
+                                            + " then also gives IDE support.")
+                                .evidence(
+                                        property.name()
+                                                + " is referenced from source but matches no"
+                                                + " @ConfigurationProperties prefix.")
+                                .limitations(
+                                        "Third-party libraries may define the property without"
+                                                + " shipping configuration metadata.")
+                                .source(property.sourceFile(), property.line())
+                                .target(property.name())
+                                .build());
             }
         }
 
@@ -826,15 +874,45 @@ public class ConfigurationAnalyzer {
                                                     || property.name().startsWith(prefix + "."));
             if (!matched && orphanPrefixes.add(prefix)) {
                 findings.add(
-                        new Finding(
-                                FindingSeverity.INFO,
-                                "@ConfigurationProperties prefix was found but no matching"
-                                        + " configured properties were detected: "
-                                        + prefix,
-                                configurationPropertiesClass.sourceFile()));
+                        FindingFactory.builder(
+                                        FindingRules.SPRING_CONFIGURATION_PROPERTIES_PREFIX_UNUSED,
+                                        FindingConfidence.MEDIUM)
+                                .shortMessage(
+                                        "@ConfigurationProperties prefix was found but no matching"
+                                                + " configured properties were detected: "
+                                                + prefix)
+                                .whyBadPractice(
+                                        "The binding class exists but nothing in the inspected"
+                                            + " configuration sets any of its keys, so every field"
+                                            + " takes its default value. That is either dead"
+                                            + " configuration or a prefix mismatch.")
+                                .possibleImpact(
+                                        "Settings the developer believes are configurable are never"
+                                                + " actually supplied, and a prefix typo would look"
+                                                + " exactly the same.")
+                                .recommendation(
+                                        "Verify the prefix matches the keys used in the"
+                                                + " configuration files, or remove the class if the"
+                                                + " settings are no longer used.")
+                                .evidence(
+                                        "@ConfigurationProperties(prefix = \""
+                                                + prefix
+                                                + "\") in "
+                                                + configurationPropertiesClass.sourceFile()
+                                                + " has no matching configured property.")
+                                .limitations(
+                                        "Properties may be supplied by environment variables, a"
+                                            + " config server, or profiles outside the inspected"
+                                            + " files.")
+                                .location(configurationPropertiesClass.sourceFile())
+                                .target(prefix)
+                                .build());
             }
         }
     }
+
+    /** Mirrors the prod-like profile set used by {@code ConfigurationFindingAnalyzer}. */
+    private static final Set<String> PROD_LIKE_PROFILES = Set.of("prod", "production", "staging");
 
     private void addRiskFinding(
             ApplicationProperty property,
@@ -850,8 +928,11 @@ public class ConfigurationAnalyzer {
         // with a shared prod-like profile gate; emitting SPRING_RISKY_PROD_CONFIG too produced two
         // findings for one property line.
 
+        // The rule claims "in a production-oriented profile", so gate on one — matching the
+        // PROD_PROFILES set used by ConfigurationFindingAnalyzer.
         if ("management.endpoint.health.show-details".equals(name)
-                && "always".equalsIgnoreCase(rawValue)) {
+                && "always".equalsIgnoreCase(rawValue)
+                && PROD_LIKE_PROFILES.contains(profile.toLowerCase(Locale.ROOT))) {
             findings.add(
                     FindingFactory.builder(
                                     FindingRules.SPRING_RISKY_PROD_CONFIG, FindingConfidence.HIGH)
