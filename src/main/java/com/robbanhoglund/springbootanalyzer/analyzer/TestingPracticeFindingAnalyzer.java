@@ -183,10 +183,23 @@ public class TestingPracticeFindingAnalyzer {
                 cls.getFields().stream()
                         .filter(f -> hasAnnotation(f, "MockBean") || hasAnnotation(f, "SpyBean"))
                         .findFirst();
-        if (firstDeprecated.isEmpty()) {
+        // @MockBean/@SpyBean are also legal at type level (@MockBean(PaymentClient.class)).
+        AnnotationExpr classLevel =
+                cls.getAnnotations().stream()
+                        .filter(
+                                a -> {
+                                    String name = simpleName(a.getNameAsString());
+                                    return "MockBean".equals(name) || "SpyBean".equals(name);
+                                })
+                        .findFirst()
+                        .orElse(null);
+        if (firstDeprecated.isEmpty() && classLevel == null) {
             return;
         }
-        Integer line = firstDeprecated.get().getBegin().map(p -> p.line).orElse(null);
+        Integer line =
+                firstDeprecated.isPresent()
+                        ? firstDeprecated.get().getBegin().map(p -> p.line).orElse(null)
+                        : classLevel.getBegin().map(p -> p.line).orElse(null);
         findings.add(
                 FindingFactory.builder(
                                 FindingRules.SPRING_MOCKBEAN_DEPRECATED, FindingConfidence.HIGH)

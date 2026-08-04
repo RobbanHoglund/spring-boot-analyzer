@@ -223,6 +223,72 @@ class SchedulingPracticeFindingAnalyzerTest {
         assertThat(byRule(findings(), "SPRING_SCHEDULED_METHOD_INVALID_SIGNATURE")).isNull();
     }
 
+    // ── SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING ───────────────────────
+
+    @Test
+    void flagsScheduledWithNoTriggerAttribute() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Jobs.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.EnableScheduling;
+                import org.springframework.scheduling.annotation.Scheduled;
+                import org.springframework.stereotype.Component;
+                @Component
+                @EnableScheduling
+                public class Jobs {
+                    @Scheduled(initialDelay = 1000)
+                    public void run() {}
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("no trigger attribute");
+    }
+
+    @Test
+    void flagsScheduledWithConflictingTriggerAttributes() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Jobs.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.EnableScheduling;
+                import org.springframework.scheduling.annotation.Scheduled;
+                import org.springframework.stereotype.Component;
+                @Component
+                @EnableScheduling
+                public class Jobs {
+                    @Scheduled(fixedDelay = 5000, cron = "0 0 * * * *")
+                    public void run() {}
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("2 trigger attributes");
+    }
+
+    @Test
+    void doesNotFlagScheduledWithExactlyOneTriggerAndInitialDelay() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Jobs.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.EnableScheduling;
+                import org.springframework.scheduling.annotation.Scheduled;
+                import org.springframework.stereotype.Component;
+                @Component
+                @EnableScheduling
+                public class Jobs {
+                    @Scheduled(fixedDelay = 5000, initialDelay = 1000)
+                    public void run() {}
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING")).isNull();
+    }
+
     // ── SPRING_ASYNC_SELF_INVOCATION ──────────────────────────────────────────
 
     @Test

@@ -31,6 +31,20 @@ class ObservabilityGapFindingAnalyzerTest {
     }
 
     private List<Finding> findings() {
+        // The "missing @Observed/@Timed" rules require an observability stack on the classpath.
+        return analyzer.analyze(
+                com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources.from(repoRoot),
+                new com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo(
+                        com.robbanhoglund.springbootanalyzer.analyzer.model.BuildTool.GRADLE,
+                        true,
+                        "21",
+                        List.of("org.springframework.boot:spring-boot-starter-actuator"),
+                        "3.5.1",
+                        "build.gradle plugin",
+                        "HIGH"));
+    }
+
+    private List<Finding> findingsWithoutObservabilityStack() {
         return analyzer.analyze(repoRoot);
     }
 
@@ -157,74 +171,27 @@ class ObservabilityGapFindingAnalyzerTest {
         assertThat(byRule(findings(), "SPRING_EVENT_LISTENER_NO_OBSERVABILITY")).isNull();
     }
 
-    // ── SPRING_EXCEPTION_HANDLER_NO_METRICS ───────────────────────────────────
+    // ── Observability-stack gating ────────────────────────────────────────────
 
     @Test
-    void flagsExceptionHandlerWithNoMetricsInControllerAdvice() throws IOException {
+    void doesNotFlagMissingObservabilityAnnotationsWithoutObservabilityStack() throws IOException {
+        // Recommending @Observed/@Timed is pointless when Micrometer/actuator is not on the
+        // classpath — the annotations would be inert.
         writeSourceFile(
-                "src/main/java/com/example/GlobalExceptionHandler.java",
+                "src/main/java/com/example/NotificationService.java",
                 """
                 package com.example;
-                import org.springframework.web.bind.annotation.ControllerAdvice;
-                import org.springframework.web.bind.annotation.ExceptionHandler;
-                @ControllerAdvice
-                public class GlobalExceptionHandler {
-                    @ExceptionHandler(RuntimeException.class)
-                    public String handle(RuntimeException ex) {
-                        return "error";
-                    }
+                import org.springframework.scheduling.annotation.Async;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class NotificationService {
+                    @Async
+                    public void send() {}
                 }
                 """);
 
-        Finding f = byRule(findings(), "SPRING_EXCEPTION_HANDLER_NO_METRICS");
-        assertThat(f).isNotNull();
-        assertThat(f.target()).isEqualTo("GlobalExceptionHandler#handle");
-    }
-
-    @Test
-    void doesNotFlagExceptionHandlerWhenClassHasMeterRegistryField() throws IOException {
-        writeSourceFile(
-                "src/main/java/com/example/GlobalExceptionHandler.java",
-                """
-                package com.example;
-                import io.micrometer.core.instrument.MeterRegistry;
-                import org.springframework.web.bind.annotation.ControllerAdvice;
-                import org.springframework.web.bind.annotation.ExceptionHandler;
-                @ControllerAdvice
-                public class GlobalExceptionHandler {
-                    private final MeterRegistry meterRegistry;
-                    public GlobalExceptionHandler(MeterRegistry meterRegistry) {
-                        this.meterRegistry = meterRegistry;
-                    }
-                    @ExceptionHandler(RuntimeException.class)
-                    public String handle(RuntimeException ex) {
-                        meterRegistry.counter("errors").increment();
-                        return "error";
-                    }
-                }
-                """);
-
-        assertThat(byRule(findings(), "SPRING_EXCEPTION_HANDLER_NO_METRICS")).isNull();
-    }
-
-    @Test
-    void doesNotFlagExceptionHandlerOutsideControllerAdvice() throws IOException {
-        writeSourceFile(
-                "src/main/java/com/example/SomeController.java",
-                """
-                package com.example;
-                import org.springframework.web.bind.annotation.ExceptionHandler;
-                import org.springframework.web.bind.annotation.RestController;
-                @RestController
-                public class SomeController {
-                    @ExceptionHandler(RuntimeException.class)
-                    public String handle(RuntimeException ex) {
-                        return "error";
-                    }
-                }
-                """);
-
-        assertThat(byRule(findings(), "SPRING_EXCEPTION_HANDLER_NO_METRICS")).isNull();
+        assertThat(byRule(findingsWithoutObservabilityStack(), "SPRING_ASYNC_NO_OBSERVABILITY"))
+                .isNull();
     }
 
     // ── SPRING_OBSERVED_ON_PRIVATE_METHOD ─────────────────────────────────────

@@ -228,6 +228,130 @@ class ScalabilityPracticeFindingAnalyzerTest {
     }
 
     @Test
+    void doesNotFlagCollisionForNestedClasses() throws IOException {
+        // Spring names nested beans "outer.Inner", so same-named nested classes never collide.
+        writeSourceFile(
+                "src/main/java/com/example/DemoApplication.java",
+                """
+                package com.example;
+                import org.springframework.boot.autoconfigure.SpringBootApplication;
+                @SpringBootApplication
+                public class DemoApplication {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/example/a/SecurityConfig.java",
+                """
+                package com.example.a;
+                import org.springframework.context.annotation.Configuration;
+                public class SecurityConfig {
+                    @Configuration
+                    public static class Config {}
+                }
+                """);
+        writeSourceFile(
+                "src/main/java/com/example/b/WebConfig.java",
+                """
+                package com.example.b;
+                import org.springframework.context.annotation.Configuration;
+                public class WebConfig {
+                    @Configuration
+                    public static class Config {}
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_BEAN_NAME_COLLISION")).isNull();
+    }
+
+    @Test
+    void doesNotFlagCollisionWhenScanBasePackagesRedirectsScanning() throws IOException {
+        // scanBasePackages moves the scan root away from the application class's package, so the
+        // duplicated classes below may not be scanned at all.
+        writeSourceFile(
+                "src/main/java/com/example/DemoApplication.java",
+                """
+                package com.example;
+                import org.springframework.boot.autoconfigure.SpringBootApplication;
+                @SpringBootApplication(scanBasePackages = "com.acme.core")
+                public class DemoApplication {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/example/v1/PaymentService.java",
+                """
+                package com.example.v1;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentService {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/example/v2/PaymentService.java",
+                """
+                package com.example.v2;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentService {}
+                """);
+
+        assertThat(byRule(findings(), "SPRING_BEAN_NAME_COLLISION")).isNull();
+    }
+
+    // ── SPRING_JPA_FINAL_ENTITY ───────────────────────────────────────────────
+
+    @Test
+    void flagsFinalEntity() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Order.java",
+                """
+                package com.example;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+                @Entity
+                public final class Order {
+                    @Id private Long id;
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_JPA_FINAL_ENTITY");
+        assertThat(f).isNotNull();
+        assertThat(f.target()).isEqualTo("Order");
+    }
+
+    @Test
+    void doesNotFlagNonFinalEntity() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Order.java",
+                """
+                package com.example;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+                @Entity
+                public class Order {
+                    @Id private Long id;
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_JPA_FINAL_ENTITY")).isNull();
+    }
+
+    @Test
+    void doesNotFlagAbstractEntityWithoutNoArgConstructor() throws IOException {
+        // Hibernate never instantiates abstract entities; concrete subclasses supply the ctor.
+        writeSourceFile(
+                "src/main/java/com/example/Payment.java",
+                """
+                package com.example;
+                import jakarta.persistence.Entity;
+                import jakarta.persistence.Id;
+                @Entity
+                public abstract class Payment {
+                    @Id private Long id;
+                    protected Payment(String currency) {}
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_JPA_ENTITY_NO_NOARG_CONSTRUCTOR")).isNull();
+    }
+
+    @Test
     void doesNotFlagCollisionWhenCustomComponentScanPresent() throws IOException {
         writeSourceFile(
                 "src/main/java/com/example/DemoApplication.java",

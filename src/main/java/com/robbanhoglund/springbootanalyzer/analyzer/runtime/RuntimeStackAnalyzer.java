@@ -385,8 +385,9 @@ public class RuntimeStackAnalyzer {
                                     "The application will not start. Spring Boot 3 uses APIs and"
                                         + " bytecode features only available from Java 17 onwards.")
                             .recommendation(
-                                    "Upgrade to Java 17 or later. Spring Boot 3.3+ also supports"
-                                        + " Java 21 with virtual-thread and record improvements.")
+                                    "Upgrade to Java 17 or later. Spring Boot 3.2+ supports Java"
+                                            + " 21, which also unlocks virtual threads via"
+                                            + " spring.threads.virtual.enabled.")
                             .evidence(
                                     "Spring Boot "
                                             + springBootVersion

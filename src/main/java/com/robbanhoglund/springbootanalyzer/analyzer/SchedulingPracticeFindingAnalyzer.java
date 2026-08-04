@@ -130,6 +130,8 @@ public class SchedulingPracticeFindingAnalyzer {
                         detectScheduledInvalidSignature(cls, method, file.relativePath(), findings);
                         detectScheduledInvalidCronExpression(
                                 cls, method, file.relativePath(), findings);
+                        detectScheduledTriggerMissingOrConflicting(
+                                cls, method, file.relativePath(), findings);
                     }
                     if (asyncUsageTarget == null
                             && !method.isPrivate()
@@ -451,6 +453,94 @@ public class SchedulingPracticeFindingAnalyzer {
                                         + method.getParameters().size()
                                         + " parameter(s) in "
                                         + relativePath
+                                        + ".")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> SCHEDULED_TRIGGER_ATTRIBUTES =
+            Set.of("cron", "fixedDelay", "fixedDelayString", "fixedRate", "fixedRateString");
+
+    /**
+     * Flags {@code @Scheduled} annotations that declare no trigger attribute, or more than one.
+     * Spring requires exactly one of {@code cron}/{@code fixedDelay}/{@code fixedRate} (or their
+     * {@code String} variants) and throws {@code IllegalStateException} while registering the
+     * task, failing application startup. {@code initialDelay} is a modifier, not a trigger.
+     */
+    private void detectScheduledTriggerMissingOrConflicting(
+            ClassOrInterfaceDeclaration cls,
+            MethodDeclaration method,
+            String relativePath,
+            List<Finding> findings) {
+        AnnotationExpr annotation = method.getAnnotationByName("Scheduled").orElse(null);
+        if (annotation == null) {
+            return;
+        }
+        List<String> triggers = new ArrayList<>();
+        if (annotation.isNormalAnnotationExpr()) {
+            for (com.github.javaparser.ast.expr.MemberValuePair pair :
+                    annotation.asNormalAnnotationExpr().getPairs()) {
+                if (SCHEDULED_TRIGGER_ATTRIBUTES.contains(pair.getNameAsString())) {
+                    triggers.add(pair.getNameAsString());
+                }
+            }
+        } else if (annotation.isSingleMemberAnnotationExpr()) {
+            // @Scheduled has no value() attribute, so a single-member form cannot compile;
+            // nothing to judge.
+            return;
+        }
+        if (triggers.size() == 1) {
+            return;
+        }
+        Integer line = method.getBegin().map(p -> p.line).orElse(null);
+        String target = cls.getNameAsString() + "#" + method.getNameAsString();
+        String problem =
+                triggers.isEmpty()
+                        ? "declares no trigger attribute"
+                        : "declares "
+                                + triggers.size()
+                                + " trigger attributes ("
+                                + String.join(", ", triggers)
+                                + ")";
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING,
+                                FindingConfidence.HIGH)
+                        .shortMessage(
+                                "@Scheduled on "
+                                        + target
+                                        + " "
+                                        + problem
+                                        + " — exactly one is required.")
+                        .whyBadPractice(
+                                "Spring's ScheduledAnnotationBeanPostProcessor requires exactly one"
+                                    + " of cron, fixedDelay(String) or fixedRate(String) to build a"
+                                    + " trigger. With none it has no schedule to register; with"
+                                    + " several the intent is ambiguous. Either way it throws"
+                                    + " IllegalStateException while wiring the bean.")
+                        .possibleImpact(
+                                "The application context fails to start — the whole application is"
+                                        + " down, not just the one job.")
+                        .recommendation(
+                                triggers.isEmpty()
+                                        ? "Add exactly one trigger attribute, e.g."
+                                                + " @Scheduled(fixedDelay = 60000) or"
+                                                + " @Scheduled(cron = \"0 0 * * * *\")."
+                                        : "Keep only the intended trigger attribute and remove the"
+                                                + " others (initialDelay may be combined with a"
+                                                + " fixedDelay/fixedRate trigger).")
+                        .evidence(
+                                "@Scheduled on "
+                                        + target
+                                        + " in "
+                                        + relativePath
+                                        + " "
+                                        + problem
                                         + ".")
                         .source(relativePath, line)
                         .target(target)

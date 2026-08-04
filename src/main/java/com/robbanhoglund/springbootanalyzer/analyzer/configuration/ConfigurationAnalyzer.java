@@ -844,73 +844,11 @@ public class ConfigurationAnalyzer {
         String rawValue = findRawValue(property, rawConfiguredProperties);
         String profile = property.profile() == null ? "default" : property.profile();
 
-        if ("prod".equalsIgnoreCase(profile)
-                && "spring.jpa.hibernate.ddl-auto".equals(name)
-                && rawValue != null
-                && List.of("update", "create", "create-drop", "drop")
-                        .contains(rawValue.toLowerCase(Locale.ROOT))) {
-            findings.add(
-                    FindingFactory.builder(
-                                    FindingRules.SPRING_RISKY_PROD_CONFIG, FindingConfidence.HIGH)
-                            .shortMessage(
-                                    "spring.jpa.hibernate.ddl-auto="
-                                            + rawValue
-                                            + " is risky in production.")
-                            .whyBadPractice(
-                                    "Schema-changing Hibernate DDL settings trade safety for"
-                                        + " convenience. They make database structure changes"
-                                        + " happen implicitly during application startup instead of"
-                                        + " through reviewed migrations.")
-                            .possibleImpact(
-                                    "Production schema can drift unexpectedly, destructive changes"
-                                        + " can happen during rollout, and failures become harder"
-                                        + " to reproduce across environments.")
-                            .recommendation(
-                                    "Use Flyway or Liquibase for reviewed migrations and keep"
-                                            + " production ddl-auto at validate or none.")
-                            .evidence(
-                                    name
-                                            + " was set to "
-                                            + rawValue
-                                            + " in "
-                                            + property.sourceFile()
-                                            + ".")
-                            .limitations(
-                                    "Static analysis cannot prove whether this file is always"
-                                        + " active, but the profile and filename strongly suggest a"
-                                        + " production-oriented configuration.")
-                            .source(property.sourceFile(), property.line())
-                            .target(name)
-                            .build());
-        }
-
-        if ("management.endpoints.web.exposure.include".equals(name) && "*".equals(rawValue)) {
-            findings.add(
-                    FindingFactory.builder(
-                                    FindingRules.SPRING_RISKY_PROD_CONFIG, FindingConfidence.HIGH)
-                            .shortMessage(
-                                    "management.endpoints.web.exposure.include=* exposes every"
-                                            + " actuator endpoint.")
-                            .whyBadPractice(
-                                    "Wildcard actuator exposure makes internal diagnostics easier"
-                                        + " to reach than intended and mixes operational endpoints"
-                                        + " into the normal HTTP surface.")
-                            .possibleImpact(
-                                    "Operational details, environment information, heap dumps, and"
-                                            + " debugging endpoints may become reachable in"
-                                            + " environments where they should stay restricted.")
-                            .recommendation(
-                                    "Expose only the actuator endpoints you intentionally operate,"
-                                        + " and keep broader exposure limited to tightly controlled"
-                                        + " environments.")
-                            .evidence(name + "=* was found in " + property.sourceFile() + ".")
-                            .limitations(
-                                    "Static analysis cannot prove the final network exposure or"
-                                            + " security policy applied at runtime.")
-                            .source(property.sourceFile(), property.line())
-                            .target(name)
-                            .build());
-        }
+        // Note: spring.jpa.hibernate.ddl-auto and management.endpoints.web.exposure.include=* are
+        // deliberately NOT reported here. SPRING_DDL_AUTO_DESTRUCTIVE_PROD and
+        // SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD (ConfigurationFindingAnalyzer) already cover them
+        // with a shared prod-like profile gate; emitting SPRING_RISKY_PROD_CONFIG too produced two
+        // findings for one property line.
 
         if ("management.endpoint.health.show-details".equals(name)
                 && "always".equalsIgnoreCase(rawValue)) {

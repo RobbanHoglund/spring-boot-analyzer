@@ -5,6 +5,7 @@ import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.type.VoidType;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
@@ -28,8 +29,6 @@ import org.springframework.stereotype.Component;
  *       {@code @Observed} or {@code @Timed}.
  *   <li>{@link FindingRules#SPRING_EVENT_LISTENER_NO_OBSERVABILITY} — {@code @EventListener} /
  *       {@code @TransactionalEventListener} method with no {@code @Observed} or {@code @Timed}.
- *   <li>{@link FindingRules#SPRING_EXCEPTION_HANDLER_NO_METRICS} — {@code @ExceptionHandler} in
- *       a {@code @ControllerAdvice} class with no {@code MeterRegistry} reference.
  *   <li>{@link FindingRules#SPRING_OBSERVED_ON_PRIVATE_METHOD} — {@code @Observed} on a private
  *       method that Spring's proxy cannot intercept.
  *   <li>{@link FindingRules#SPRING_WEBCLIENT_MANUALLY_CONSTRUCTED} — {@code WebClient} created
@@ -43,8 +42,6 @@ public class ObservabilityGapFindingAnalyzer {
     private static final Set<String> OBSERVABILITY_ANNOTATIONS = Set.of("Observed", "Timed");
     private static final Set<String> EVENT_LISTENER_ANNOTATIONS =
             Set.of("EventListener", "TransactionalEventListener");
-    private static final Set<String> METRICS_TYPES =
-            Set.of("MeterRegistry", "Counter", "Timer", "DistributionSummary", "Gauge");
     private static final Set<String> ASYNC_ALLOWED_RETURN_TYPES =
             Set.of("Future", "CompletableFuture", "ListenableFuture", "Mono", "Flux");
 
@@ -55,23 +52,49 @@ public class ObservabilityGapFindingAnalyzer {
      * @return list of findings; never null
      */
     public List<Finding> analyze(Path repositoryRoot) {
-        return analyze(JavaSources.from(repositoryRoot));
+        return analyze(JavaSources.from(repositoryRoot), null);
     }
 
     /**
      * Analyzes the {@code src/main/java} sources parsed once and shared across the pipeline.
      *
      * @param sources the source tree parsed once for this analysis
+     * @param buildInfo resolved build information, used to gate the "missing observability
+     *     annotation" rules on an observability stack actually being present; may be null
      * @return list of findings; never null
      */
-    public List<Finding> analyze(JavaSources sources) {
+    public List<Finding> analyze(JavaSources sources, BuildInfo buildInfo) {
         List<Finding> findings = new ArrayList<>();
+        boolean observabilityStackPresent = hasObservabilityStack(buildInfo);
         for (JavaSources.JavaFile file : sources.files()) {
             if (file.compilationUnit() != null) {
-                analyzeSourceFile(file.compilationUnit(), file.relativePath(), findings);
+                analyzeSourceFile(
+                        file.compilationUnit(),
+                        file.relativePath(),
+                        observabilityStackPresent,
+                        findings);
             }
         }
         return findings;
+    }
+
+    /**
+     * Recommending {@code @Observed}/{@code @Timed} only makes sense when Micrometer or actuator
+     * is on the classpath — without them the annotations are inert, so the advice would be noise.
+     */
+    private static boolean hasObservabilityStack(BuildInfo buildInfo) {
+        if (buildInfo == null || buildInfo.dependencies() == null) {
+            return false;
+        }
+        return buildInfo.dependencies().stream()
+                .anyMatch(
+                        dep -> {
+                            String lower = dep.toLowerCase(java.util.Locale.ROOT);
+                            return lower.contains("micrometer")
+                                    || lower.contains("spring-boot-starter-actuator")
+                                    || lower.contains("opentelemetry")
+                                    || lower.contains("spring-cloud-starter-sleuth");
+                        });
     }
 
     // ---------------------------------------------------------------------------
@@ -79,24 +102,20 @@ public class ObservabilityGapFindingAnalyzer {
     // ---------------------------------------------------------------------------
 
     private void analyzeSourceFile(
-            CompilationUnit cu, String relativePath, List<Finding> findings) {
+            CompilationUnit cu,
+            String relativePath,
+            boolean observabilityStackPresent,
+            List<Finding> findings) {
         detectWebClientManualConstruction(cu, relativePath, findings);
 
         for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
-            boolean isControllerAdvice =
-                    hasAnnotation(cls, "ControllerAdvice")
-                            || hasAnnotation(cls, "RestControllerAdvice");
-            boolean classHasMetrics = classReferencesMetrics(cls);
-
             for (MethodDeclaration method : cls.getMethods()) {
-                detectAsyncNoObservability(cls, method, relativePath, findings);
-                detectEventListenerNoObservability(cls, method, relativePath, findings);
+                if (observabilityStackPresent) {
+                    detectAsyncNoObservability(cls, method, relativePath, findings);
+                    detectEventListenerNoObservability(cls, method, relativePath, findings);
+                }
                 detectObservedOnPrivateMethod(cls, method, relativePath, findings);
                 detectAsyncNonFutureReturn(cls, method, relativePath, findings);
-                if (isControllerAdvice) {
-                    detectExceptionHandlerNoMetrics(
-                            cls, method, classHasMetrics, relativePath, findings);
-                }
             }
         }
     }
@@ -209,73 +228,6 @@ public class ObservabilityGapFindingAnalyzer {
                         .limitations(
                                 "Low confidence — lightweight listeners that only log or update"
                                         + " a counter do not need @Observed.")
-                        .source(relativePath, line)
-                        .target(target)
-                        .build());
-    }
-
-    // ---------------------------------------------------------------------------
-    // Rule: SPRING_EXCEPTION_HANDLER_NO_METRICS
-    // ---------------------------------------------------------------------------
-
-    private void detectExceptionHandlerNoMetrics(
-            ClassOrInterfaceDeclaration cls,
-            MethodDeclaration method,
-            boolean classHasMetrics,
-            String relativePath,
-            List<Finding> findings) {
-        if (!hasAnnotation(method, "ExceptionHandler")) {
-            return;
-        }
-        // Skip if the class-level already injects a metrics type (centralised recording)
-        if (classHasMetrics) {
-            return;
-        }
-        // Also skip if the method itself calls a metrics type (local reference)
-        boolean methodCallsMetrics =
-                method.findAll(MethodCallExpr.class).stream()
-                        .anyMatch(
-                                call ->
-                                        call.getScope()
-                                                .map(
-                                                        s ->
-                                                                METRICS_TYPES.stream()
-                                                                        .anyMatch(
-                                                                                t ->
-                                                                                        s.toString()
-                                                                                                .contains(
-                                                                                                        t)))
-                                                .orElse(false));
-        if (methodCallsMetrics) {
-            return;
-        }
-        Integer line = method.getBegin().map(p -> p.line).orElse(null);
-        String target = cls.getNameAsString() + "#" + method.getNameAsString();
-        findings.add(
-                FindingFactory.builder(
-                                FindingRules.SPRING_EXCEPTION_HANDLER_NO_METRICS,
-                                FindingConfidence.LOW)
-                        .shortMessage(
-                                "@ExceptionHandler "
-                                        + target
-                                        + " records no error metrics — error rates are invisible.")
-                        .whyBadPractice(
-                                "Error rate is one of the three core RED method signals (Rate,"
-                                    + " Errors, Duration). An @ExceptionHandler that only logs or"
-                                    + " returns an error response gives no metric signal. Operators"
-                                    + " cannot alert on error rate increases without a counter.")
-                        .possibleImpact(
-                                "Error rate spikes are invisible until users report problems;"
-                                        + " SLO burn rate cannot be calculated from metrics alone.")
-                        .recommendation(
-                                "Inject MeterRegistry and increment a counter:"
-                                    + " meterRegistry.counter(\"http.errors\", \"exception\","
-                                    + " ex.getClass().getSimpleName()).increment(); or use @Timed"
-                                    + " on the handler method.")
-                        .limitations(
-                                "Low confidence — the class may delegate to a shared metrics"
-                                        + " utility that is not directly visible in the field"
-                                        + " declarations.")
                         .source(relativePath, line)
                         .target(target)
                         .build());
@@ -474,22 +426,6 @@ public class ObservabilityGapFindingAnalyzer {
     // ---------------------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------------------
-
-    /** Returns true if the class has a field whose type name is a known metrics type. */
-    private static boolean classReferencesMetrics(ClassOrInterfaceDeclaration cls) {
-        return cls.getFields().stream()
-                .anyMatch(
-                        f ->
-                                f.getVariables().stream()
-                                        .anyMatch(
-                                                v ->
-                                                        METRICS_TYPES.stream()
-                                                                .anyMatch(
-                                                                        t ->
-                                                                                v.getTypeAsString()
-                                                                                        .contains(
-                                                                                                t))));
-    }
 
     private static boolean hasAnnotation(ClassOrInterfaceDeclaration cls, String name) {
         return cls.getAnnotations().stream()

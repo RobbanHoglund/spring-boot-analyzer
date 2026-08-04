@@ -1499,6 +1499,13 @@ public class StaticPracticeFindingAnalyzer {
         if (methodPaths == null) {
             return;
         }
+        // Spring merges @RequestMapping from superclasses and implemented interfaces. Those
+        // templates are not visible here, so a controller with a supertype could declare the
+        // variable elsewhere — stay conservative and skip.
+        if (!declaration.getExtendedTypes().isEmpty()
+                || !declaration.getImplementedTypes().isEmpty()) {
+            return;
+        }
         List<String> allPaths = new ArrayList<>(methodPaths);
         for (AnnotationExpr classAnnotation : declaration.getAnnotations()) {
             if (!REQUEST_MAPPING_ANNOTATIONS.contains(
@@ -1815,7 +1822,18 @@ public class StaticPracticeFindingAnalyzer {
                                     && annotation.asNormalAnnotationExpr().getPairs().stream()
                                             .anyMatch(
                                                     pair -> pair.getNameAsString().equals("fetch"));
-                    if (!hasFetchType) {
+                    // On the inverse (mappedBy) side of a @OneToOne, "add fetch = LAZY" would be
+                    // anti-advice: Hibernate ignores LAZY there (see
+                    // SPRING_JPA_ONETOONE_MAPPEDBY_LAZY_IGNORED), so don't recommend it.
+                    boolean inverseOneToOne =
+                            "OneToOne".equals(annotationName)
+                                    && annotation.isNormalAnnotationExpr()
+                                    && annotation.asNormalAnnotationExpr().getPairs().stream()
+                                            .anyMatch(
+                                                    pair ->
+                                                            pair.getNameAsString()
+                                                                    .equals("mappedBy"));
+                    if (!hasFetchType && !inverseOneToOne) {
                         findings.add(
                                 FindingFactory.builder(
                                                 FindingRules.SPRING_JPA_MANYTOONE_EAGER_DEFAULT,
@@ -2457,6 +2475,12 @@ public class StaticPracticeFindingAnalyzer {
     private void detectCorsAllowAll(
             String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
         for (MethodDeclaration method : declaration.getMethods()) {
+            // A wildcard origin combined with allowCredentials(true) is the strictly worse
+            // variant reported by SPRING_CORS_CREDENTIALS_WILDCARD; reporting both would emit
+            // two findings for the same CORS configuration.
+            if (methodAllowsCorsCredentials(method)) {
+                continue;
+            }
             for (MethodCallExpr call : method.findAll(MethodCallExpr.class)) {
                 boolean isAllowedOrigins =
                         call.getNameAsString().equals("allowedOrigins")
@@ -2520,6 +2544,17 @@ public class StaticPracticeFindingAnalyzer {
     // ---------------------------------------------------------------------------
     // Rule: SPRING_CORS_CREDENTIALS_WILDCARD
     // ---------------------------------------------------------------------------
+
+    private static boolean methodAllowsCorsCredentials(MethodDeclaration method) {
+        return method.findAll(MethodCallExpr.class).stream()
+                .anyMatch(
+                        call ->
+                                (call.getNameAsString().equals("allowCredentials")
+                                                || call.getNameAsString()
+                                                        .equals("setAllowCredentials"))
+                                        && call.getArguments().stream()
+                                                .anyMatch(arg -> arg.toString().contains("true")));
+    }
 
     private void detectCorsCredentialsWildcard(
             String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
@@ -5754,6 +5789,7 @@ public class StaticPracticeFindingAnalyzer {
         }
         boolean hasAsyncAnnotation = false;
         boolean hasExecutorBean = false;
+        boolean hasEnableAsync = false;
         try (Stream<Path> files = Files.walk(sourceRoot)) {
             for (Path file :
                     files.filter(Files::isRegularFile)
@@ -5763,6 +5799,9 @@ public class StaticPracticeFindingAnalyzer {
                     String content = Files.readString(file, StandardCharsets.UTF_8);
                     if (content.contains("@Async")) {
                         hasAsyncAnnotation = true;
+                    }
+                    if (content.contains("@EnableAsync")) {
+                        hasEnableAsync = true;
                     }
                     if (content.contains("@Bean")
                             && (content.contains("ThreadPoolTaskExecutor")
@@ -5775,7 +5814,9 @@ public class StaticPracticeFindingAnalyzer {
             }
         } catch (IOException ignored) {
         }
-        if (hasAsyncAnnotation && !hasExecutorBean) {
+        // Without @EnableAsync the methods run synchronously and no executor is ever used, so
+        // the executor advice would be moot — SPRING_ASYNC_WITHOUT_ENABLE_ASYNC covers that case.
+        if (hasAsyncAnnotation && hasEnableAsync && !hasExecutorBean) {
             findings.add(
                     FindingFactory.builder(
                                     FindingRules.SPRING_ASYNC_EXECUTOR_NOT_CONFIGURED,
@@ -5820,6 +5861,7 @@ public class StaticPracticeFindingAnalyzer {
         }
         int scheduledCount = 0;
         boolean hasTaskScheduler = false;
+        boolean hasEnableScheduling = false;
         try (Stream<Path> files = Files.walk(sourceRoot)) {
             for (Path file :
                     files.filter(Files::isRegularFile)
@@ -5828,6 +5870,9 @@ public class StaticPracticeFindingAnalyzer {
                 try {
                     String content = Files.readString(file, StandardCharsets.UTF_8);
                     scheduledCount += countOccurrences(content, "@Scheduled");
+                    if (content.contains("@EnableScheduling")) {
+                        hasEnableScheduling = true;
+                    }
                     if (content.contains("@Bean")
                             && (content.contains("TaskScheduler")
                                     || content.contains("SchedulingConfigurer"))) {
@@ -5838,7 +5883,10 @@ public class StaticPracticeFindingAnalyzer {
             }
         } catch (IOException ignored) {
         }
-        if (scheduledCount > 1 && !hasTaskScheduler) {
+        // Without @EnableScheduling no trigger is registered at all, so warning about the
+        // single-threaded scheduler would be moot — SPRING_SCHEDULED_WITHOUT_ENABLE_SCHEDULING
+        // reports the real problem in that case.
+        if (scheduledCount > 1 && hasEnableScheduling && !hasTaskScheduler) {
             findings.add(
                     FindingFactory.builder(
                                     FindingRules.SPRING_SCHEDULED_EXECUTOR_SERVICE_NOT_CONFIGURED,

@@ -53,7 +53,13 @@ import org.springframework.stereotype.Component;
  *       constructor.
  *   <li>{@link FindingRules#SPRING_SECURITY_HEADERS_DISABLED} — Spring Security HTTP response
  *       headers explicitly disabled (full {@code .headers().disable()}, or any of
- *       {@code frameOptions/xssProtection/contentTypeOptions}).
+ *       {@code frameOptions/contentTypeOptions/httpStrictTransportSecurity/contentSecurityPolicy}).
+ *       {@code xssProtection} is deliberately excluded — the header is deprecated and Spring
+ *       Security 5.8+/6 already sends {@code 0} per OWASP guidance.
+ *   <li>{@link FindingRules#SPRING_COOKIE_MISSING_HTTPONLY} — a servlet {@code Cookie} added to
+ *       the response with no {@code setHttpOnly(true)} call in the file.
+ *   <li>{@link FindingRules#SPRING_ZIP_SLIP} — an archive entry name used to build a file path
+ *       inside extraction code without containment validation.
  *   <li>{@link FindingRules#SPRING_PERMIT_ALL_ANY_REQUEST} — {@code anyRequest().permitAll()}
  *       or {@code requestMatchers("/**").permitAll()} in a {@code SecurityFilterChain}.
  *   <li>{@link FindingRules#SPRING_H2_CONSOLE_PERMITALL} — H2 console path
@@ -1579,7 +1585,11 @@ public class SecurityPracticeFindingAnalyzer {
                         .anyMatch(
                                 name ->
                                         name.equals("jakarta.servlet.http.Cookie")
-                                                || name.equals("javax.servlet.http.Cookie"));
+                                                || name.equals("javax.servlet.http.Cookie")
+                                                // Wildcard imports: JavaParser reports the name
+                                                // without the trailing ".*".
+                                                || name.equals("jakarta.servlet.http")
+                                                || name.equals("javax.servlet.http"));
         if (!servletCookieImported) {
             return;
         }
@@ -1642,6 +1652,48 @@ public class SecurityPracticeFindingAnalyzer {
     // Rule: SPRING_ZIP_SLIP
     // ---------------------------------------------------------------------------
 
+    /** Chained form: {@code dir.resolve(name).normalize().startsWith(dir)}. */
+    private static final java.util.regex.Pattern CHAINED_NORMALIZED_CONTAINMENT =
+            java.util.regex.Pattern.compile("normalize\\(\\)\\s*\\.\\s*startsWith\\(");
+
+    /**
+     * Assignment form: {@code Path out = ....normalize();} — captures the variable name. The
+     * gap excludes {@code =} as well as {@code ;} so an earlier assignment in an enclosing
+     * statement (e.g. {@code while ((entry = zip.getNextEntry()) != null)}) cannot be matched
+     * greedily and yield the wrong variable.
+     */
+    private static final java.util.regex.Pattern NORMALIZED_ASSIGNMENT =
+            java.util.regex.Pattern.compile("(\\w+)\\s*=\\s*[^;=]*\\bnormalize\\(\\)\\s*;");
+
+    /**
+     * Returns {@code true} when the method body contains a genuine normalize()-then-startsWith
+     * containment check: either chained on one expression, or a variable assigned from
+     * {@code normalize()} that is later the receiver of {@code startsWith(...)}. Independent
+     * occurrences of the two markers (e.g. a cosmetic {@code normalize()} plus an unrelated entry
+     * prefix filter) do not count as validation.
+     */
+    private static boolean hasNormalizedContainmentCheck(String body) {
+        if (CHAINED_NORMALIZED_CONTAINMENT.matcher(body).find()) {
+            return true;
+        }
+        var matcher = NORMALIZED_ASSIGNMENT.matcher(body);
+        while (matcher.find()) {
+            String variable = matcher.group(1);
+            if (body.contains(variable + ".startsWith(")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Identifier fragments suggesting the {@code getName()} receiver is an archive entry. */
+    private static final java.util.regex.Pattern ARCHIVE_ENTRY_GET_NAME =
+            java.util.regex.Pattern.compile("(?i)\\b\\w*entry\\w*\\s*\\.\\s*getName\\(\\)");
+
+    private static boolean isArchiveEntryName(String argumentText) {
+        return ARCHIVE_ENTRY_GET_NAME.matcher(argumentText).find();
+    }
+
     private void detectZipSlip(CompilationUnit cu, String relativePath, List<Finding> findings) {
         for (MethodDeclaration method : cu.findAll(MethodDeclaration.class)) {
             if (method.getBody().isEmpty()) {
@@ -1653,24 +1705,31 @@ public class SecurityPracticeFindingAnalyzer {
                     body.contains("ZipEntry")
                             || body.contains("getNextEntry")
                             || body.contains("ZipFile")
-                            || body.contains("ArchiveEntry");
+                            || body.contains("ArchiveEntry")
+                            || body.contains("JarEntry")
+                            || body.contains("JarFile")
+                            || body.contains("getNextJarEntry");
             if (!archiveScope) {
                 continue;
             }
-            // Suppress when the method shows containment-validation markers.
+            // Suppress when the method shows containment-validation markers. normalize()+
+            // startsWith must appear on the same statement to count — an unrelated
+            // entry-name prefix filter elsewhere in the body must not mask a real defect.
             if (body.contains("getCanonicalPath")
                     || body.contains("toRealPath")
-                    || (body.contains("normalize") && body.contains("startsWith"))
-                    || body.contains("contains(\"..\")")) {
+                    || body.contains("contains(\"..\")")
+                    || hasNormalizedContainmentCheck(body)) {
                 continue;
             }
+            // The argument must be an ARCHIVE ENTRY's getName(); java.io.File#getName() returns
+            // only the last path segment and cannot carry traversal sequences.
             com.github.javaparser.ast.Node riskySite = null;
             for (ObjectCreationExpr creation :
                     method.getBody().get().findAll(ObjectCreationExpr.class)) {
                 if ("File".equals(simpleName(creation.getType().getNameAsString()))
                         && creation.getArguments().size() >= 2
                         && creation.getArguments().stream()
-                                .anyMatch(arg -> arg.toString().contains(".getName()"))) {
+                                .anyMatch(arg -> isArchiveEntryName(arg.toString()))) {
                     riskySite = creation;
                     break;
                 }
@@ -1679,7 +1738,7 @@ public class SecurityPracticeFindingAnalyzer {
                 for (MethodCallExpr call : method.getBody().get().findAll(MethodCallExpr.class)) {
                     if ("resolve".equals(call.getNameAsString())
                             && call.getArguments().stream()
-                                    .anyMatch(arg -> arg.toString().contains(".getName()"))) {
+                                    .anyMatch(arg -> isArchiveEntryName(arg.toString()))) {
                         riskySite = call;
                         break;
                     }

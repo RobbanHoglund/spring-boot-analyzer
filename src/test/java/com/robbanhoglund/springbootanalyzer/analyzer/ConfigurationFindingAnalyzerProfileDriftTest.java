@@ -349,6 +349,40 @@ class ConfigurationFindingAnalyzerProfileDriftTest {
     }
 
     @Test
+    void doesNotFlagProfilesActiveInBootstrapFile() {
+        // bootstrap.yml is not a profile-specific file; activating profiles there is the
+        // standard Spring Cloud legacy-bootstrap idiom and does not fail at startup.
+        ConfigurationAnalysis cfg = config(prop("spring.profiles.active", "dev", "bootstrap"));
+
+        assertThat(byRule(findings(cfg), "SPRING_PROFILES_ACTIVE_IN_PROFILE_SPECIFIC_FILE"))
+                .isNull();
+    }
+
+    // ── SPRING_ACTUATOR_SHOW_VALUES_ALWAYS ────────────────────────────────────
+
+    @Test
+    void flagsActuatorEnvShowValuesAlways() {
+        ConfigurationAnalysis cfg =
+                config(prop("management.endpoint.env.show-values", "always", null));
+
+        Finding f = byRule(findings(cfg), "SPRING_ACTUATOR_SHOW_VALUES_ALWAYS");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("/actuator/env");
+    }
+
+    @Test
+    void doesNotFlagActuatorShowValuesWhenAuthorized() {
+        ConfigurationAnalysis cfg =
+                config(
+                        prop(
+                                "management.endpoint.configprops.show-values",
+                                "when-authorized",
+                                null));
+
+        assertThat(byRule(findings(cfg), "SPRING_ACTUATOR_SHOW_VALUES_ALWAYS")).isNull();
+    }
+
+    @Test
     void doesNotFlagProfilesGroupInProfileSpecificFile() {
         ConfigurationAnalysis cfg = config(prop("spring.profiles.group.prod", "prod,db", "prod"));
 

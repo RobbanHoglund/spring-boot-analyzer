@@ -508,6 +508,49 @@ class ConfigurationFindingAnalyzerGradleTest {
     }
 
     @Test
+    void stillFlagsLiquibaseWhenDisabledOnlyInNonDefaultProfile() {
+        // The disable-in-tests idiom must not suppress the production startup failure.
+        ApplicationProperty testOnlyDisable =
+                new ApplicationProperty(
+                        "spring.liquibase.enabled",
+                        "false",
+                        false,
+                        false,
+                        "src/main/resources/application-test.yaml",
+                        1,
+                        "test",
+                        PropertyKind.SPRING_BOOT,
+                        null,
+                        List.of());
+        ConfigurationAnalysis cfg =
+                new ConfigurationAnalysis(
+                        List.of(),
+                        List.of(testOnlyDisable),
+                        List.of(),
+                        List.of(),
+                        new ConfigurationSummary(0, 0, 0, 0, 0, 0, List.of()));
+
+        List<Finding> result = analyzer.analyze(repoRoot, liquibaseBuild(), cfg, buildGradleNone());
+        assertThat(byRule(result, "SPRING_LIQUIBASE_MISSING_CHANGELOG")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagLiquibaseWhenCamelCaseChangeLogExists() throws IOException {
+        // Spring's relaxed binding accepts spring.liquibase.changeLog (YAML camelCase).
+        Path dir = Files.createDirectories(repoRoot.resolve("src/main/resources/db/changelog"));
+        Files.writeString(dir.resolve("master.xml"), "<databaseChangeLog/>");
+
+        List<Finding> result =
+                analyzer.analyze(
+                        repoRoot,
+                        liquibaseBuild(),
+                        configWithProperty(
+                                "spring.liquibase.changelog", "classpath:db/changelog/master.xml"),
+                        buildGradleNone());
+        assertThat(byRule(result, "SPRING_LIQUIBASE_MISSING_CHANGELOG")).isNull();
+    }
+
+    @Test
     void doesNotFlagLiquibaseWhenExplicitlyDisabled() {
         List<Finding> result =
                 analyzer.analyze(

@@ -666,6 +666,164 @@ class SecurityPracticeFindingAnalyzerTest {
     }
 
     @Test
+    void flagsZipSlipViaPathResolve() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/PathExtractor.java",
+                """
+                package com.example;
+                import java.io.InputStream;
+                import java.nio.file.Path;
+                import java.util.zip.ZipEntry;
+                import java.util.zip.ZipInputStream;
+                public class PathExtractor {
+                    public void extract(InputStream in, Path destDir) throws Exception {
+                        try (ZipInputStream zip = new ZipInputStream(in)) {
+                            ZipEntry entry;
+                            while ((entry = zip.getNextEntry()) != null) {
+                                Path out = destDir.resolve(entry.getName());
+                                write(zip, out);
+                            }
+                        }
+                    }
+                    private void write(InputStream in, Path out) {}
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_ZIP_SLIP")).isNotNull();
+    }
+
+    @Test
+    void flagsZipSlipWhenJarExtractionUsesEntryName() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/JarExtractor.java",
+                """
+                package com.example;
+                import java.io.File;
+                import java.util.Enumeration;
+                import java.util.jar.JarEntry;
+                import java.util.jar.JarFile;
+                public class JarExtractor {
+                    public void extract(File archive, File destDir) throws Exception {
+                        JarFile jar = new JarFile(archive);
+                        Enumeration<JarEntry> entries = jar.entries();
+                        while (entries.hasMoreElements()) {
+                            JarEntry entry = entries.nextElement();
+                            File out = new File(destDir, entry.getName());
+                            write(out);
+                        }
+                    }
+                    private void write(File out) {}
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_ZIP_SLIP")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagZipSlipWhenNormalizedContainmentCheckPresent() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/SafeExtractor.java",
+                """
+                package com.example;
+                import java.io.IOException;
+                import java.io.InputStream;
+                import java.nio.file.Path;
+                import java.util.zip.ZipEntry;
+                import java.util.zip.ZipInputStream;
+                public class SafeExtractor {
+                    public void extract(InputStream in, Path destDir) throws Exception {
+                        try (ZipInputStream zip = new ZipInputStream(in)) {
+                            ZipEntry entry;
+                            while ((entry = zip.getNextEntry()) != null) {
+                                Path out = destDir.resolve(entry.getName()).normalize();
+                                if (!out.startsWith(destDir)) {
+                                    throw new IOException("Zip slip: " + entry.getName());
+                                }
+                                write(zip, out);
+                            }
+                        }
+                    }
+                    private void write(InputStream in, Path out) {}
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_ZIP_SLIP")).isNull();
+    }
+
+    @Test
+    void flagsZipSlipDespiteUnrelatedPrefixFilter() throws IOException {
+        // A prefix filter on entry names plus a cosmetic normalize() is NOT a containment check.
+        writeSourceFile(
+                "src/main/java/com/example/FilteringExtractor.java",
+                """
+                package com.example;
+                import java.io.File;
+                import java.io.InputStream;
+                import java.nio.file.Path;
+                import java.util.zip.ZipEntry;
+                import java.util.zip.ZipInputStream;
+                public class FilteringExtractor {
+                    public void extract(InputStream in, File destDir) throws Exception {
+                        Path base = destDir.toPath().normalize();
+                        try (ZipInputStream zip = new ZipInputStream(in)) {
+                            ZipEntry entry;
+                            while ((entry = zip.getNextEntry()) != null) {
+                                if (!entry.getName().startsWith("data/")) {
+                                    continue;
+                                }
+                                File out = new File(destDir, entry.getName());
+                                write(out);
+                            }
+                        }
+                    }
+                    private void write(File out) {}
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_ZIP_SLIP")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagArchiveFileGetNameAsZipSlip() throws IOException {
+        // java.io.File#getName() returns only the last path segment — traversal-safe.
+        writeSourceFile(
+                "src/main/java/com/example/StagingExtractor.java",
+                """
+                package com.example;
+                import java.io.File;
+                import java.util.zip.ZipFile;
+                public class StagingExtractor {
+                    public void stage(File zipArchive, File outDir) throws Exception {
+                        ZipFile zip = new ZipFile(zipArchive);
+                        File marker = new File(outDir, zipArchive.getName());
+                        marker.createNewFile();
+                        zip.close();
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_ZIP_SLIP")).isNull();
+    }
+
+    @Test
+    void flagsCookieMissingHttpOnlyWithWildcardImport() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/WildcardCookieController.java",
+                """
+                package com.example;
+                import jakarta.servlet.http.*;
+                public class WildcardCookieController {
+                    public void issue(HttpServletResponse response, String token) {
+                        Cookie cookie = new Cookie("session", token);
+                        response.addCookie(cookie);
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_COOKIE_MISSING_HTTPONLY")).isNotNull();
+    }
+
+    @Test
     void doesNotFlagFileCreationOutsideArchiveContext() throws IOException {
         writeSourceFile(
                 "src/main/java/com/example/ReportWriter.java",

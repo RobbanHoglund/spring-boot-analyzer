@@ -149,18 +149,24 @@ public class ScalabilityPracticeFindingAnalyzer {
                 continue;
             }
             for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
-                boolean isApplication =
-                        cls.getAnnotations().stream()
-                                .anyMatch(
-                                        a ->
-                                                "SpringBootApplication"
-                                                        .equals(simpleName(a.getNameAsString())));
-                if (isApplication && basePackage == null) {
-                    basePackage =
-                            cu.getPackageDeclaration().map(p -> p.getNameAsString()).orElse("");
-                }
                 for (AnnotationExpr annotation : cls.getAnnotations()) {
-                    if ("ComponentScan".equals(simpleName(annotation.getNameAsString()))
+                    String annotationName = simpleName(annotation.getNameAsString());
+                    if ("SpringBootApplication".equals(annotationName)) {
+                        if (basePackage == null) {
+                            basePackage =
+                                    cu.getPackageDeclaration()
+                                            .map(p -> p.getNameAsString())
+                                            .orElse("");
+                        }
+                        // scanBasePackages/scanBasePackageClasses redirect scanning away from
+                        // the application class's package — same bail-out as @ComponentScan.
+                        String annotationText = annotation.toString();
+                        if (annotationText.contains("scanBasePackages")
+                                || annotationText.contains("scanBasePackageClasses")) {
+                            customComponentScan = true;
+                        }
+                    }
+                    if ("ComponentScan".equals(annotationName)
                             && !annotation.isMarkerAnnotationExpr()) {
                         customComponentScan = true;
                     }
@@ -182,7 +188,9 @@ public class ScalabilityPracticeFindingAnalyzer {
                 continue;
             }
             for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
-                if (cls.isInterface() || cls.isAbstract()) {
+                // Nested classes get bean names prefixed with the outer class ("outer.Inner"),
+                // so their simple names never collide with same-named nested classes elsewhere.
+                if (cls.isInterface() || cls.isAbstract() || !cls.isTopLevelType()) {
                     continue;
                 }
                 AnnotationExpr stereotype =
@@ -347,6 +355,7 @@ public class ScalabilityPracticeFindingAnalyzer {
             detectNonThreadSafeFormatterField(cls, relativePath, findings);
             detectEntityMissingId(cls, relativePath, findings);
             detectEntityNoArgConstructor(cls, relativePath, findings);
+            detectFinalEntity(cls, relativePath, findings);
             detectExecutorNoShutdown(cls, relativePath, findings);
             if (!prototypeTypes.isEmpty()) {
                 detectPrototypeBeanInSingleton(cls, relativePath, prototypeTypes, findings);
@@ -1244,6 +1253,11 @@ public class ScalabilityPracticeFindingAnalyzer {
         if (!entityLike) {
             return;
         }
+        // Hibernate never instantiates abstract entity classes; concrete subclasses supply the
+        // no-arg constructor and may call super(args).
+        if (cls.isAbstract()) {
+            return;
+        }
         var constructors = cls.getConstructors();
         // No explicit constructor -> the compiler provides the implicit default one.
         if (constructors.isEmpty()) {
@@ -1300,6 +1314,52 @@ public class ScalabilityPracticeFindingAnalyzer {
                                         + " present, even ones that do not actually produce a"
                                         + " no-arg constructor — conservative to avoid false"
                                         + " positives.")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_JPA_FINAL_ENTITY
+    // ---------------------------------------------------------------------------
+
+    private void detectFinalEntity(
+            ClassOrInterfaceDeclaration cls, String relativePath, List<Finding> findings) {
+        boolean isEntity =
+                cls.getAnnotations().stream()
+                        .anyMatch(a -> "Entity".equals(simpleName(a.getNameAsString())));
+        if (!isEntity || !cls.isFinal()) {
+            return;
+        }
+        Integer line = cls.getBegin().map(p -> p.line).orElse(null);
+        String target = cls.getNameAsString();
+        findings.add(
+                FindingFactory.builder(FindingRules.SPRING_JPA_FINAL_ENTITY, FindingConfidence.HIGH)
+                        .shortMessage(
+                                "final @Entity "
+                                        + target
+                                        + " cannot be proxied — lazy references to it load"
+                                        + " eagerly.")
+                        .whyBadPractice(
+                                "Hibernate implements lazy loading by subclassing the entity to"
+                                    + " create a proxy. A final class cannot be subclassed, so lazy"
+                                    + " @ManyToOne/@OneToOne references to this entity and"
+                                    + " getReferenceById(...) silently fall back to eager loading"
+                                    + " (Hibernate logs HHH000305 at startup).")
+                        .possibleImpact(
+                                "Associations that look lazy in the mapping load eagerly, issuing"
+                                        + " extra queries on every parent load — a hidden N+1"
+                                        + " source.")
+                        .recommendation(
+                                "Remove the final modifier from the entity class. Hibernate needs"
+                                        + " to subclass it for proxying; use other means (private"
+                                        + " constructors, documentation) to discourage extension.")
+                        .evidence(
+                                "final class "
+                                        + target
+                                        + " annotated @Entity found in "
+                                        + relativePath
+                                        + ".")
                         .source(relativePath, line)
                         .target(target)
                         .build());

@@ -295,8 +295,9 @@ public class TradingService {
                 .anyMatch(message -> message.contains("Deprecated configuration property"))
                 .anyMatch(message -> message.contains("literal value"))
                 .anyMatch(message -> message.contains("Profile-specific configuration files"))
-                .anyMatch(message -> message.contains("ddl-auto=update"))
-                .anyMatch(message -> message.contains("exposure.include=*"))
+                // ddl-auto and exposure.include=* are reported by the dedicated
+                // SPRING_DDL_AUTO_DESTRUCTIVE_PROD / SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD rules
+                // in ConfigurationFindingAnalyzer, not as generic risky-prod-config findings.
                 .anyMatch(message -> message.contains("health.show-details=always"));
     }
 

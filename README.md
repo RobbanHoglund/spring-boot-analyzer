@@ -5,7 +5,7 @@
 [![Java](https://img.shields.io/badge/java-25-orange.svg)](build.gradle)
 [![Spring Boot](https://img.shields.io/badge/spring--boot-3.5-brightgreen.svg)](build.gradle)
 
-A static analysis tool for Spring Boot projects. Point it at any Git repository and get a structured report of findings, component inventory, HTTP surface, configuration risks, and anti-patterns — without running the analyzed application. 183 rules across 19 categories out of the box.
+A static analysis tool for Spring Boot projects. Point it at any Git repository and get a structured report of findings, component inventory, HTTP surface, configuration risks, and anti-patterns — without running the analyzed application. 185 rules across 19 categories out of the box.
 
 **Safe by default.** The default `STATIC_ONLY` mode clones the repository into a temporary workspace and performs static analysis only. It does not run Gradle tasks, Maven goals, tests, or the analyzed Spring Boot application. See [SECURITY.md](SECURITY.md) for the full security model.
 
@@ -66,29 +66,29 @@ Detects Spring stereotypes and maps the application's component structure:
 
 ## Findings
 
-The analyzer produces **183 rules** across 19 categories. Each finding includes severity, confidence, why it matters, recommended action, evidence, and — for Gradle-model-backed rules — the exact resolved library versions involved.
+The analyzer produces **185 rules** across 19 categories. Each finding includes severity, confidence, why it matters, recommended action, evidence, and — for Gradle-model-backed rules — the exact resolved library versions involved.
 
 | Category | Rules | Highest severity |
 |----------|------:|-----------------|
-| Security | 19 | ERROR |
-| Configuration | 7 | ERROR |
-| Profile drift | 8 | WARNING |
-| Persistence | 14 | ERROR |
-| Transaction | 13 | ERROR |
-| Scheduling | 9 | ERROR |
-| HTTP clients | 5 | WARNING |
+| Security | 42 | ERROR |
+| Maintainability | 19 | ERROR |
+| Persistence | 19 | ERROR |
+| Transaction | 15 | ERROR |
 | Exception handling | 11 | ERROR |
-| Validation | 3 | INFO |
-| Maintainability | 12 | ERROR |
+| Scheduling | 11 | ERROR |
+| Caching | 9 | ERROR |
 | Observability | 9 | WARNING |
-| Caching | 7 | ERROR |
-| Testing practice | 5 | WARNING |
-| Conditional beans | 2 | WARNING |
-| Startup | 2 | ERROR |
-| Actuator | 1 | WARNING |
-| API surface | 4 | ERROR |
-| Dependency compatibility | 2 | ERROR |
+| Configuration | 8 | ERROR |
+| Profile drift | 8 | WARNING |
+| HTTP clients | 7 | WARNING |
 | Spring Boot 3 migration | 7 | WARNING |
+| Testing practice | 5 | WARNING |
+| API surface | 4 | ERROR |
+| Validation | 3 | INFO |
+| Actuator | 2 | WARNING |
+| Conditional beans | 2 | WARNING |
+| Dependency compatibility | 2 | ERROR |
+| Startup | 2 | ERROR |
 
 See [docs/RULES.md](docs/RULES.md) for the complete rule catalog including detection logic, recommendations, and false-positive guidance.
 

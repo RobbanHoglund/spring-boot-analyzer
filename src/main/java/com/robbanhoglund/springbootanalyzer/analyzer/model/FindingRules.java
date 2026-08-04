@@ -481,15 +481,16 @@ public final class FindingRules {
                     FindingCategory.MAINTAINABILITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** A Spring Data {@code @Modifying} query method has no enclosing {@code @Transactional}
-     *  annotation and is not called from a transactional service method. Executing the modifying
-     *  query without an active transaction throws
-     *  {@code jakarta.persistence.TransactionRequiredException} at runtime. */
+    /** A Spring Data {@code @Modifying} query method has no {@code @Transactional} on the method
+     *  or its class. Executing the modifying query without ANY active transaction throws
+     *  {@code jakarta.persistence.TransactionRequiredException} — but the boundary is commonly
+     *  (and correctly) provided by a {@code @Transactional} service-layer caller, which static
+     *  per-file analysis cannot see. Verify a transactional caller exists. */
     public static final FindingRule SPRING_MODIFYING_NO_TRANSACTION =
             rule(
                     "SPRING_MODIFYING_NO_TRANSACTION",
-                    "@Modifying query has no transaction boundary",
-                    FindingSeverity.ERROR,
+                    "@Modifying query has no visible transaction boundary",
+                    FindingSeverity.WARNING,
                     FindingCategory.PERSISTENCE,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
@@ -634,7 +635,7 @@ public final class FindingRules {
             rule(
                     "SPRING_CORS_CREDENTIALS_WILDCARD",
                     "CORS allows credentials with a wildcard origin",
-                    FindingSeverity.WARNING,
+                    FindingSeverity.ERROR,
                     FindingCategory.SECURITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
@@ -1077,7 +1078,7 @@ public final class FindingRules {
             rule(
                     "SPRING_PREAUTHORIZE_ON_PRIVATE_METHOD",
                     "Security annotation on private method is silently ignored by Spring's proxy",
-                    FindingSeverity.WARNING,
+                    FindingSeverity.ERROR,
                     FindingCategory.SECURITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
@@ -1116,18 +1117,6 @@ public final class FindingRules {
             rule(
                     "SPRING_EVENT_LISTENER_NO_OBSERVABILITY",
                     "@EventListener method has no observability annotation",
-                    FindingSeverity.INFO,
-                    FindingCategory.OBSERVABILITY,
-                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
-
-    /** An {@code @ExceptionHandler} method in a {@code @ControllerAdvice} class contains no
-     *  reference to {@code MeterRegistry}, {@code Counter}, or {@code Timer}. Error rates are
-     *  a core observability signal (the RED method: Rate, Errors, Duration). Without metrics
-     *  in exception handlers, error spikes are invisible until users complain. */
-    public static final FindingRule SPRING_EXCEPTION_HANDLER_NO_METRICS =
-            rule(
-                    "SPRING_EXCEPTION_HANDLER_NO_METRICS",
-                    "@ExceptionHandler does not record error metrics",
                     FindingSeverity.INFO,
                     FindingCategory.OBSERVABILITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
@@ -1260,7 +1249,7 @@ public final class FindingRules {
             rule(
                     "SPRING_TRANSACTIONAL_EXCEPTION_SWALLOWED",
                     "@Transactional method swallows exception, preventing rollback",
-                    FindingSeverity.ERROR,
+                    FindingSeverity.WARNING,
                     FindingCategory.TRANSACTION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
@@ -1316,7 +1305,7 @@ public final class FindingRules {
             rule(
                     "SPRING_FLYWAY_DUPLICATE_VERSION",
                     "Duplicate Flyway migration version detected",
-                    FindingSeverity.WARNING,
+                    FindingSeverity.ERROR,
                     FindingCategory.PERSISTENCE,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
@@ -2101,7 +2090,7 @@ public final class FindingRules {
             rule(
                     "SPRING_LIQUIBASE_MISSING_CHANGELOG",
                     "Liquibase is enabled but the changelog file was not found",
-                    FindingSeverity.WARNING,
+                    FindingSeverity.ERROR,
                     FindingCategory.PERSISTENCE,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
@@ -2163,6 +2152,43 @@ public final class FindingRules {
                             + " ConflictingBeanDefinitionException",
                     FindingSeverity.ERROR,
                     FindingCategory.STARTUP,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @Scheduled} annotation declares zero or more than one trigger attribute
+     *  ({@code cron}, {@code fixedDelay}/{@code fixedDelayString},
+     *  {@code fixedRate}/{@code fixedRateString}). Spring requires exactly one trigger and throws
+     *  {@code IllegalStateException} while registering the task, so the application context fails
+     *  to start. */
+    public static final FindingRule SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING =
+            rule(
+                    "SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING",
+                    "@Scheduled needs exactly one trigger attribute — startup fails otherwise",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SCHEDULING,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code final} class is annotated {@code @Entity}. Hibernate cannot subclass a final
+     *  entity to create lazy proxies, so lazy {@code @ManyToOne}/{@code @OneToOne} references to
+     *  it and {@code getReferenceById(...)} silently load eagerly (Hibernate logs HHH000305 at
+     *  startup). */
+    public static final FindingRule SPRING_JPA_FINAL_ENTITY =
+            rule(
+                    "SPRING_JPA_FINAL_ENTITY",
+                    "final @Entity cannot be proxied — lazy references load eagerly",
+                    FindingSeverity.WARNING,
+                    FindingCategory.PERSISTENCE,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code management.endpoint.env.show-values} or
+     *  {@code management.endpoint.configprops.show-values} is set to {@code always}, unmasking
+     *  every secret value on the {@code /actuator/env} and {@code /actuator/configprops}
+     *  endpoints (Spring Boot 3 sanitizes them by default). */
+    public static final FindingRule SPRING_ACTUATOR_SHOW_VALUES_ALWAYS =
+            rule(
+                    "SPRING_ACTUATOR_SHOW_VALUES_ALWAYS",
+                    "Actuator show-values=always unmasks secrets on env/configprops",
+                    FindingSeverity.WARNING,
+                    FindingCategory.ACTUATOR,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
     private FindingRules() {}

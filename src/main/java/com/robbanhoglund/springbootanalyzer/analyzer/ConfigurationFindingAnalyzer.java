@@ -145,7 +145,7 @@ public class ConfigurationFindingAnalyzer {
         detectLiquibaseMissingChangelog(
                 repositoryRoot, buildInfo, configurationAnalysis, gradleModelAnalysis, findings);
         detectMissingSecurityStarter(buildInfo, findings);
-        detectOpenInViewNotDisabled(configurationAnalysis, findings);
+        detectOpenInViewNotDisabled(configurationAnalysis, buildInfo, findings);
         detectActuatorExposure(configurationAnalysis, findings);
         detectConnectionPoolMisconfiguration(configurationAnalysis, findings);
         detectDevToolsInProduction(buildInfo, findings);
@@ -154,8 +154,9 @@ public class ConfigurationFindingAnalyzer {
         detectJdbcUrlEmbeddedCredentials(configurationAnalysis, findings);
         detectDefaultUserPasswordLiteral(configurationAnalysis, findings);
         detectDeprecatedSpringProfiles(configurationAnalysis, findings);
-        detectProfilesActiveInProfileSpecificFile(configurationAnalysis, findings);
+        detectProfilesActiveInProfileSpecificFile(configurationAnalysis, buildInfo, findings);
         detectSqlInitAlwaysProd(configurationAnalysis, findings);
+        detectActuatorShowValuesAlways(configurationAnalysis, findings);
         detectActuatorHttptraceRenamed(configurationAnalysis, findings);
         detectDataRestExposedRepositories(
                 buildInfo, configurationAnalysis, gradleModelAnalysis, findings);
@@ -373,8 +374,23 @@ public class ConfigurationFindingAnalyzer {
     }
 
     private void detectProfilesActiveInProfileSpecificFile(
-            ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {
+            ConfigurationAnalysis configurationAnalysis,
+            BuildInfo buildInfo,
+            List<Finding> findings) {
         if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
+            return;
+        }
+        // Only invalid since the Boot 2.4 config-data model; legacy processing (Boot <= 2.3, or
+        // 2.4-2.7 with spring.config.use-legacy-processing=true) allowed the pattern.
+        if (isBootVersionBefore24(buildInfo)
+                || configurationAnalysis.properties().stream()
+                        .anyMatch(
+                                p ->
+                                        p != null
+                                                && "spring.config.use-legacy-processing"
+                                                        .equals(p.name())
+                                                && p.value() != null
+                                                && "true".equalsIgnoreCase(p.value().trim()))) {
             return;
         }
         for (ApplicationProperty property : configurationAnalysis.properties()) {
@@ -386,9 +402,12 @@ public class ConfigurationFindingAnalyzer {
                 continue;
             }
             // Only invalid when the property lives in a profile-specific file
-            // (application-<profile>.*) or an on-profile-guarded document.
+            // (application-<profile>.*) or an on-profile-guarded document. "bootstrap" is the
+            // pseudo-profile the file scanner assigns to Spring Cloud's bootstrap.yml, which is
+            // not profile-specific — activating profiles there is the standard legacy-bootstrap
+            // idiom.
             String profile = normalizedProfile(property.profile());
-            if ("default".equals(profile)) {
+            if ("default".equals(profile) || "bootstrap".equals(profile)) {
                 continue;
             }
             findings.add(
@@ -1368,7 +1387,9 @@ public class ConfigurationFindingAnalyzer {
     }
 
     private void detectOpenInViewNotDisabled(
-            ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {
+            ConfigurationAnalysis configurationAnalysis,
+            BuildInfo buildInfo,
+            List<Finding> findings) {
         if (configurationAnalysis == null) {
             return;
         }
@@ -1377,6 +1398,16 @@ public class ConfigurationFindingAnalyzer {
                         .anyMatch(
                                 p -> p.name() != null && p.name().startsWith("spring.datasource."));
         if (!jpaConfigured) {
+            return;
+        }
+        // Open-session-in-view only registers in servlet web applications; batch/CLI apps with a
+        // datasource never get the interceptor, so the absent-property default is harmless there.
+        boolean servletWebApp =
+                buildInfo != null
+                        && buildInfo.dependencies() != null
+                        && buildInfo.dependencies().stream()
+                                .anyMatch(dep -> dep.contains("spring-boot-starter-web"));
+        if (!servletWebApp) {
             return;
         }
         boolean openInViewExplicit =
@@ -1628,6 +1659,84 @@ public class ConfigurationFindingAnalyzer {
                 || normalized.contains("security");
     }
 
+    /**
+     * Returns {@code true} when the resolved Spring Boot version is known to predate the 2.4
+     * config-data model. Unknown versions return {@code false} so version-gated rules still run.
+     */
+    private boolean isBootVersionBefore24(BuildInfo buildInfo) {
+        String version = buildInfo == null ? null : buildInfo.springBootVersion();
+        if (version == null || version.isBlank()) {
+            return false;
+        }
+        String[] parts = version.split("\\.");
+        try {
+            int major = Integer.parseInt(parts[0].replaceAll("[^0-9].*$", ""));
+            int minor =
+                    parts.length > 1 ? Integer.parseInt(parts[1].replaceAll("[^0-9].*$", "")) : 0;
+            return major < 2 || (major == 2 && minor < 4);
+        } catch (NumberFormatException exception) {
+            return false;
+        }
+    }
+
+    private void detectActuatorShowValuesAlways(
+            ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {
+        if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
+            return;
+        }
+        for (ApplicationProperty property : configurationAnalysis.properties()) {
+            if (property == null || property.name() == null || property.value() == null) {
+                continue;
+            }
+            String name = property.name();
+            if (!"management.endpoint.env.show-values".equals(name)
+                    && !"management.endpoint.configprops.show-values".equals(name)) {
+                continue;
+            }
+            if (!"always".equalsIgnoreCase(property.value().trim())) {
+                continue;
+            }
+            String endpoint = name.contains(".env.") ? "/actuator/env" : "/actuator/configprops";
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_ACTUATOR_SHOW_VALUES_ALWAYS,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    name
+                                            + "=always unmasks every secret value on "
+                                            + endpoint
+                                            + ".")
+                            .whyBadPractice(
+                                    "Spring Boot 3 sanitizes property values on the env and"
+                                        + " configprops endpoints by default, showing '******' for"
+                                        + " anything that looks sensitive. Setting show-values to"
+                                        + " always disables that masking entirely, so passwords,"
+                                        + " tokens, and connection strings are returned verbatim.")
+                            .possibleImpact(
+                                    "Anyone who can reach the endpoint reads the application's"
+                                        + " secrets in plain text. Combined with wildcard actuator"
+                                        + " exposure or a missing security filter chain, this is a"
+                                        + " direct credential leak.")
+                            .recommendation(
+                                    "Use when-authorized (the safe alternative) so values are only"
+                                        + " revealed to authorized callers, or leave the property"
+                                        + " unset to keep the default masking.")
+                            .evidence(
+                                    name
+                                            + "=always was found in "
+                                            + property.sourceFile()
+                                            + " (profile: "
+                                            + normalizedProfile(property.profile())
+                                            + ").")
+                            .limitations(
+                                    "Static analysis cannot see whether the endpoint is reachable"
+                                            + " or protected by a security filter chain.")
+                            .source(property.sourceFile(), property.line())
+                            .target(name)
+                            .build());
+        }
+    }
+
     private boolean isProdLikeProfile(String profile) {
         return PROD_PROFILES.contains(profile);
     }
@@ -1747,15 +1856,50 @@ public class ConfigurationFindingAnalyzer {
         if (!liquibasePresent) {
             return;
         }
-        ApplicationProperty enabled =
-                findProperty(configurationAnalysis, "spring.liquibase.enabled");
-        if (enabled != null
-                && enabled.value() != null
-                && "false".equalsIgnoreCase(enabled.value().trim())) {
+        // Only a default-profile "enabled=false" disables Liquibase everywhere; the common
+        // disable-in-tests idiom (application-test.yaml) must not suppress the production defect.
+        boolean disabledByDefault =
+                configurationAnalysis.properties().stream()
+                        .filter(
+                                p ->
+                                        p != null
+                                                && "spring.liquibase.enabled".equals(p.name())
+                                                && "default".equals(normalizedProfile(p.profile())))
+                        .anyMatch(
+                                p ->
+                                        p.value() != null
+                                                && "false".equalsIgnoreCase(p.value().trim()));
+        if (disabledByDefault) {
             return;
         }
+        // Spring's relaxed binding accepts change-log, changeLog and changelog; the normalizer
+        // lowercases names, so match both the kebab and the collapsed forms.
         ApplicationProperty changeLogProperty =
-                findProperty(configurationAnalysis, "spring.liquibase.change-log");
+                configurationAnalysis.properties().stream()
+                        .filter(
+                                p ->
+                                        p != null
+                                                && ("spring.liquibase.change-log".equals(p.name())
+                                                        || "spring.liquibase.changelog"
+                                                                .equals(p.name())))
+                        .filter(p -> "default".equals(normalizedProfile(p.profile())))
+                        .findFirst()
+                        .orElseGet(
+                                () ->
+                                        configurationAnalysis.properties().stream()
+                                                .filter(
+                                                        p ->
+                                                                p != null
+                                                                        && ("spring.liquibase.change-log"
+                                                                                        .equals(
+                                                                                                p
+                                                                                                        .name())
+                                                                                || "spring.liquibase.changelog"
+                                                                                        .equals(
+                                                                                                p
+                                                                                                        .name())))
+                                                .findFirst()
+                                                .orElse(null));
         String configured =
                 changeLogProperty == null || changeLogProperty.value() == null
                         ? null
