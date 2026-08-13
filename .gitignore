@@ -160,12 +160,15 @@ application-dev-local.yml
 /debug/
 tmp/
 temp/
+*.tmp
+*.temp
 
 
 # =========================================================
 # Local run / e2e artifacts (app logs, Playwright screenshots)
 # =========================================================
 /output/
+.playwright-cli/
 
 
 # =========================================================

@@ -2,6 +2,7 @@
 import { copySummary, downloadJson, downloadMarkdown, downloadSarif } from '../export/exportActions';
 import { tokenizeJavaLines, type JavaToken } from '../code/javaHighlighter';
 import { expandSnippetHighlightRanges } from '../code/highlightRanges';
+import { buildGitHubBlobUrl } from '../code/githubLink';
 import type {
   ActuatorEndpointExposure,
   AnalyzeRepositoryResponse,
@@ -144,6 +145,11 @@ type RecommendationContent = {
   examples: RecommendationExample[];
 };
 
+type FindingReference = {
+  label: string;
+  url: string;
+};
+
 export interface FindingCodeOccurrence {
   key: string;
   label: string;
@@ -179,6 +185,7 @@ export interface TableSortState {
 
 export interface ResultsViewState {
   findingsSeverity: string;
+  findingsShowInfo: boolean;
   findingsCategory: string;
   findingsRuntimeDetection: string;
   findingsConfidence: string;
@@ -222,6 +229,7 @@ export interface ResultsViewActions {
   onRetryAnalysis: () => void;
   onOpenSettings: () => void;
   onFindingsSeverityChange: (value: string) => void;
+  onFindingsShowInfoChange: (value: boolean) => void;
   onFindingsCategoryChange: (value: string) => void;
   onFindingsRuntimeDetectionChange: (value: string) => void;
   onFindingsConfidenceChange: (value: string) => void;
@@ -309,7 +317,7 @@ export function renderResultsView(
   panel.appendChild(renderSectionJumpNav(result));
   panel.appendChild(renderProjectSection(result, status?.analysisMode));
   panel.appendChild(renderResultsOverviewBlock(result, actions));
-  panel.appendChild(renderFindingsSection(result.findings ?? [], state, actions));
+  panel.appendChild(renderFindingsSection(result, state, actions));
   panel.appendChild(renderTechnicalInventorySection(result, state, actions));
   panel.appendChild(renderRawJsonSection(result, state, actions));
   if (state.codeModal.open) {
@@ -884,6 +892,9 @@ function renderSecurityPostureCard(result: AnalyzeRepositoryResponse, actions: R
   const securityConfigDetected = securityConfigComponent != null;
   const sensitiveValues = result.configurationAnalysis?.summary?.sensitiveValueCount
     ?? findings.filter((finding) => finding.ruleId === 'SPRING_SECRET_LITERAL').length;
+  const environmentSecretReferences = (result.configurationAnalysis?.properties ?? [])
+    .filter((property) => property.valueRedacted && isEnvironmentVariableReference(property)).length;
+  const literalSecretFindings = findings.filter((finding) => finding.ruleId === 'SPRING_SECRET_LITERAL').length;
   const weakSecretDefaults = findings.filter((finding) => finding.ruleId === 'SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT').length;
   const rawExceptionExposures = findings.filter((finding) => finding.ruleId === 'SPRING_RAW_EXCEPTION_MESSAGE_HTTP').length;
   const healthFinding = findings.find((finding) =>
@@ -924,10 +935,20 @@ function renderSecurityPostureCard(result: AnalyzeRepositoryResponse, actions: R
     actuatorExposureCount > 0 ? 'warning' : 'neutral',
     actuatorExposureCount > 0 ? { kind: 'href', href: '#results-http-actuator', label: 'View actuator exposures' } : undefined));
 
-  list.appendChild(renderDetailRow('Sensitive values redacted',
+  list.appendChild(renderDetailRow('Sensitive values protected',
     String(sensitiveValues),
-    sensitiveValues > 0 ? 'warning' : 'neutral',
+    'neutral',
     sensitiveValues > 0 ? { kind: 'href', href: '#results-configuration', label: 'View configuration properties' } : undefined));
+
+  list.appendChild(renderDetailRow('Secrets via environment',
+    String(environmentSecretReferences),
+    environmentSecretReferences > 0 ? 'positive' : 'neutral',
+    environmentSecretReferences > 0 ? { kind: 'href', href: '#results-configuration', label: 'View environment-backed properties' } : undefined));
+
+  list.appendChild(renderDetailRow('Literal secret findings',
+    String(literalSecretFindings),
+    literalSecretFindings > 0 ? 'error' : 'positive',
+    literalSecretFindings > 0 ? { kind: 'href', href: '#results-findings', label: 'View findings' } : undefined));
 
   list.appendChild(renderDetailRow('Weak secret defaults',
     String(weakSecretDefaults),
@@ -1069,10 +1090,11 @@ function renderPersistenceSummaryCard(result: AnalyzeRepositoryResponse, actions
 }
 
 function renderFindingsSection(
-  findings: Finding[],
+  result: AnalyzeRepositoryResponse,
   state: ResultsViewState,
   actions: ResultsViewActions
 ): HTMLElement {
+  const findings = result.findings ?? [];
   const warningCount = findings.filter((finding) => normalizeSeverity(finding.severity) === 'WARNING').length;
   const staticOnlyCount = findings.filter((finding) => normalizeRuntimeDetection(finding.runtimeDetection) === 'NOT_NORMALLY_DETECTED').length;
   const section = resultsSection(
@@ -1256,12 +1278,30 @@ function renderFindingsSection(
     labeledInlineField(
       'Grouping',
       checkboxField('Group similar findings', state.findingsGrouped, actions.onFindingsGroupedChange, 'results-findings-grouped')
+    ),
+    labeledInlineField(
+      'Visibility',
+      checkboxField(
+        `Show info findings (${infoCount})`,
+        state.findingsShowInfo,
+        actions.onFindingsShowInfoChange,
+        'results-findings-show-info'
+      )
     )
   );
   section.appendChild(secondaryControls);
 
   if (filtered.length === 0) {
-    section.appendChild(element('p', { className: 'muted-text', text: 'No findings match the current filters.' }));
+    const onlyHiddenInfo = findings.length > 0
+      && findings.every((finding) => normalizeSeverity(finding.severity) === 'INFO')
+      && !state.findingsShowInfo
+      && state.findingsSeverity !== 'INFO';
+    section.appendChild(element('p', {
+      className: 'muted-text',
+      text: onlyHiddenInfo
+        ? 'All findings are informational and hidden by default. Enable “Show info findings” to review them.'
+        : 'No findings match the current filters.'
+    }));
     return section;
   }
 
@@ -1308,7 +1348,15 @@ function renderFindingsSection(
       badgeCell(derived.category, 'badge badge-category'),
       findingSummaryCell(groupedFinding ?? derived, detailsId, triageStatus),
       findingLocationCell(groupedFinding ?? derived),
-      findingActionsCell(groupedFinding ?? derived, detailsId, codeButtonId, triageKey, triageStatus, actions)
+      findingActionsCell(
+        groupedFinding ?? derived,
+        detailsId,
+        codeButtonId,
+        triageKey,
+        triageStatus,
+        actions,
+        findingGitHubUrl(groupedFinding ?? derived, result)
+      )
     ]);
     const detailsRow = tbody.insertRow();
     detailsRow.className = 'details-row finding-details-row';
@@ -3901,7 +3949,8 @@ function findingActionsCell(
   codeButtonId: string,
   triageKey: string,
   triageStatus: FindingTriageStatus,
-  resultsActions: ResultsViewActions
+  resultsActions: ResultsViewActions,
+  githubUrl: string | null
 ): HTMLTableCellElement {
   const cell = document.createElement('td');
   cell.className = 'finding-actions-cell';
@@ -3928,6 +3977,21 @@ function findingActionsCell(
           id: codeButtonId,
           type: 'button',
           'aria-label': `View code for ${finding.title || finding.ruleType}${finding.target && finding.target !== '—' ? ` — ${finding.target}` : ''}`
+        }
+      })
+    );
+  }
+  if (githubUrl) {
+    actions.appendChild(
+      element('a', {
+        className: 'secondary-button finding-row-action finding-github-link',
+        text: 'GitHub',
+        attributes: {
+          href: githubUrl,
+          target: '_blank',
+          rel: 'noopener noreferrer',
+          title: 'Open this finding on GitHub',
+          'aria-label': `Open ${finding.title || finding.ruleType} on GitHub`
         }
       })
     );
@@ -4452,6 +4516,35 @@ function hasFindingCodeLocation(finding: GroupedPresentedFinding | PresentedFind
   return findings.some((item) => Boolean(primaryFindingLocation(item)?.filePath));
 }
 
+function findingGitHubUrl(
+  finding: GroupedPresentedFinding | PresentedFinding,
+  result: AnalyzeRepositoryResponse
+): string | null {
+  const findings = 'occurrences' in finding ? finding.items.map((item) => item.finding) : [finding.finding];
+  for (const item of findings) {
+    const locations = [
+      primaryFindingLocation(item),
+      ...(item.occurrences ?? []).map((occurrence) => occurrence.location)
+    ].filter((location): location is SourceLocation => Boolean(location?.filePath));
+    for (const location of locations) {
+      if (location.githubUrl) {
+        return location.githubUrl;
+      }
+      const built = buildGitHubBlobUrl(
+        result.repositoryUrl,
+        result.commitSha ?? result.branch ?? null,
+        location.filePath,
+        location.startLine,
+        location.endLine
+      );
+      if (built) {
+        return built;
+      }
+    }
+  }
+  return null;
+}
+
 function createFindingCodeButtonId(finding: GroupedPresentedFinding | PresentedFinding): string {
   const seed = `${finding.ruleType}|${finding.target}|${finding.location}|${finding.message}`;
   return `finding-code-${hashString(seed)}`;
@@ -4494,10 +4587,39 @@ function renderFindingExplanationSections(finding: Finding): HTMLElement {
   if (recommendationSection) {
     wrapper.appendChild(recommendationSection);
   }
+  const references = officialReferencesForFinding(finding);
+  if (references.length > 0) {
+    wrapper.appendChild(renderFindingReferencesSection(references));
+  }
   if (finding.relatedSignals && finding.relatedSignals.length > 0) {
     wrapper.appendChild(renderRelatedSignalsSection(finding.relatedSignals));
   }
   return wrapper;
+}
+
+function renderFindingReferencesSection(references: FindingReference[]): HTMLElement {
+  const section = element('div', { className: 'property-detail-section finding-reference-section' });
+  section.appendChild(element('div', { className: 'property-detail-section-title', text: 'References' }));
+  const list = element('ul', { className: 'finding-reference-list' });
+  for (const reference of references) {
+    list.appendChild(
+      element(
+        'li',
+        {},
+        element('a', {
+          className: 'finding-reference-link',
+          text: reference.label,
+          attributes: {
+            href: reference.url,
+            target: '_blank',
+            rel: 'noopener noreferrer'
+          }
+        })
+      )
+    );
+  }
+  section.appendChild(list);
+  return section;
 }
 
 function renderRecommendationSection(finding: Finding): HTMLElement | null {
@@ -4635,6 +4757,141 @@ public record BootlensRegistrationProperties(
           code: `
 payment:
   api-key: \${PAYMENT_API_KEY}`
+        }
+      ]
+    };
+  }
+
+  if (ruleId === 'SPRING_WEBFLUX_BLOCKING_CALL') {
+    return {
+      lead: 'Keep the WebFlux execution chain non-blocking. Return or compose the publisher instead of forcing it to complete on the current event-loop worker.',
+      actions: [
+        'Replace block(), blockFirst(), or blockLast() with flatMap, map, then, or another composition operator.',
+        'Move an unavoidable blocking library call to Schedulers.boundedElastic() at the smallest possible boundary.',
+        'Keep timeout behavior in the reactive chain so cancellation and errors remain visible.'
+      ],
+      examples: [
+        {
+          title: 'Compose instead of blocking',
+          code: `
+Mono<OrderView> loadOrder(String id) {
+    return orderClient.get(id)
+        .flatMap(order -> pricingClient.price(order.sku()))
+        .map(price -> new OrderView(order, price));
+}`
+        },
+        {
+          title: 'Isolate an unavoidable blocking API',
+          code: `
+Mono<LegacyResult> loadLegacy() {
+    return Mono.fromCallable(legacyClient::load)
+        .subscribeOn(Schedulers.boundedElastic());
+}`
+        }
+      ]
+    };
+  }
+
+  if (ruleId === 'SPRING_MANAGED_THREAD_SLEEP') {
+    const recommendation = finding.recommendation?.trim() ?? '';
+    const reactiveContext = recommendation.includes('Mono.delay');
+    const scheduledContext = recommendation.includes('@Scheduled');
+    const managedDelayContext = recommendation.includes('TaskScheduler');
+    const httpContext = (finding.message ?? finding.shortMessage ?? '').includes('HTTP request handler');
+    const examples: RecommendationExample[] = reactiveContext
+      ? [
+          {
+            title: 'Reactive delay without blocking',
+            code: `
+Mono<Status> poll() {
+    return Mono.delay(Duration.ofSeconds(1))
+        .then(statusClient.fetch());
+}`
+          }
+        ]
+      : scheduledContext
+        ? [
+            {
+              title: 'Schedule cadence explicitly',
+              code: `
+@Scheduled(fixedDelayString = "\${poll.interval:PT1S}")
+void poll() {
+    statusClient.fetchNow();
+}`
+            }
+          ]
+        : httpContext
+          ? [
+              {
+                title: 'Return asynchronous completion from MVC',
+                code: `
+@GetMapping("/status")
+CompletableFuture<Status> status() {
+    return statusService.fetchAsync();
+}`
+              }
+            ]
+          : managedDelayContext
+          ? [
+              {
+                title: 'Schedule delayed work without occupying a worker',
+                code: `
+taskScheduler.schedule(
+    this::retry,
+    Instant.now().plus(retryDelay));`
+              }
+            ]
+          : [
+              {
+                title: 'Declare retry backoff',
+                code: `
+@Retryable(
+    retryFor = RemoteSystemException.class,
+    backoff = @Backoff(delayExpression = "\${client.retry-delay:1000}"))
+public Result load() {
+    return client.load();
+}`
+              }
+            ];
+    return {
+      lead: recommendation || 'Represent waiting as scheduling, retry backoff, or asynchronous composition instead of occupying a managed worker.',
+      actions: [
+        reactiveContext
+          ? 'Compose the delay into the publisher and keep the event-loop path non-blocking.'
+          : scheduledContext
+            ? 'Put the delay in scheduler metadata rather than inside the job body.'
+            : httpContext
+              ? 'Return asynchronous completion or a real downstream timeout instead of inserting an artificial request delay.'
+              : managedDelayContext
+              ? 'Schedule the continuation so the executor worker is free during the delay.'
+              : 'Use a bounded retry/backoff policy and expose final exhaustion to the caller.',
+        'Keep timeout and cancellation behavior explicit.',
+        'If a bounded sleep is intentionally retained, document it and preserve thread interruption.'
+      ],
+      examples
+    };
+  }
+
+  if (ruleId === 'SPRING_MIXED_MVC_AND_WEBFLUX' || ruleId === 'SPRING_REACTIVE_API_IN_SERVLET_APP') {
+    return {
+      lead: 'Treat the classpath and the active server stack as separate facts. Both starters can be present for an MVC application that uses WebClient, but only one server application type is auto-configured.',
+      actions: [
+        'Keep MVC plus WebClient when that combination is intentional; do not rewrite valid client code.',
+        'Remove an unused starter to make runtime intent unambiguous.',
+        'Set spring.main.web-application-type explicitly when profiles or dependencies make the choice hard to review.'
+      ],
+      examples: [
+        {
+          title: 'Explicit MVC server with WebClient',
+          language: 'properties',
+          code: `
+spring.main.web-application-type=servlet`
+        },
+        {
+          title: 'Explicit reactive server',
+          language: 'properties',
+          code: `
+spring.main.web-application-type=reactive`
         }
       ]
     };
@@ -4817,6 +5074,62 @@ try {
   }
 
   return null;
+}
+
+function officialReferencesForFinding(finding: Finding): FindingReference[] {
+  switch (finding.ruleId) {
+    case 'SPRING_SECRET_LITERAL':
+    case 'SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT':
+    case 'SPRING_SECRET_MULTI_PROFILE':
+      return [{
+        label: 'Spring Boot — Externalized Configuration',
+        url: 'https://docs.spring.io/spring-boot/reference/features/external-config.html'
+      }];
+    case 'SPRING_WEBFLUX_BLOCKING_CALL':
+      return [
+        {
+          label: 'Project Reactor — Wrap a synchronous blocking call',
+          url: 'https://projectreactor.io/docs/core/release/reference/faq.html#faq.wrap-blocking'
+        },
+        {
+          label: 'Spring Framework — WebFlux concurrency model',
+          url: 'https://docs.spring.io/spring-framework/reference/web/webflux/new-framework.html#webflux-concurrency-model'
+        }
+      ];
+    case 'SPRING_MANAGED_THREAD_SLEEP':
+      return [{
+        label: 'Spring Framework — Task execution and scheduling',
+        url: 'https://docs.spring.io/spring-framework/reference/integration/scheduling.html'
+      }];
+    case 'SPRING_MIXED_MVC_AND_WEBFLUX':
+    case 'SPRING_REACTIVE_API_IN_SERVLET_APP':
+      return [{
+        label: 'Spring Boot — Reactive Web Applications',
+        url: 'https://docs.spring.io/spring-boot/reference/web/reactive.html'
+      }];
+    case 'SPRING_CSRF_DISABLED':
+      return [{
+        label: 'Spring Security — CSRF protection',
+        url: 'https://docs.spring.io/spring-security/reference/servlet/exploits/csrf.html'
+      }];
+    case 'SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD':
+      return [{
+        label: 'Spring Boot — Securing actuator endpoints',
+        url: 'https://docs.spring.io/spring-boot/reference/actuator/endpoints.html#actuator.endpoints.security'
+      }];
+    case 'SPRING_TRANSACTIONAL_EXCEPTION_SWALLOWED':
+      return [{
+        label: 'Spring Framework — Transaction rollback rules',
+        url: 'https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/rolling-back.html'
+      }];
+    case 'SPRING_RAW_EXCEPTION_MESSAGE_HTTP':
+      return [{
+        label: 'Spring Framework — RFC 9457 problem details',
+        url: 'https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-ann-rest-exceptions.html'
+      }];
+    default:
+      return [];
+  }
 }
 
 function renderCodeExampleBlock(source: string, language: RecommendationExampleLanguage): HTMLElement {
@@ -5549,8 +5862,12 @@ function sortableHeader(
 
 function filterFindings(findings: Finding[], state: ResultsViewState): Finding[] {
   return findings.filter((finding) => {
+    const normalizedSeverity = normalizeSeverity(finding.severity);
+    const infoVisibilityMatches = state.findingsShowInfo
+      || state.findingsSeverity === 'INFO'
+      || normalizedSeverity !== 'INFO';
     const severityMatches =
-      state.findingsSeverity === 'ALL' || normalizeSeverity(finding.severity) === state.findingsSeverity;
+      state.findingsSeverity === 'ALL' || normalizedSeverity === state.findingsSeverity;
     const categoryMatches =
       state.findingsCategory === 'ALL' || normalizeFindingCategory(finding.category) === state.findingsCategory;
     const runtimeMatches =
@@ -5581,7 +5898,7 @@ function filterFindings(findings: Finding[], state: ResultsViewState): Finding[]
       .filter((value): value is string => Boolean(value))
       .join(' ')
       .toLowerCase();
-    return severityMatches && categoryMatches && runtimeMatches && confidenceMatches && triageMatches
+    return infoVisibilityMatches && severityMatches && categoryMatches && runtimeMatches && confidenceMatches && triageMatches
       && (!textNeedle || haystack.includes(textNeedle));
   });
 }
@@ -5628,6 +5945,9 @@ function buildFindingsReviewPlan(
 
 function findingFilterSummary(state: ResultsViewState): string {
   const filters: string[] = [];
+  if (!state.findingsShowInfo && state.findingsSeverity !== 'INFO') {
+    filters.push('INFO hidden');
+  }
   if (state.findingsSeverity !== 'ALL') {
     filters.push(`severity ${state.findingsSeverity}`);
   }
@@ -5695,7 +6015,8 @@ function findingTriageMarkedCount(state: ResultsViewState): number {
 }
 
 function hasActiveFindingFilters(state: ResultsViewState): boolean {
-  return state.findingsSeverity !== 'ALL'
+  return state.findingsShowInfo
+    || state.findingsSeverity !== 'ALL'
     || state.findingsCategory !== 'ALL'
     || state.findingsRuntimeDetection !== 'ALL'
     || state.findingsConfidence !== 'ALL'
@@ -5822,7 +6143,7 @@ function configurationFocusMatches(
   const propertyName = property.name ?? '';
   switch (focus) {
     case 'REVIEW':
-      return Boolean(property.valueRedacted)
+      return Boolean(property.valueRedacted && !property.placeholderValue)
         || kind === 'UNKNOWN'
         || kind === 'CODE_REFERENCED'
         || kind === 'CONDITIONAL_PROPERTY'
@@ -6836,6 +7157,11 @@ function gradleModelSummaryLabel(gradleModel: GradleModelAnalysis | undefined): 
 }
 
 function displayPropertyValue(property: ApplicationProperty): string {
+  if (property.placeholderValue) {
+    return isEnvironmentVariableReference(property)
+      ? `${property.value} (environment variable)`
+      : '[external placeholder]';
+  }
   if (property.valueRedacted) {
     return '[redacted]';
   }
@@ -6843,6 +7169,10 @@ function displayPropertyValue(property: ApplicationProperty): string {
     return 'Not configured';
   }
   return property.value;
+}
+
+function isEnvironmentVariableReference(property: ApplicationProperty): boolean {
+  return typeof property.value === 'string' && /^\$\{[A-Z][A-Z0-9_]*}$/.test(property.value.trim());
 }
 
 function sourceLabel(sourceFile?: string | null, line?: number | null, endLine?: number | null): string {

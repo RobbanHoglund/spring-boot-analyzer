@@ -41,6 +41,7 @@ function actions(): AnalyzeViewActions {
     onToggleSidebarCollapsed: noop,
     onAnalysisModeChange: noop,
     onFindingsSeverityChange: noop,
+    onFindingsShowInfoChange: noop,
     onFindingsCategoryChange: noop,
     onFindingsRuntimeDetectionChange: noop,
     onFindingsConfidenceChange: noop,

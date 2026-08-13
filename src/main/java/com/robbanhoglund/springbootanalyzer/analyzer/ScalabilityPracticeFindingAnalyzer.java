@@ -22,11 +22,15 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.RuntimeStackAnalysis;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.WebStack;
 import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -50,7 +54,9 @@ import org.springframework.stereotype.Component;
  *   <li>{@link FindingRules#SPRING_REST_TEMPLATE_NO_TIMEOUT} — {@code new RestTemplate()} with
  *       no-arg constructor and no explicit timeout.
  *   <li>{@link FindingRules#SPRING_WEBFLUX_BLOCKING_CALL} — {@code .block()}, {@code .blockFirst()},
- *       {@code .blockLast()}, or {@code Thread.sleep()} called inside a Spring-managed component.
+ *       or {@code .blockLast()} called while WebFlux is the active server stack.
+ *   <li>{@link FindingRules#SPRING_MANAGED_THREAD_SLEEP} — {@code Thread.sleep()} in a
+ *       Spring-managed execution path, with severity and guidance adapted to its context.
  *   <li>{@link FindingRules#SPRING_NON_THREAD_SAFE_FORMATTER_FIELD} — {@code SimpleDateFormat},
  *       {@code NumberFormat}, etc. held as a field in a Spring singleton.
  *   <li>{@link FindingRules#SPRING_UNBOUNDED_FINDALL} — no-arg {@code repository.findAll()} that
@@ -99,6 +105,14 @@ public class ScalabilityPracticeFindingAnalyzer {
      * @return list of findings; never null
      */
     public List<Finding> analyze(JavaSources sources) {
+        return analyze(sources, null);
+    }
+
+    /**
+     * Analyzes sources with the resolved runtime stack so blocking-call rules can distinguish
+     * WebFlux event-loop code from valid MVC client-side reactive usage.
+     */
+    public List<Finding> analyze(JavaSources sources, RuntimeStackAnalysis runtimeStackAnalysis) {
         List<Finding> findings = new ArrayList<>();
         // Pass 1: collect all simple type names of @Scope("prototype") beans and the names of
         // methods annotated @Transactional(propagation = REQUIRES_NEW).
@@ -115,6 +129,7 @@ public class ScalabilityPracticeFindingAnalyzer {
                     file.relativePath(),
                     prototypeTypes,
                     requiresNewMethods,
+                    runtimeStackAnalysis,
                     findings);
         }
         // Pass 3: cross-file bean-name collision detection.
@@ -141,7 +156,8 @@ public class ScalabilityPracticeFindingAnalyzer {
         // Scope guard: only when a @SpringBootApplication defines the scan root and no custom
         // @ComponentScan redirects/narrows scanning — otherwise which classes are actually
         // scanned cannot be determined statically.
-        String basePackage = null;
+        Set<String> basePackages = new LinkedHashSet<>();
+        boolean defaultPackageApplication = false;
         boolean customComponentScan = false;
         for (JavaSources.JavaFile file : sources.files()) {
             CompilationUnit cu = file.compilationUnit();
@@ -152,11 +168,12 @@ public class ScalabilityPracticeFindingAnalyzer {
                 for (AnnotationExpr annotation : cls.getAnnotations()) {
                     String annotationName = simpleName(annotation.getNameAsString());
                     if ("SpringBootApplication".equals(annotationName)) {
-                        if (basePackage == null) {
-                            basePackage =
-                                    cu.getPackageDeclaration()
-                                            .map(p -> p.getNameAsString())
-                                            .orElse("");
+                        String applicationPackage =
+                                cu.getPackageDeclaration().map(p -> p.getNameAsString()).orElse("");
+                        if (applicationPackage.isBlank()) {
+                            defaultPackageApplication = true;
+                        } else {
+                            basePackages.add(applicationPackage);
                         }
                         // scanBasePackages/scanBasePackageClasses redirect scanning away from
                         // the application class's package — same bail-out as @ComponentScan.
@@ -173,98 +190,122 @@ public class ScalabilityPracticeFindingAnalyzer {
                 }
             }
         }
-        if (basePackage == null || customComponentScan) {
+        if (basePackages.isEmpty() || defaultPackageApplication || customComponentScan) {
             return;
         }
 
-        Map<String, List<BeanOccurrence>> bySimpleName = new LinkedHashMap<>();
-        for (JavaSources.JavaFile file : sources.files()) {
-            CompilationUnit cu = file.compilationUnit();
-            if (cu == null) {
-                continue;
-            }
-            String pkg = cu.getPackageDeclaration().map(p -> p.getNameAsString()).orElse("");
-            if (!pkg.equals(basePackage) && !pkg.startsWith(basePackage + ".")) {
-                continue;
-            }
-            for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
-                // Nested classes get bean names prefixed with the outer class ("outer.Inner"),
-                // so their simple names never collide with same-named nested classes elsewhere.
-                if (cls.isInterface() || cls.isAbstract() || !cls.isTopLevelType()) {
-                    continue;
-                }
-                AnnotationExpr stereotype =
-                        cls.getAnnotations().stream()
-                                .filter(
-                                        a ->
-                                                STEREOTYPE_ANNOTATIONS.contains(
-                                                        simpleName(a.getNameAsString())))
-                                .findFirst()
-                                .orElse(null);
-                if (stereotype == null || hasExplicitBeanName(stereotype)) {
-                    continue;
-                }
-                bySimpleName
-                        .computeIfAbsent(cls.getNameAsString(), key -> new ArrayList<>())
-                        .add(
-                                new BeanOccurrence(
-                                        pkg + "." + cls.getNameAsString(),
-                                        file.relativePath(),
-                                        cls.getBegin().map(p -> p.line).orElse(null)));
-            }
-        }
+        // A broader application package already covers a nested application package. Keeping only
+        // the broadest roots avoids duplicate findings while disjoint application contexts remain
+        // independent and therefore cannot create cross-context bean-name collisions.
+        List<String> effectiveBasePackages =
+                basePackages.stream()
+                        .filter(
+                                candidate ->
+                                        basePackages.stream()
+                                                .noneMatch(
+                                                        other ->
+                                                                !other.equals(candidate)
+                                                                        && isInScanRoot(
+                                                                                candidate, other)))
+                        .toList();
 
-        for (Map.Entry<String, List<BeanOccurrence>> entry : bySimpleName.entrySet()) {
-            List<BeanOccurrence> occurrences = entry.getValue();
-            if (occurrences.stream().map(BeanOccurrence::fqcn).distinct().count() < 2) {
-                continue;
+        for (String basePackage : effectiveBasePackages) {
+            Map<String, List<BeanOccurrence>> bySimpleName = new LinkedHashMap<>();
+            for (JavaSources.JavaFile file : sources.files()) {
+                CompilationUnit cu = file.compilationUnit();
+                if (cu == null) {
+                    continue;
+                }
+                String pkg = cu.getPackageDeclaration().map(p -> p.getNameAsString()).orElse("");
+                if (!isInScanRoot(pkg, basePackage)) {
+                    continue;
+                }
+                for (ClassOrInterfaceDeclaration cls :
+                        cu.findAll(ClassOrInterfaceDeclaration.class)) {
+                    // Nested classes get bean names prefixed with the outer class ("outer.Inner"),
+                    // so their simple names never collide with same-named nested classes elsewhere.
+                    if (cls.isInterface() || cls.isAbstract() || !cls.isTopLevelType()) {
+                        continue;
+                    }
+                    AnnotationExpr stereotype =
+                            cls.getAnnotations().stream()
+                                    .filter(
+                                            a ->
+                                                    STEREOTYPE_ANNOTATIONS.contains(
+                                                            simpleName(a.getNameAsString())))
+                                    .findFirst()
+                                    .orElse(null);
+                    if (stereotype == null || hasExplicitBeanName(stereotype)) {
+                        continue;
+                    }
+                    bySimpleName
+                            .computeIfAbsent(cls.getNameAsString(), key -> new ArrayList<>())
+                            .add(
+                                    new BeanOccurrence(
+                                            pkg + "." + cls.getNameAsString(),
+                                            file.relativePath(),
+                                            cls.getBegin().map(p -> p.line).orElse(null)));
+                }
             }
-            BeanOccurrence reported = occurrences.get(1);
-            String allClasses =
-                    occurrences.stream()
-                            .map(BeanOccurrence::fqcn)
-                            .collect(java.util.stream.Collectors.joining(", "));
-            findings.add(
-                    FindingFactory.builder(
-                                    FindingRules.SPRING_BEAN_NAME_COLLISION,
-                                    FindingConfidence.MEDIUM)
-                            .shortMessage(
-                                    "Component classes share the simple name '"
-                                            + entry.getKey()
-                                            + "' ("
-                                            + allClasses
-                                            + ") — bean registration fails at startup.")
-                            .whyBadPractice(
-                                    "Spring's default AnnotationBeanNameGenerator derives the bean"
-                                        + " name from the decapitalised simple class name. Two"
-                                        + " component-scanned classes with the same simple name in"
-                                        + " different packages therefore claim the same bean name,"
-                                        + " and the context fails with"
-                                        + " ConflictingBeanDefinitionException regardless of"
-                                        + " bean-overriding settings.")
-                            .possibleImpact(
-                                    "The application crashes at startup in every environment — a"
-                                            + " classic outcome of v1/v2 package splits or module"
-                                            + " refactorings that duplicate a class name.")
-                            .recommendation(
-                                    "Rename one of the classes, or give one an explicit bean name"
-                                            + " (e.g. @Service(\"orderServiceV2\")).")
-                            .evidence(
-                                    "Classes "
-                                            + allClasses
-                                            + " are all component-scanned under base package '"
-                                            + basePackage
-                                            + "' without explicit bean names.")
-                            .limitations(
-                                    "Assumes default component scanning from the"
-                                        + " @SpringBootApplication package; projects with custom"
-                                        + " @ComponentScan configuration are skipped entirely."
-                                        + " Excluded classes (e.g. via scan filters or profiles)"
-                                        + " are not visible statically.")
-                            .source(reported.path(), reported.line())
-                            .target(entry.getKey())
-                            .build());
+
+            for (Map.Entry<String, List<BeanOccurrence>> entry : bySimpleName.entrySet()) {
+                List<BeanOccurrence> occurrences = entry.getValue();
+                if (occurrences.stream().map(BeanOccurrence::fqcn).distinct().count() < 2) {
+                    continue;
+                }
+                BeanOccurrence reported = occurrences.get(1);
+                String allClasses =
+                        occurrences.stream()
+                                .map(BeanOccurrence::fqcn)
+                                .collect(java.util.stream.Collectors.joining(", "));
+                findings.add(
+                        FindingFactory.builder(
+                                        FindingRules.SPRING_BEAN_NAME_COLLISION,
+                                        FindingConfidence.MEDIUM)
+                                .shortMessage(
+                                        "Component classes share the simple name '"
+                                                + entry.getKey()
+                                                + "' ("
+                                                + allClasses
+                                                + ") — bean registration fails at startup.")
+                                .whyBadPractice(
+                                        "Spring's default AnnotationBeanNameGenerator derives the"
+                                            + " bean name from the decapitalised simple class name."
+                                            + " Two component-scanned classes with the same simple"
+                                            + " name in different packages therefore claim the same"
+                                            + " bean name, and the context fails with"
+                                            + " ConflictingBeanDefinitionException regardless of"
+                                            + " bean-overriding settings.")
+                                .possibleImpact(
+                                        "The application crashes at startup in every environment —"
+                                                + " a classic outcome of v1/v2 package splits or"
+                                                + " module refactorings that duplicate a class"
+                                                + " name.")
+                                .recommendation(
+                                        "Rename one of the classes, or give one an explicit bean"
+                                                + " name (e.g. @Service(\"orderServiceV2\")).")
+                                .evidence(
+                                        "Classes "
+                                                + allClasses
+                                                + " are all component-scanned under base package '"
+                                                + basePackage
+                                                + "' without explicit bean names.")
+                                .limitations(
+                                        "Evaluates each default @SpringBootApplication package as"
+                                            + " an independent scan root; default-package apps and"
+                                            + " projects with custom @ComponentScan configuration"
+                                            + " are skipped entirely. Excluded classes (e.g. via"
+                                            + " scan filters or profiles) are not visible"
+                                            + " statically.")
+                                .source(reported.path(), reported.line())
+                                .target(entry.getKey())
+                                .build());
+            }
         }
+    }
+
+    private static boolean isInScanRoot(String packageName, String scanRoot) {
+        return packageName.equals(scanRoot) || packageName.startsWith(scanRoot + ".");
     }
 
     private static boolean hasExplicitBeanName(AnnotationExpr annotation) {
@@ -337,10 +378,11 @@ public class ScalabilityPracticeFindingAnalyzer {
             String relativePath,
             Set<String> prototypeTypes,
             Set<String> requiresNewMethods,
+            RuntimeStackAnalysis runtimeStackAnalysis,
             List<Finding> findings) {
         detectHardcodedFilePaths(cu, relativePath, findings);
         detectRestTemplateNoTimeout(cu, relativePath, findings);
-        detectWebFluxBlockingCalls(cu, relativePath, findings);
+        detectBlockingCalls(cu, relativePath, runtimeStackAnalysis, findings);
         detectUnboundedThreadPool(cu, relativePath, findings);
         detectUnboundedFindAll(cu, relativePath, findings);
         detectRestTemplateNewPerRequest(cu, relativePath, findings);
@@ -997,29 +1039,26 @@ public class ScalabilityPracticeFindingAnalyzer {
     private static final Set<String> BLOCKING_METHOD_NAMES =
             Set.of("block", "blockFirst", "blockLast");
 
-    private void detectWebFluxBlockingCalls(
-            CompilationUnit cu, String relativePath, List<Finding> findings) {
-        boolean inSpringComponent =
-                cu.findAll(ClassOrInterfaceDeclaration.class).stream()
-                        .anyMatch(
-                                cls ->
-                                        cls.getAnnotations().stream()
-                                                .anyMatch(
-                                                        a ->
-                                                                SINGLETON_ANNOTATIONS.contains(
-                                                                        simpleName(
-                                                                                a
-                                                                                        .getNameAsString()))));
-        if (!inSpringComponent) {
-            return;
-        }
-
+    private void detectBlockingCalls(
+            CompilationUnit cu,
+            String relativePath,
+            RuntimeStackAnalysis runtimeStackAnalysis,
+            List<Finding> findings) {
+        WebStack webStack =
+                runtimeStackAnalysis == null || runtimeStackAnalysis.webStack() == null
+                        ? WebStack.UNKNOWN
+                        : runtimeStackAnalysis.webStack();
+        boolean reactorTypesImported = usesReactorTypes(cu);
         for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
             String name = call.getNameAsString();
             boolean isThreadSleep =
                     "sleep".equals(name)
                             && call.getScope()
-                                    .map(s -> "Thread".equals(s.toString()))
+                                    .map(
+                                            scope ->
+                                                    "Thread".equals(scope.toString())
+                                                            || "java.lang.Thread"
+                                                                    .equals(scope.toString()))
                                     .orElse(false);
             // Detect .block(), .blockFirst(), .blockLast() with 0 or 1 argument.
             // .block(Duration) with a timeout is still blocking and still dangerous in WebFlux.
@@ -1030,8 +1069,42 @@ public class ScalabilityPracticeFindingAnalyzer {
                 continue;
             }
 
+            ClassOrInterfaceDeclaration enclosingClass =
+                    call.findAncestor(ClassOrInterfaceDeclaration.class).orElse(null);
+            if (enclosingClass == null || !isSpringManagedClass(enclosingClass)) {
+                continue;
+            }
+
+            MethodDeclaration enclosingMethod =
+                    call.findAncestor(MethodDeclaration.class).orElse(null);
+            if (isThreadSleep) {
+                addThreadSleepFinding(
+                        call,
+                        enclosingClass,
+                        enclosingMethod,
+                        relativePath,
+                        runtimeStackAnalysis,
+                        webStack,
+                        findings);
+                continue;
+            }
+
+            // A method named block() is common in non-reactive APIs. Requiring Reactor types in
+            // this file avoids warning on unrelated DSLs, and MVC is intentionally excluded:
+            // blocking at a deliberate client boundary is valid there even when WebClient is on
+            // the classpath.
+            if (!reactorTypesImported
+                    || (webStack != WebStack.REACTIVE_WEBFLUX && webStack != WebStack.UNKNOWN)) {
+                continue;
+            }
+
             Integer line = call.getBegin().map(p -> p.line).orElse(null);
-            String callDescription = isThreadSleep ? "Thread.sleep()" : "." + name + "()";
+            String callDescription = "." + name + "()";
+            String target =
+                    enclosingClass.getNameAsString()
+                            + (enclosingMethod == null
+                                    ? ""
+                                    : "#" + enclosingMethod.getNameAsString());
             findings.add(
                     FindingFactory.builder(
                                     FindingRules.SPRING_WEBFLUX_BLOCKING_CALL,
@@ -1042,22 +1115,10 @@ public class ScalabilityPracticeFindingAnalyzer {
                                             + relativePath
                                             + " — blocks the calling thread.")
                             .whyBadPractice(
-                                    isReactiveBlock
-                                            ? "Calling .block() on a Mono or Flux blocks the"
-                                                  + " calling thread until the reactive pipeline"
-                                                  + " completes. In a WebFlux application this"
-                                                  + " blocks a Netty event-loop thread, preventing"
-                                                  + " it from handling any other requests and"
-                                                  + " causing cascading latency under load. In a"
-                                                  + " Servlet/MVC application it signals a"
-                                                  + " reactive-to-blocking impedance mismatch."
-                                            : "Thread.sleep() blocks the current thread for an"
-                                                    + " arbitrary duration. In WebFlux this starves"
-                                                    + " the event-loop; in servlet applications it"
-                                                    + " ties up a container thread and reduces"
-                                                    + " throughput. Scheduled delays should use"
-                                                    + " reactive operators (Mono.delay) or"
-                                                    + " @Scheduled.")
+                                    "Calling .block() on a Mono or Flux blocks the calling thread"
+                                            + " until the reactive pipeline completes. In a"
+                                            + " WebFlux application this can block an event-loop"
+                                            + " worker that is expected to remain non-blocking.")
                             .possibleImpact(
                                     "Event-loop thread starvation in WebFlux, cascading latency"
                                         + " under concurrent load, and thread pool exhaustion. In"
@@ -1065,30 +1126,201 @@ public class ScalabilityPracticeFindingAnalyzer {
                                         + " under traffic while appearing healthy at low"
                                         + " concurrency.")
                             .recommendation(
-                                    isReactiveBlock
-                                            ? "Remove .block() and propagate the Mono/Flux to the"
-                                                  + " caller. If this class must remain blocking,"
-                                                  + " switch to a non-reactive HTTP client"
-                                                  + " (RestTemplate, HttpClient) configured with an"
-                                                  + " explicit timeout, or offload to a bounded"
-                                                  + " Scheduler (Schedulers.boundedElastic()) if"
-                                                  + " blocking I/O cannot be avoided."
-                                            : "Replace Thread.sleep() with"
-                                                  + " Mono.delay(Duration.ofMillis(…)) in reactive"
-                                                  + " pipelines, or use @Scheduled for periodic"
-                                                  + " background work.")
+                                    "Remove .block() and compose or return the Mono/Flux. If an"
+                                            + " unavoidable blocking API must be called, isolate"
+                                            + " that API on Schedulers.boundedElastic() at the"
+                                            + " blocking boundary.")
                             .limitations(
-                                    isReactiveBlock
-                                            ? "Detects no-arg .block(), .blockFirst(), and"
-                                                    + " .blockLast() calls. .block(Duration) with a"
-                                                    + " timeout is also blocking but slightly less"
-                                                    + " dangerous; consider reviewing those too."
-                                            : "Detects Thread.sleep() calls in Spring-managed"
-                                                    + " classes. Test classes are not scanned.")
+                                    "Requires Reactor types in the same source file and an active"
+                                            + " or unresolved WebFlux stack. Static analysis cannot"
+                                            + " prove which Scheduler executes this exact call.")
                             .evidence(callDescription + " found in " + relativePath + ".")
                             .source(relativePath, line)
+                            .target(target)
                             .build());
         }
+    }
+
+    private void addThreadSleepFinding(
+            MethodCallExpr call,
+            ClassOrInterfaceDeclaration enclosingClass,
+            MethodDeclaration enclosingMethod,
+            String relativePath,
+            RuntimeStackAnalysis runtimeStackAnalysis,
+            WebStack webStack,
+            List<Finding> findings) {
+        boolean controller = hasAnyAnnotation(enclosingClass, "Controller", "RestController");
+        boolean httpHandler =
+                controller
+                        || hasAnyMethodAnnotation(
+                                enclosingMethod,
+                                "RequestMapping",
+                                "GetMapping",
+                                "PostMapping",
+                                "PutMapping",
+                                "PatchMapping",
+                                "DeleteMapping");
+        boolean scheduled = hasAnyMethodAnnotation(enclosingMethod, "Scheduled");
+        boolean async = hasAnyMethodAnnotation(enclosingMethod, "Async");
+        boolean listener =
+                hasAnyMethodAnnotation(
+                        enclosingMethod,
+                        "KafkaListener",
+                        "RabbitListener",
+                        "JmsListener",
+                        "EventListener");
+        boolean beanCreation = hasAnyMethodAnnotation(enclosingMethod, "Bean");
+        boolean reactiveHttpHandler =
+                webStack == WebStack.REACTIVE_WEBFLUX
+                        && (httpHandler
+                                || (!scheduled
+                                        && !async
+                                        && !listener
+                                        && !beanCreation
+                                        && hasReactiveHandlerSignature(enclosingMethod)));
+        boolean highImpactContext =
+                reactiveHttpHandler
+                        || httpHandler
+                        || scheduled
+                        || async
+                        || listener
+                        || beanCreation;
+        boolean virtualThreadsEnabled =
+                runtimeStackAnalysis != null
+                        && runtimeStackAnalysis.virtualThreads() != null
+                        && runtimeStackAnalysis.virtualThreads().enabledByProperty();
+
+        String context =
+                scheduled
+                        ? "a scheduled method"
+                        : async
+                                ? "an @Async method"
+                                : listener
+                                        ? "a message or event listener"
+                                        : beanCreation
+                                                ? "bean creation"
+                                                : reactiveHttpHandler
+                                                        ? "a reactive HTTP handler"
+                                                        : httpHandler
+                                                                ? "an HTTP request handler"
+                                                                : "a Spring-managed component";
+        String recommendation =
+                scheduled
+                        ? "Model the cadence with @Scheduled(fixedDelayString = ...) or a"
+                                + " TaskScheduler instead of sleeping inside the job."
+                        : async || listener
+                                ? "Schedule delayed work with TaskScheduler or a bounded"
+                                        + " delayed executor so a worker is not occupied"
+                                        + " while nothing is running."
+                                : reactiveHttpHandler
+                                        ? "Replace the delay with Mono.delay(...)"
+                                                + " and compose it into the"
+                                                + " reactive chain. Do not sleep on"
+                                                + " an event-loop worker."
+                                        : httpHandler
+                                                ? "Remove the artificial wait from the"
+                                                        + " request path. Model"
+                                                        + " asynchronous completion or a"
+                                                        + " real downstream timeout"
+                                                        + " explicitly."
+                                                : "If this is retry backoff, prefer Spring Retry"
+                                                      + " @Backoff or TaskScheduler. If the sleep"
+                                                      + " is deliberately bounded, document it and"
+                                                      + " preserve interruption by restoring the"
+                                                      + " interrupt flag.";
+        String impact =
+                virtualThreadsEnabled && !reactiveHttpHandler
+                        ? "Virtual threads reduce the platform-thread cost, but the operation still"
+                                + " waits for the full sleep duration and can delay requests, jobs,"
+                                + " or message handling."
+                        : highImpactContext
+                                ? "The managed worker cannot make progress during the sleep. Under"
+                                        + " concurrency this can increase latency, reduce scheduler"
+                                        + " or listener throughput, and exhaust a bounded executor."
+                                : "The call blocks its current worker and may reduce throughput if"
+                                        + " this method is reached concurrently.";
+        Integer line = call.getBegin().map(position -> position.line).orElse(null);
+        String target =
+                enclosingClass.getNameAsString()
+                        + (enclosingMethod == null ? "" : "#" + enclosingMethod.getNameAsString());
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_MANAGED_THREAD_SLEEP,
+                                highImpactContext
+                                        ? FindingConfidence.HIGH
+                                        : FindingConfidence.MEDIUM)
+                        .severity(
+                                highImpactContext ? FindingSeverity.WARNING : FindingSeverity.INFO)
+                        .shortMessage("Thread.sleep() is called in " + context + ".")
+                        .whyBadPractice(
+                                "Thread.sleep() represents waiting by occupying the current"
+                                    + " execution path. Whether that is dangerous depends on the"
+                                    + " Spring-managed context, so this rule prioritizes request,"
+                                    + " reactive, scheduled, async, and listener code.")
+                        .possibleImpact(impact)
+                        .recommendation(recommendation)
+                        .evidence("Thread.sleep() found in " + target + " in " + relativePath + ".")
+                        .limitations(
+                                "Static analysis cannot prove the executing thread or whether the"
+                                        + " method has already been offloaded to a dedicated"
+                                        + " executor. Generic component methods are therefore INFO"
+                                        + " rather than WARNING. Test sources are not scanned.")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+    }
+
+    private boolean usesReactorTypes(CompilationUnit compilationUnit) {
+        return compilationUnit.getImports().stream()
+                .map(importDeclaration -> importDeclaration.getNameAsString())
+                .anyMatch(name -> name.startsWith("reactor.core.publisher"));
+    }
+
+    private boolean isSpringManagedClass(ClassOrInterfaceDeclaration declaration) {
+        return declaration.getAnnotations().stream()
+                .map(annotation -> simpleName(annotation.getNameAsString()))
+                .anyMatch(SINGLETON_ANNOTATIONS::contains);
+    }
+
+    private boolean hasAnyAnnotation(
+            ClassOrInterfaceDeclaration declaration, String... annotationNames) {
+        return declaration.getAnnotations().stream()
+                .map(annotation -> simpleName(annotation.getNameAsString()))
+                .anyMatch(annotation -> matchesAny(annotation, annotationNames));
+    }
+
+    private boolean hasAnyMethodAnnotation(MethodDeclaration method, String... annotationNames) {
+        if (method == null) {
+            return false;
+        }
+        return method.getAnnotations().stream()
+                .map(annotation -> simpleName(annotation.getNameAsString()))
+                .anyMatch(annotation -> matchesAny(annotation, annotationNames));
+    }
+
+    private boolean hasReactiveHandlerSignature(MethodDeclaration method) {
+        if (method == null) {
+            return false;
+        }
+        String returnType = method.getTypeAsString();
+        boolean reactiveReturnType =
+                returnType.contains("Mono")
+                        || returnType.contains("Flux")
+                        || returnType.contains("ServerResponse");
+        boolean serverRequestParameter =
+                method.getParameters().stream()
+                        .map(parameter -> parameter.getTypeAsString())
+                        .anyMatch(type -> type.contains("ServerRequest"));
+        return reactiveReturnType || serverRequestParameter;
+    }
+
+    private boolean matchesAny(String candidate, String... expectedValues) {
+        for (String expected : expectedValues) {
+            if (expected.equals(candidate)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ---------------------------------------------------------------------------

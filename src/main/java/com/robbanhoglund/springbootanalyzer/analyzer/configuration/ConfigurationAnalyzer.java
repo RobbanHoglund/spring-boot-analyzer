@@ -960,7 +960,8 @@ public class ConfigurationAnalyzer {
         }
 
         SecretFallback secretFallback = secretFallback(rawValue);
-        if (property.valueRedacted() && secretFallback.weakDefault()) {
+        boolean likelySecretValue = redactor.isLikelySecretValue(name);
+        if (property.valueRedacted() && likelySecretValue && secretFallback.weakDefault()) {
             findings.add(
                     FindingFactory.builder(
                                     FindingRules.SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT,
@@ -999,8 +1000,10 @@ public class ConfigurationAnalyzer {
         // SPRING_DEFAULT_USER_PASSWORD_LITERAL rule reports that key, and reporting the same
         // line under two IDs would duplicate the finding.
         if (property.valueRedacted()
+                && likelySecretValue
                 && !"spring.security.user.password".equals(name)
-                && (secretFallback.literalDefault() || hasDirectSensitiveLiteral(rawValue))) {
+                && ((secretFallback.literalDefault() && !secretFallback.safeSentinel())
+                        || hasDirectSensitiveLiteral(rawValue))) {
             findings.add(
                     FindingFactory.builder(
                                     FindingRules.SPRING_SECRET_LITERAL, FindingConfidence.HIGH)
@@ -1165,7 +1168,21 @@ public class ConfigurationAnalyzer {
         if (trimmedFallback.isBlank()) {
             return SecretFallback.none();
         }
-        return new SecretFallback(trimmedFallback, isWeakSecretDefault(trimmedFallback), true);
+        return new SecretFallback(
+                trimmedFallback,
+                isWeakSecretDefault(trimmedFallback),
+                true,
+                isSafeSecretSentinel(trimmedFallback));
+    }
+
+    private boolean isSafeSecretSentinel(String fallback) {
+        String normalized = fallback.trim().toUpperCase(Locale.ROOT).replace('-', '_');
+        return normalized.equals("CHANGE_ME_OR_SET_ENV")
+                || normalized.equals("MUST_BE_SET")
+                || normalized.equals("REQUIRED")
+                || normalized.equals("NOT_CONFIGURED")
+                || normalized.equals("SET_VIA_ENV")
+                || normalized.equals("SET_ME");
     }
 
     private boolean isWeakSecretDefault(String fallback) {
@@ -1284,9 +1301,10 @@ public class ConfigurationAnalyzer {
         }
     }
 
-    private record SecretFallback(String value, boolean weakDefault, boolean literalDefault) {
+    private record SecretFallback(
+            String value, boolean weakDefault, boolean literalDefault, boolean safeSentinel) {
         static SecretFallback none() {
-            return new SecretFallback(null, false, false);
+            return new SecretFallback(null, false, false, false);
         }
     }
 

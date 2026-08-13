@@ -6,8 +6,8 @@
 // and CI keep resolving from the public repositories:
 //
 //   corpRepoUrl=https://artifactory.example.com/artifactory/gradle-remote
-//   corpRepoUsername=<user>        # optional
-//   corpRepoPassword=<token>       # optional
+//   corpRepoUsername=<user>        # optional; provide together with password
+//   corpRepoPassword=<token>       # optional; provide together with username
 //
 // When the property is absent this block behaves exactly like the default configuration.
 // pluginManagement must be the first block in settings.gradle.
@@ -17,6 +17,11 @@ pluginManagement {
     def corpRepoPassword = providers.gradleProperty('corpRepoPassword').orNull
     repositories {
         if (corpRepoUrl) {
+            if (!!corpRepoUsername != !!corpRepoPassword) {
+                throw new GradleException(
+                    'corpRepoUsername and corpRepoPassword must be provided together.'
+                )
+            }
             maven {
                 url = corpRepoUrl
                 if (corpRepoUsername && corpRepoPassword) {

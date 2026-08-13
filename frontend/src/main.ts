@@ -169,6 +169,7 @@ function createInitialState(): AppState {
 function createDefaultResultsViewState(): ResultsViewState {
   return {
     findingsSeverity: 'ALL',
+    findingsShowInfo: false,
     findingsCategory: 'ALL',
     findingsRuntimeDetection: 'ALL',
     findingsConfidence: 'ALL',
@@ -389,6 +390,10 @@ function render(): void {
             state.resultsViewState.findingsSeverity = value;
             render();
           },
+          onFindingsShowInfoChange: (value) => {
+            state.resultsViewState.findingsShowInfo = value;
+            render();
+          },
           onFindingsCategoryChange: (value) => {
             state.resultsViewState.findingsCategory = value;
             render();
@@ -441,6 +446,7 @@ function render(): void {
           },
           onClearFindingsFilters: () => {
             state.resultsViewState.findingsSeverity = 'ALL';
+            state.resultsViewState.findingsShowInfo = false;
             state.resultsViewState.findingsCategory = 'ALL';
             state.resultsViewState.findingsRuntimeDetection = 'ALL';
             state.resultsViewState.findingsConfidence = 'ALL';

@@ -100,6 +100,207 @@ class RuntimeStackAnalyzerTest {
     }
 
     @Test
+    void detectsPureWebFluxWithoutTreatingItsStarterAsMvc() {
+        BuildInfo buildInfo =
+                new BuildInfo(
+                        BuildTool.GRADLE,
+                        true,
+                        "21",
+                        List.of("org.springframework.boot:spring-boot-starter-webflux"),
+                        "3.5.13",
+                        "Gradle plugins",
+                        "HIGH");
+
+        var result =
+                analyzer.analyze(
+                        tempDir,
+                        buildInfo,
+                        GradleModelAnalysis.empty(
+                                GradleAnalysisStatus.NOT_REQUESTED, "SYSTEM_GRADLE", List.of()),
+                        emptyConfig(),
+                        List.of(),
+                        List.of());
+
+        assertThat(result.runtimeStackAnalysis().webStack()).isEqualTo(WebStack.REACTIVE_WEBFLUX);
+        assertThat(result.findings())
+                .noneMatch(finding -> "SPRING_MIXED_MVC_AND_WEBFLUX".equals(finding.ruleId()));
+    }
+
+    @Test
+    void resolvesBothStartersToMvcWhileReportingTheMixedClasspathAsInfo() {
+        BuildInfo buildInfo =
+                new BuildInfo(
+                        BuildTool.GRADLE,
+                        true,
+                        "21",
+                        List.of(
+                                "org.springframework.boot:spring-boot-starter-web",
+                                "org.springframework.boot:spring-boot-starter-webflux"),
+                        "3.5.13",
+                        "Gradle plugins",
+                        "HIGH");
+
+        var result =
+                analyzer.analyze(
+                        tempDir,
+                        buildInfo,
+                        GradleModelAnalysis.empty(
+                                GradleAnalysisStatus.NOT_REQUESTED, "SYSTEM_GRADLE", List.of()),
+                        emptyConfig(),
+                        List.of(),
+                        List.of());
+
+        assertThat(result.runtimeStackAnalysis().webStack()).isEqualTo(WebStack.SERVLET_MVC);
+        assertThat(result.runtimeStackAnalysis().webStackReason())
+                .contains("selects the Servlet/MVC application type by default");
+        assertThat(result.findings())
+                .filteredOn(finding -> "SPRING_MIXED_MVC_AND_WEBFLUX".equals(finding.ruleId()))
+                .singleElement()
+                .satisfies(finding -> assertThat(finding.severity().name()).isEqualTo("INFO"));
+    }
+
+    @Test
+    void allowsWebClientAndMonoUsageInAnMvcApplication() throws IOException {
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("PricingClient.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Service;
+                import org.springframework.web.reactive.function.client.WebClient;
+                import reactor.core.publisher.Mono;
+
+                @Service
+                class PricingClient {
+                    Mono<String> price() {
+                        return WebClient.create().get().retrieve().bodyToMono(String.class);
+                    }
+                }
+                """);
+        BuildInfo buildInfo =
+                new BuildInfo(
+                        BuildTool.GRADLE,
+                        true,
+                        "21",
+                        List.of(
+                                "org.springframework.boot:spring-boot-starter-web",
+                                "org.springframework.boot:spring-boot-starter-webflux"),
+                        "3.5.13",
+                        "Gradle plugins",
+                        "HIGH");
+
+        var result =
+                analyzer.analyze(
+                        tempDir,
+                        buildInfo,
+                        GradleModelAnalysis.empty(
+                                GradleAnalysisStatus.NOT_REQUESTED, "SYSTEM_GRADLE", List.of()),
+                        emptyConfig(),
+                        List.of(),
+                        List.of());
+
+        assertThat(result.runtimeStackAnalysis().webStack()).isEqualTo(WebStack.SERVLET_MVC);
+        assertThat(result.findings())
+                .noneMatch(
+                        finding -> "SPRING_REACTIVE_API_IN_SERVLET_APP".equals(finding.ruleId()));
+    }
+
+    @Test
+    void raisesOneMixedStackWarningWhenWebFluxServerRoutesWouldBeInactive() throws IOException {
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Routes.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.context.annotation.Bean;
+                import org.springframework.context.annotation.Configuration;
+                import org.springframework.web.reactive.function.server.RouterFunction;
+                import org.springframework.web.reactive.function.server.ServerResponse;
+
+                @Configuration
+                class Routes {
+                    @Bean
+                    RouterFunction<ServerResponse> routes() {
+                        return null;
+                    }
+                }
+                """);
+        BuildInfo buildInfo =
+                new BuildInfo(
+                        BuildTool.GRADLE,
+                        true,
+                        "21",
+                        List.of(
+                                "org.springframework.boot:spring-boot-starter-web",
+                                "org.springframework.boot:spring-boot-starter-webflux"),
+                        "3.5.13",
+                        "Gradle plugins",
+                        "HIGH");
+
+        var result =
+                analyzer.analyze(
+                        tempDir,
+                        buildInfo,
+                        GradleModelAnalysis.empty(
+                                GradleAnalysisStatus.NOT_REQUESTED, "SYSTEM_GRADLE", List.of()),
+                        emptyConfig(),
+                        List.of(),
+                        List.of());
+
+        assertThat(result.runtimeStackAnalysis().webStack()).isEqualTo(WebStack.SERVLET_MVC);
+        assertThat(result.findings())
+                .filteredOn(finding -> "SPRING_MIXED_MVC_AND_WEBFLUX".equals(finding.ruleId()))
+                .singleElement()
+                .satisfies(finding -> assertThat(finding.severity().name()).isEqualTo("WARNING"));
+        assertThat(result.findings())
+                .noneMatch(
+                        finding -> "SPRING_REACTIVE_API_IN_SERVLET_APP".equals(finding.ruleId()));
+    }
+
+    @Test
+    void ignoresWebFluxApiNamesThatAppearOnlyInCommentsAndStrings() throws IOException {
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Notes.java"),
+                """
+                package com.example.demo;
+
+                class Notes {
+                    String note = "org.springframework.web.reactive.function.server.RouterFunction";
+                    // @EnableWebFlux is documentation, not configuration.
+                }
+                """);
+        BuildInfo buildInfo =
+                new BuildInfo(
+                        BuildTool.GRADLE,
+                        true,
+                        "21",
+                        List.of("org.springframework.boot:spring-boot-starter-web"),
+                        "3.5.13",
+                        "Gradle plugins",
+                        "HIGH");
+
+        var result =
+                analyzer.analyze(
+                        tempDir,
+                        buildInfo,
+                        GradleModelAnalysis.empty(
+                                GradleAnalysisStatus.NOT_REQUESTED, "SYSTEM_GRADLE", List.of()),
+                        emptyConfig(),
+                        List.of(),
+                        List.of());
+
+        assertThat(result.findings())
+                .noneMatch(
+                        finding -> "SPRING_REACTIVE_API_IN_SERVLET_APP".equals(finding.ruleId()));
+    }
+
+    @Test
     void keepsSpringMvcReasonWhenControllersExistAndGradleModelIsPartial() throws IOException {
         Path sourceRoot =
                 Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));

@@ -562,6 +562,14 @@ class ConfigurationFindingAnalyzerGradleTest {
     }
 
     @Test
+    void handlesMissingConfigurationAnalysisWhenLiquibaseIsPresent() {
+        List<Finding> result =
+                analyzer.analyze(repoRoot, liquibaseBuild(), null, buildGradleNone());
+
+        assertThat(result).isEmpty();
+    }
+
+    @Test
     void doesNotFlagLiquibaseWhenDependencyAbsent() {
         List<Finding> result =
                 analyzer.analyze(repoRoot, buildInfoBoot3, emptyConfig(), buildGradleNone());

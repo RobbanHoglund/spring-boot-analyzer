@@ -1405,8 +1405,7 @@ public class ConfigurationFindingAnalyzer {
         boolean servletWebApp =
                 buildInfo != null
                         && buildInfo.dependencies() != null
-                        && buildInfo.dependencies().stream()
-                                .anyMatch(dep -> dep.contains("spring-boot-starter-web"));
+                        && buildInfo.dependencies().stream().anyMatch(this::isServletWebDependency);
         if (!servletWebApp) {
             return;
         }
@@ -1450,6 +1449,16 @@ public class ConfigurationFindingAnalyzer {
                             .location("Configuration")
                             .build());
         }
+    }
+
+    private boolean isServletWebDependency(String dependency) {
+        if (dependency == null) {
+            return false;
+        }
+        String normalized = dependency.toLowerCase(Locale.ROOT);
+        return (normalized.contains("spring-boot-starter-web")
+                        && !normalized.contains("spring-boot-starter-webflux"))
+                || normalized.contains("spring-webmvc");
     }
 
     private void detectMissingSecurityStarter(BuildInfo buildInfo, List<Finding> findings) {
@@ -1859,6 +1868,9 @@ public class ConfigurationFindingAnalyzer {
                 dependencyPresent(
                         buildInfo, gradleModelAnalysis, "org.liquibase", "liquibase-core");
         if (!liquibasePresent) {
+            return;
+        }
+        if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
             return;
         }
         // Only a default-profile "enabled=false" disables Liquibase everywhere; the common

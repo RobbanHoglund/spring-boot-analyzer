@@ -222,7 +222,9 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
         findings.addAll(observabilityGapFindingAnalyzer.analyze(javaSources, buildInfo));
         findings.addAll(transactionPracticeFindingAnalyzer.analyze(javaSources));
         findings.addAll(securityPracticeFindingAnalyzer.analyze(javaSources));
-        findings.addAll(scalabilityPracticeFindingAnalyzer.analyze(javaSources));
+        findings.addAll(
+                scalabilityPracticeFindingAnalyzer.analyze(
+                        javaSources, runtimeResult.runtimeStackAnalysis()));
         findings.addAll(schedulingPracticeFindingAnalyzer.analyze(javaSources));
         findings.addAll(
                 migrationPracticeFindingAnalyzer.analyze(

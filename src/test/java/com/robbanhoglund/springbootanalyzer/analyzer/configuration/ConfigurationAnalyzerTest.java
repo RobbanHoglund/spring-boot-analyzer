@@ -246,13 +246,14 @@ public class TradingService {
                                 "true".equals(reference.expectedValue())
                                         && Boolean.TRUE.equals(reference.matchIfMissing()));
 
-        var sensitiveProperty =
+        var sensitiveProperties =
                 analysis.properties().stream()
                         .filter(property -> property.name().equals("trading.api-key"))
-                        .findFirst()
-                        .orElseThrow();
-        assertThat(sensitiveProperty.valueRedacted()).isTrue();
-        assertThat(sensitiveProperty.value()).isEqualTo("[redacted]");
+                        .toList();
+        assertThat(sensitiveProperties).allMatch(property -> property.valueRedacted());
+        assertThat(sensitiveProperties)
+                .extracting(property -> property.value())
+                .contains("[redacted]", "${TRADING_API_KEY}");
 
         var mailMapProperty =
                 analysis.properties().stream()
@@ -314,6 +315,10 @@ public class TradingService {
                 openai.safe-api-key=${OPENAI_API_KEY}
                 openai.fallback-api-key=${OPENAI_API_KEY:sk-fallback-secret}
                 spring.datasource.password=${DB_PASSWORD:secret}
+                deployment.path=/srv/application
+                security.password-policy=strict
+                service.password=${SERVICE_PASSWORD:CHANGE_ME_OR_SET_ENV}
+                github.pat=ghp-literal-token
                 """);
 
         var result = analyzer.analyze(tempDir, emptyBuildInfo());
@@ -342,7 +347,8 @@ public class TradingService {
                 .anyMatch(
                         property ->
                                 "openai.safe-api-key".equals(property.name())
-                                        && property.placeholderValue());
+                                        && property.placeholderValue()
+                                        && "${OPENAI_API_KEY}".equals(property.value()));
 
         assertThat(result.findings())
                 .filteredOn(finding -> "SPRING_SECRET_LITERAL".equals(finding.ruleId()))
@@ -352,7 +358,16 @@ public class TradingService {
                         "summary.ai.max-output-tokens",
                         "openai.max-output-tokens",
                         "openai.safe-api-key",
-                        "token-limit");
+                        "token-limit",
+                        "deployment.path",
+                        "security.password-policy",
+                        "service.password")
+                .contains("github.pat");
+        assertThat(analysis.properties())
+                .anyMatch(
+                        property ->
+                                "deployment.path".equals(property.name())
+                                        && !property.valueRedacted());
         assertThat(result.findings())
                 .filteredOn(
                         finding ->

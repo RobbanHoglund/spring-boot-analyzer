@@ -2476,8 +2476,9 @@ class PriceRefreshJob {
                 .anyMatch(
                         finding ->
                                 FindingRules.SPRING_JPA_OPEN_IN_VIEW
-                                        .ruleId()
-                                        .equals(finding.ruleId()));
+                                                .ruleId()
+                                                .equals(finding.ruleId())
+                                        && finding.severity() == FindingSeverity.INFO);
     }
 
     @Test
@@ -5254,9 +5255,17 @@ interface InventoryClient {
 
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
-        assertThat(findings)
-                .extracting(Finding::ruleId)
-                .contains(FindingRules.SPRING_TRANSACTIONAL_READONLY_WITH_WRITES.ruleId());
+        Finding finding =
+                findings.stream()
+                        .filter(
+                                candidate ->
+                                        FindingRules.SPRING_TRANSACTIONAL_READONLY_WITH_WRITES
+                                                .ruleId()
+                                                .equals(candidate.ruleId()))
+                        .findFirst()
+                        .orElseThrow();
+
+        assertThat(finding.severity()).isEqualTo(FindingSeverity.WARNING);
     }
 
     @Test

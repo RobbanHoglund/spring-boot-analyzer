@@ -6,6 +6,7 @@ import type { AnalyzeRepositoryResponse, Finding } from '../types';
 function defaultState(): ResultsViewState {
   return {
     findingsSeverity: 'ALL',
+    findingsShowInfo: false,
     findingsCategory: 'ALL',
     findingsRuntimeDetection: 'ALL',
     findingsConfidence: 'ALL',
@@ -70,6 +71,7 @@ function defaultActions(overrides: Partial<ResultsViewActions> = {}): ResultsVie
     onRetryAnalysis: noop,
     onOpenSettings: noop,
     onFindingsSeverityChange: noop,
+    onFindingsShowInfoChange: noop,
     onFindingsCategoryChange: noop,
     onFindingsRuntimeDetectionChange: noop,
     onFindingsConfidenceChange: noop,
@@ -283,6 +285,45 @@ describe('renderResultsView findings UI', () => {
     );
   });
 
+  it('shows the GitHub permalink on the collapsed finding row', () => {
+    const view = renderResultsView(baseResult([baseFinding()]), defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    const link = document.querySelector('.finding-github-link') as HTMLAnchorElement;
+    expect(link).not.toBeNull();
+    expect(link.textContent).toBe('GitHub');
+    expect(link.href).toBe('https://github.com/example/demo/blob/abc123/src/main/java/com/example/Demo.java#L3-L5');
+    expect((document.querySelector('.finding-details-row') as HTMLTableRowElement).hidden).toBe(true);
+  });
+
+  it('hides info findings by default and exposes an explicit visibility toggle', () => {
+    const onFindingsShowInfoChange = vi.fn();
+    const info = baseFinding({
+      severity: 'INFO',
+      ruleId: 'SPRING_INFORMATIONAL_CONTEXT',
+      title: 'Informational context',
+      target: 'Demo#info'
+    });
+    const view = renderResultsView(
+      baseResult([baseFinding(), info]),
+      defaultState(),
+      defaultActions({ onFindingsShowInfoChange })
+    );
+    document.body.appendChild(view);
+
+    expect(document.querySelectorAll('.finding-summary-row')).toHaveLength(1);
+    const toggle = document.getElementById('results-findings-show-info') as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    toggle.click();
+    expect(onFindingsShowInfoChange).toHaveBeenCalledWith(true);
+
+    document.body.innerHTML = '';
+    const visibleState = defaultState();
+    visibleState.findingsShowInfo = true;
+    document.body.appendChild(renderResultsView(baseResult([baseFinding(), info]), visibleState, defaultActions()));
+    expect(document.querySelectorAll('.finding-summary-row')).toHaveLength(2);
+  });
+
   it('keeps the row-level View code action for grouped findings when any occurrence has a source location', () => {
     const unresolvedRepresentative = baseFinding({
       sourceFile: undefined,
@@ -391,7 +432,9 @@ describe('renderResultsView findings UI', () => {
       }
     });
 
-    const view = renderResultsView(baseResult([infoFinding, warningFinding]), defaultState(), defaultActions());
+    const state = defaultState();
+    state.findingsShowInfo = true;
+    const view = renderResultsView(baseResult([infoFinding, warningFinding]), state, defaultActions());
     document.body.appendChild(view);
 
     expect(document.querySelectorAll('.finding-summary-row')).toHaveLength(1);
@@ -465,10 +508,32 @@ describe('renderResultsView findings UI', () => {
     expect(document.querySelector('.remediation-code-properties')).not.toBeNull();
     expect(document.querySelector('.remediation-code-language')?.textContent).toBe('properties');
     expect(document.querySelector('.remediation-code .token-literal')?.textContent).toBe('${BOOTLENS_ACTUATOR_PASSWORD}');
+    expect(document.querySelector('.finding-reference-link')?.textContent)
+      .toContain('Externalized Configuration');
 
     (document.querySelector('.remediation-copy-button') as HTMLButtonElement).click();
     await Promise.resolve();
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('${BOOTLENS_ACTUATOR_PASSWORD}'));
+  });
+
+  it('keeps Thread.sleep remediation specific to an MVC request path', () => {
+    const finding = baseFinding({
+      ruleId: 'SPRING_MANAGED_THREAD_SLEEP',
+      title: 'Thread.sleep() in a Spring-managed execution path',
+      message: 'Thread.sleep() is called in an HTTP request handler.',
+      shortMessage: 'Thread.sleep() is called in an HTTP request handler.',
+      recommendation: 'Remove the artificial wait from the request path. Model asynchronous completion or a real downstream timeout explicitly.'
+    });
+
+    const view = renderResultsView(baseResult([finding]), defaultState(), defaultActions());
+    document.body.appendChild(view);
+    (document.querySelector('.finding-expand-button') as HTMLButtonElement).click();
+
+    const remediation = document.querySelector('.remediation-section') as HTMLElement;
+    expect(remediation.textContent).toContain('CompletableFuture<Status>');
+    expect(remediation.textContent).not.toContain('Mono.delay');
+    expect(document.querySelector('.finding-reference-link')?.textContent)
+      .toContain('Task execution and scheduling');
   });
 
   it('renders targeted remediation for CSRF, plain HTTP, and actuator findings', () => {
@@ -618,7 +683,7 @@ describe('renderResultsView findings UI', () => {
     await Promise.resolve();
 
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('# Spring Boot Analyzer review plan'));
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('Filters: text "csrf".'));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('Filters: INFO hidden, text "csrf".'));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('Rule: SPRING_CSRF_DISABLED'));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('First fix: Remove blanket csrf disable calls'));
   });
@@ -877,6 +942,17 @@ describe('renderResultsView findings UI', () => {
           profile: 'default',
           kind: 'CUSTOM_CONFIGURATION_PROPERTIES',
           documentation: { type: 'string' }
+        },
+        {
+          name: 'database.password',
+          value: '${DB_PASSWORD}',
+          valueRedacted: true,
+          placeholderValue: true,
+          sourceFile: 'src/main/resources/application.properties',
+          line: 9,
+          profile: 'default',
+          kind: 'CUSTOM_CONFIGURATION_PROPERTIES',
+          documentation: { type: 'string' }
         }
       ],
       codeReferences: [{ propertyName: 'missing.value', sourceFile: 'src/main/java/com/example/Demo.java' }],
@@ -899,6 +975,8 @@ describe('renderResultsView findings UI', () => {
     expect(document.body.textContent).toContain('review signals surfaced statically');
     expect(document.body.textContent).toContain('Mixed configuration namespaces');
     expect(document.body.textContent).toContain('Custom analyzer.gradle property.');
+    expect(document.body.textContent).toContain('${DB_PASSWORD} (environment variable)');
+    expect(document.body.textContent).toContain('Secrets via environment');
   });
 
   it('renders components with simple class name first and qualified name as secondary context', () => {

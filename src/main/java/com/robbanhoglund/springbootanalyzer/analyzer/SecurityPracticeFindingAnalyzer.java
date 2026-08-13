@@ -1679,7 +1679,12 @@ public class SecurityPracticeFindingAnalyzer {
         var matcher = NORMALIZED_ASSIGNMENT.matcher(body);
         while (matcher.find()) {
             String variable = matcher.group(1);
-            if (body.contains(variable + ".startsWith(")) {
+            java.util.regex.Pattern exactReceiver =
+                    java.util.regex.Pattern.compile(
+                            "(?<![\\w.])"
+                                    + java.util.regex.Pattern.quote(variable)
+                                    + "\\s*\\.\\s*startsWith\\(");
+            if (exactReceiver.matcher(body).find()) {
                 return true;
             }
         }

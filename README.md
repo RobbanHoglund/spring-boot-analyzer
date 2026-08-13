@@ -5,7 +5,7 @@
 [![Java](https://img.shields.io/badge/java-25-orange.svg)](build.gradle)
 [![Spring Boot](https://img.shields.io/badge/spring--boot-3.5-brightgreen.svg)](build.gradle)
 
-A static analysis tool for Spring Boot projects. Point it at any Git repository and get a structured report of findings, component inventory, HTTP surface, configuration risks, and anti-patterns — without running the analyzed application. 198 rules across 19 categories out of the box.
+A static analysis tool for Spring Boot projects. Point it at any Git repository and get a structured report of findings, component inventory, HTTP surface, configuration risks, and anti-patterns — without running the analyzed application. 199 rules across 19 categories out of the box.
 
 **Safe by default.** The default `STATIC_ONLY` mode clones the repository into a temporary workspace and performs static analysis only. It does not run Gradle tasks, Maven goals, tests, or the analyzed Spring Boot application. See [SECURITY.md](SECURITY.md) for the full security model.
 
@@ -66,12 +66,12 @@ Detects Spring stereotypes and maps the application's component structure:
 
 ## Findings
 
-The analyzer produces **198 rules** across 19 categories. Each finding includes severity, confidence, why it matters, recommended action, evidence, and — for Gradle-model-backed rules — the exact resolved library versions involved.
+The analyzer produces **199 rules** across 19 categories. Each finding includes severity, confidence, why it matters, recommended action, evidence, and — for Gradle-model-backed rules — the exact resolved library versions involved.
 
 | Category | Rules | Highest severity |
 |----------|------:|-----------------|
 | Security | 43 | ERROR |
-| Maintainability | 20 | ERROR |
+| Maintainability | 21 | ERROR |
 | Persistence | 19 | ERROR |
 | Transaction | 15 | ERROR |
 | Configuration | 13 | ERROR |
@@ -315,9 +315,9 @@ corpRepoPassword=your-api-token
 
 `settings.gradle` (`pluginManagement`) and `build.gradle` (`repositories`) both prepend that
 repository when the property is present, keeping `gradlePluginPortal()`/`mavenCentral()` as
-fallbacks. Username and password are optional; omit them for an anonymous mirror. If the mirror
-URL is unreachable the build fails and lists every repository it searched, rather than silently
-falling back.
+fallbacks. Username and password are optional, but they must be provided together; omit both for
+an anonymous mirror. If the mirror URL is unreachable the build fails and lists every repository
+it searched, rather than silently falling back.
 
 **Analyzing repositories behind the same proxy** — the analyzer runs Gradle against the projects
 it inspects, so it has its own proxy settings (see `src/main/resources/application.properties`):

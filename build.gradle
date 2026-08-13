@@ -18,6 +18,11 @@ repositories {
     def corpRepoUsername = providers.gradleProperty('corpRepoUsername').orNull
     def corpRepoPassword = providers.gradleProperty('corpRepoPassword').orNull
     if (corpRepoUrl) {
+        if (!!corpRepoUsername != !!corpRepoPassword) {
+            throw new GradleException(
+                'corpRepoUsername and corpRepoPassword must be provided together.'
+            )
+        }
         maven {
             url = corpRepoUrl
             if (corpRepoUsername && corpRepoPassword) {

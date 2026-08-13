@@ -3,6 +3,10 @@ package com.robbanhoglund.springbootanalyzer.analyzer;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.RuntimeStackAnalysis;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.VirtualThreadAnalysis;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.WebStack;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -32,6 +36,20 @@ class ScalabilityPracticeFindingAnalyzerTest {
 
     private List<Finding> findings() {
         return analyzer.analyze(repoRoot);
+    }
+
+    private List<Finding> findings(WebStack webStack) {
+        RuntimeStackAnalysis runtimeStack =
+                new RuntimeStackAnalysis(
+                        "3.5.13",
+                        "test",
+                        "21",
+                        webStack,
+                        "test",
+                        new VirtualThreadAnalysis(
+                                false, true, false, false, false, "disabled", List.of()),
+                        "com.example.DemoApplication");
+        return analyzer.analyze(JavaSources.from(repoRoot), runtimeStack);
     }
 
     private static Finding byRule(List<Finding> findings, String ruleId) {
@@ -292,6 +310,162 @@ class ScalabilityPracticeFindingAnalyzerTest {
                 """);
 
         assertThat(byRule(findings(), "SPRING_BEAN_NAME_COLLISION")).isNull();
+    }
+
+    @Test
+    void doesNotFlagCollisionWhenApplicationIsInDefaultPackage() throws IOException {
+        writeSourceFile(
+                "src/main/java/DemoApplication.java",
+                """
+                import org.springframework.boot.autoconfigure.SpringBootApplication;
+                @SpringBootApplication
+                public class DemoApplication {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/example/v1/PaymentService.java",
+                """
+                package com.example.v1;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentService {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/example/v2/PaymentService.java",
+                """
+                package com.example.v2;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentService {}
+                """);
+
+        assertThat(byRule(findings(), "SPRING_BEAN_NAME_COLLISION")).isNull();
+    }
+
+    @Test
+    void flagsCollisionUnderSecondApplicationScanRoot() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/first/FirstApplication.java",
+                """
+                package com.first;
+                import org.springframework.boot.autoconfigure.SpringBootApplication;
+                @SpringBootApplication
+                public class FirstApplication {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/second/SecondApplication.java",
+                """
+                package com.second;
+                import org.springframework.boot.autoconfigure.SpringBootApplication;
+                @SpringBootApplication
+                public class SecondApplication {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/second/v1/PaymentService.java",
+                """
+                package com.second.v1;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentService {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/second/v2/PaymentService.java",
+                """
+                package com.second.v2;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentService {}
+                """);
+
+        Finding finding = byRule(findings(), "SPRING_BEAN_NAME_COLLISION");
+
+        assertThat(finding).isNotNull();
+        assertThat(finding.evidence()).contains("base package 'com.second'");
+        assertThat(finding.message())
+                .contains("com.second.v1.PaymentService")
+                .contains("com.second.v2.PaymentService");
+    }
+
+    @Test
+    void doesNotMixBeanNamesAcrossIndependentApplicationScanRoots() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/first/FirstApplication.java",
+                """
+                package com.first;
+                import org.springframework.boot.autoconfigure.SpringBootApplication;
+                @SpringBootApplication
+                public class FirstApplication {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/first/PaymentService.java",
+                """
+                package com.first;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentService {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/second/SecondApplication.java",
+                """
+                package com.second;
+                import org.springframework.boot.autoconfigure.SpringBootApplication;
+                @SpringBootApplication
+                public class SecondApplication {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/second/PaymentService.java",
+                """
+                package com.second;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentService {}
+                """);
+
+        assertThat(byRule(findings(), "SPRING_BEAN_NAME_COLLISION")).isNull();
+    }
+
+    @Test
+    void reportsCollisionOnlyOnceWhenApplicationScanRootsAreNested() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/RootApplication.java",
+                """
+                package com.example;
+                import org.springframework.boot.autoconfigure.SpringBootApplication;
+                @SpringBootApplication
+                public class RootApplication {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/example/admin/AdminApplication.java",
+                """
+                package com.example.admin;
+                import org.springframework.boot.autoconfigure.SpringBootApplication;
+                @SpringBootApplication
+                public class AdminApplication {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/example/admin/v1/PaymentService.java",
+                """
+                package com.example.admin.v1;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentService {}
+                """);
+        writeSourceFile(
+                "src/main/java/com/example/admin/v2/PaymentService.java",
+                """
+                package com.example.admin.v2;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class PaymentService {}
+                """);
+
+        List<Finding> collisions = allByRule(findings(), "SPRING_BEAN_NAME_COLLISION");
+
+        assertThat(collisions)
+                .singleElement()
+                .satisfies(
+                        finding -> {
+                            assertThat(finding.evidence()).contains("base package 'com.example'");
+                        });
     }
 
     // ── SPRING_JPA_FINAL_ENTITY ───────────────────────────────────────────────
@@ -764,9 +938,135 @@ class ScalabilityPracticeFindingAnalyzerTest {
                 }
                 """);
 
-        Finding f = byRule(findings(), "SPRING_WEBFLUX_BLOCKING_CALL");
+        Finding f = byRule(findings(), "SPRING_MANAGED_THREAD_SLEEP");
         assertThat(f).isNotNull();
         assertThat(f.message()).contains("Thread.sleep()");
+        assertThat(f.severity().name()).isEqualTo("INFO");
+        assertThat(f.recommendation()).contains("Spring Retry");
+    }
+
+    @Test
+    void raisesThreadSleepInMvcControllerToWarningWithMvcSpecificGuidance() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/PollingController.java",
+                """
+                package com.example;
+                import org.springframework.web.bind.annotation.GetMapping;
+                import org.springframework.web.bind.annotation.RestController;
+                @RestController
+                public class PollingController {
+                    @GetMapping("/poll")
+                    public String poll() throws InterruptedException {
+                        Thread.sleep(1000);
+                        return "ok";
+                    }
+                }
+                """);
+
+        Finding finding = byRule(findings(WebStack.SERVLET_MVC), "SPRING_MANAGED_THREAD_SLEEP");
+
+        assertThat(finding).isNotNull();
+        assertThat(finding.severity().name()).isEqualTo("WARNING");
+        assertThat(finding.recommendation()).contains("request path").doesNotContain("Mono.delay");
+    }
+
+    @Test
+    void keepsThreadSleepInGenericWebFluxServiceInformational() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/RetryService.java",
+                """
+                package com.example;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class RetryService {
+                    public void retryLater() throws InterruptedException {
+                        Thread.sleep(1000);
+                    }
+                }
+                """);
+
+        Finding finding =
+                byRule(findings(WebStack.REACTIVE_WEBFLUX), "SPRING_MANAGED_THREAD_SLEEP");
+
+        assertThat(finding).isNotNull();
+        assertThat(finding.severity().name()).isEqualTo("INFO");
+        assertThat(finding.recommendation()).contains("Spring Retry").doesNotContain("Mono.delay");
+    }
+
+    @Test
+    void raisesThreadSleepInWebFluxHandlerWithReactiveGuidance() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ReactiveHandler.java",
+                """
+                package com.example;
+                import org.springframework.stereotype.Component;
+                import org.springframework.web.reactive.function.server.ServerRequest;
+                import org.springframework.web.reactive.function.server.ServerResponse;
+                import reactor.core.publisher.Mono;
+                @Component
+                public class ReactiveHandler {
+                    public Mono<ServerResponse> handle(ServerRequest request)
+                            throws InterruptedException {
+                        Thread.sleep(1000);
+                        return ServerResponse.ok().build();
+                    }
+                }
+                """);
+
+        Finding finding =
+                byRule(findings(WebStack.REACTIVE_WEBFLUX), "SPRING_MANAGED_THREAD_SLEEP");
+
+        assertThat(finding).isNotNull();
+        assertThat(finding.severity().name()).isEqualTo("WARNING");
+        assertThat(finding.recommendation()).contains("Mono.delay");
+    }
+
+    @Test
+    void usesSchedulingGuidanceForReactiveScheduledMethod() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ReactiveJob.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.Scheduled;
+                import org.springframework.stereotype.Component;
+                import reactor.core.publisher.Mono;
+                @Component
+                public class ReactiveJob {
+                    @Scheduled(fixedDelay = 1000)
+                    public Mono<Void> run() throws InterruptedException {
+                        Thread.sleep(1000);
+                        return Mono.empty();
+                    }
+                }
+                """);
+
+        Finding finding =
+                byRule(findings(WebStack.REACTIVE_WEBFLUX), "SPRING_MANAGED_THREAD_SLEEP");
+
+        assertThat(finding).isNotNull();
+        assertThat(finding.severity().name()).isEqualTo("WARNING");
+        assertThat(finding.recommendation()).contains("@Scheduled").doesNotContain("Mono.delay");
+    }
+
+    @Test
+    void doesNotTreatWebClientBlockingBoundaryAsWebFluxEventLoopIssueInMvc() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ReactiveService.java",
+                """
+                package com.example;
+                import org.springframework.stereotype.Service;
+                import reactor.core.publisher.Mono;
+                @Service
+                public class ReactiveService {
+                    public String getSync(Mono<String> mono) {
+                        return mono.block();
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(WebStack.SERVLET_MVC), "SPRING_WEBFLUX_BLOCKING_CALL")).isNull();
+        assertThat(byRule(findings(WebStack.REACTIVE_WEBFLUX), "SPRING_WEBFLUX_BLOCKING_CALL"))
+                .isNotNull();
     }
 
     @Test

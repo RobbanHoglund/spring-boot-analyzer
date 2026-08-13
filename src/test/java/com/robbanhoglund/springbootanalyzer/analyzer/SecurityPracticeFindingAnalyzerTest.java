@@ -784,6 +784,35 @@ class SecurityPracticeFindingAnalyzerTest {
     }
 
     @Test
+    void flagsZipSlipWhenDifferentVariableNameEndsWithNormalizedVariableName() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/LayoutExtractor.java",
+                """
+                package com.example;
+                import java.io.InputStream;
+                import java.nio.file.Path;
+                import java.util.zip.ZipEntry;
+                import java.util.zip.ZipInputStream;
+                public class LayoutExtractor {
+                    public void extract(InputStream in, Path destDir, Path layout) throws Exception {
+                        try (ZipInputStream zip = new ZipInputStream(in)) {
+                            ZipEntry entry;
+                            while ((entry = zip.getNextEntry()) != null) {
+                                Path out = destDir.resolve(entry.getName()).normalize();
+                                if (layout.startsWith("data")) {
+                                    write(zip, out);
+                                }
+                            }
+                        }
+                    }
+                    private void write(InputStream in, Path out) {}
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_ZIP_SLIP")).isNotNull();
+    }
+
+    @Test
     void doesNotFlagArchiveFileGetNameAsZipSlip() throws IOException {
         // java.io.File#getName() returns only the last path segment — traversal-safe.
         writeSourceFile(

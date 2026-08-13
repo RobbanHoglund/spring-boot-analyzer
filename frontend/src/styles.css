@@ -3114,6 +3114,30 @@ a:focus-visible {
   background: var(--color-info-bg);
 }
 
+.finding-reference-list {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding-left: 1.15rem;
+}
+
+.finding-reference-link {
+  color: var(--color-accent);
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.finding-reference-link:hover {
+  text-decoration: underline;
+}
+
+.finding-github-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
 .remediation-lead {
   max-width: 1180px;
   margin: 0;

@@ -92,7 +92,8 @@ public class RuntimeStackAnalyzer {
 
         List<Finding> findings = new ArrayList<>();
         addVirtualThreadFindings(virtualThreads, findings);
-        addWebStackFindings(dependencyCoordinates, buildInfo, webStack, evidence, findings);
+        addWebStackFindings(
+                dependencyCoordinates, configuredWebApplicationType, webStack, evidence, findings);
         addJavaVersionFindings(
                 springBootVersion, javaVersion, virtualThreads.enabledByProperty(), findings);
 
@@ -114,14 +115,14 @@ public class RuntimeStackAnalyzer {
             Path repositoryRoot, List<DetectedClass> detectedComponents) {
         Path sourceRoot = repositoryRoot.resolve("src/main/java");
         if (Files.notExists(sourceRoot)) {
-            return new RuntimeEvidence(false, false, false, false, false, List.of());
+            return new RuntimeEvidence(false, false, false, false, false, false, List.of());
         }
 
         boolean scheduledDetected = false;
         boolean enableSchedulingDetected = false;
         boolean directVirtualThreadUsage = false;
         boolean reactiveSignalDetected = false;
-        boolean routerFunctionDetected = false;
+        boolean webFluxRoutingDetected = false;
         Set<String> evidence = new LinkedHashSet<>();
 
         try (Stream<Path> files = Files.walk(sourceRoot)) {
@@ -155,10 +156,8 @@ public class RuntimeStackAnalyzer {
                     reactiveSignalDetected = true;
                     evidence.add("Reactive types in " + relativePath);
                 }
-                if (content.contains("RouterFunction<")
-                        || content.contains("RouterFunctions.route(")
-                        || content.contains("RequestPredicates.")) {
-                    routerFunctionDetected = true;
+                if (usesWebFluxServerApi(compilationUnit)) {
+                    webFluxRoutingDetected = true;
                     evidence.add("WebFlux routing API in " + relativePath);
                 }
             }
@@ -185,7 +184,8 @@ public class RuntimeStackAnalyzer {
                 enableSchedulingDetected,
                 directVirtualThreadUsage,
                 reactiveSignalDetected,
-                routerFunctionDetected || controllerDetected,
+                webFluxRoutingDetected,
+                controllerDetected,
                 List.copyOf(evidence));
     }
 
@@ -209,6 +209,24 @@ public class RuntimeStackAnalyzer {
                 .anyMatch(annotationSimpleName::equals);
     }
 
+    private boolean usesWebFluxServerApi(CompilationUnit compilationUnit) {
+        if (compilationUnit == null) {
+            return false;
+        }
+        boolean webFluxImport =
+                compilationUnit.getImports().stream()
+                        .map(importDeclaration -> importDeclaration.getNameAsString())
+                        .anyMatch(
+                                name ->
+                                        name.startsWith(
+                                                        "org.springframework.web.reactive.function.server")
+                                                || name.equals(
+                                                        "org.springframework.web.reactive.config.WebFluxConfigurer")
+                                                || name.equals(
+                                                        "org.springframework.web.reactive.config.EnableWebFlux"));
+        return webFluxImport || hasAnnotation(compilationUnit, "EnableWebFlux");
+    }
+
     private WebStack determineWebStack(
             List<String> dependencyCoordinates,
             BuildInfo buildInfo,
@@ -230,7 +248,10 @@ public class RuntimeStackAnalyzer {
                 dependencyCoordinates.stream().anyMatch(this::isReactiveDependency);
 
         if (servletDependency && reactiveDependency) {
-            return WebStack.MIXED_MVC_AND_WEBFLUX;
+            // This is a mixed classpath, not a mixed running server. Spring Boot chooses the
+            // Servlet application type when both framework stacks are present unless the user
+            // explicitly selected REACTIVE above.
+            return WebStack.SERVLET_MVC;
         }
         if (servletDependency) {
             return WebStack.SERVLET_MVC;
@@ -238,12 +259,12 @@ public class RuntimeStackAnalyzer {
         if (reactiveDependency) {
             return WebStack.REACTIVE_WEBFLUX;
         }
+        if (evidence.webFluxRoutingDetected()) {
+            return WebStack.REACTIVE_WEBFLUX;
+        }
         if (detectedComponents.stream()
                 .anyMatch(component -> component.componentType().name().contains("CONTROLLER"))) {
             return WebStack.SERVLET_MVC;
-        }
-        if (evidence.reactiveSignalDetected()) {
-            return WebStack.REACTIVE_WEBFLUX;
         }
         return buildInfo.springBootDetected() ? WebStack.NON_WEB : WebStack.UNKNOWN;
     }
@@ -265,10 +286,11 @@ public class RuntimeStackAnalyzer {
                 dependencyCoordinates.stream().anyMatch(this::isReactiveDependency);
 
         if (servletDependency && reactiveDependency) {
-            return "Both Spring MVC/Servlet and WebFlux dependencies were detected. Spring MVC"
-                    + " typically wins auto-configuration precedence.";
+            return "Both Spring MVC/Servlet and WebFlux dependencies were detected. Spring Boot"
+                    + " selects the Servlet/MVC application type by default; the WebFlux"
+                    + " dependency may be present only for WebClient.";
         }
-        if (servletDependency && evidence.webSignalDetected()) {
+        if (servletDependency && evidence.controllerDetected()) {
             return "Spring MVC annotations and servlet web dependency declarations were detected.";
         }
         if (servletDependency) {
@@ -277,11 +299,12 @@ public class RuntimeStackAnalyzer {
         if (reactiveDependency) {
             return "Reactive WebFlux dependencies were detected in the build.";
         }
-        if (webStack == WebStack.SERVLET_MVC && evidence.webSignalDetected()) {
+        if (webStack == WebStack.SERVLET_MVC && evidence.controllerDetected()) {
             return "Detected from Spring MVC annotations in source files.";
         }
-        if (evidence.reactiveSignalDetected()) {
-            return "Reactive code patterns were detected in source files.";
+        if (evidence.webFluxRoutingDetected()) {
+            return "Spring WebFlux server configuration or routing APIs were detected in source"
+                    + " files.";
         }
         if (webStack == WebStack.NON_WEB) {
             return "No web starter or explicit web application type was detected.";
@@ -458,34 +481,62 @@ public class RuntimeStackAnalyzer {
 
     private void addWebStackFindings(
             List<String> dependencyCoordinates,
-            BuildInfo buildInfo,
+            String configuredWebApplicationType,
             WebStack webStack,
             RuntimeEvidence evidence,
             List<Finding> findings) {
-        if (webStack == WebStack.MIXED_MVC_AND_WEBFLUX) {
+        boolean servletDependency =
+                dependencyCoordinates.stream().anyMatch(this::isServletDependency);
+        boolean reactiveDependency =
+                dependencyCoordinates.stream().anyMatch(this::isReactiveDependency);
+        if (servletDependency && reactiveDependency) {
+            boolean webFluxServerCodeInactive =
+                    webStack == WebStack.SERVLET_MVC && evidence.webFluxRoutingDetected();
+            String configuredSuffix =
+                    configuredWebApplicationType == null
+                            ? " Spring Boot therefore selects Servlet/MVC by default."
+                            : " spring.main.web-application-type="
+                                    + configuredWebApplicationType
+                                    + " selects "
+                                    + webStack
+                                    + ".";
             findings.add(
                     FindingFactory.builder(
                                     FindingRules.SPRING_MIXED_MVC_AND_WEBFLUX,
                                     FindingConfidence.HIGH)
+                            .severity(
+                                    webFluxServerCodeInactive
+                                            ? com.robbanhoglund.springbootanalyzer.analyzer.model
+                                                    .FindingSeverity.WARNING
+                                            : com.robbanhoglund.springbootanalyzer.analyzer.model
+                                                    .FindingSeverity.INFO)
                             .shortMessage(
                                     "Both Spring MVC/Servlet and WebFlux dependencies were"
-                                            + " detected.")
+                                            + " detected."
+                                            + configuredSuffix)
                             .whyBadPractice(
-                                    "When both starters are present Spring Boot builds a Servlet"
-                                            + " web application: MVC wins unless"
-                                            + " spring.main.web-application-type=reactive says"
-                                            + " otherwise. WebClient still works, but WebFlux"
-                                            + " controllers and the reactive server do not run.")
+                                    webFluxServerCodeInactive
+                                            ? "The application resolves to Servlet/MVC while"
+                                                    + " WebFlux server routing APIs are present."
+                                                    + " Those routes are not served by the MVC"
+                                                    + " runtime."
+                                            : "Having both dependencies is valid when an MVC"
+                                                    + " application uses WebClient. The classpath"
+                                                    + " alone does not mean both server stacks run"
+                                                    + " at the same time.")
                             .possibleImpact(
-                                    "Reactive endpoints may be silently unserved, and code written"
-                                        + " for non-blocking execution runs on the Servlet thread"
-                                        + " model instead.")
+                                    webFluxServerCodeInactive
+                                            ? "Reactive routes can be silently unserved because"
+                                                    + " the active server stack is MVC."
+                                            : "Usually none when WebFlux is client-only. Unneeded"
+                                                    + " framework dependencies still make runtime"
+                                                    + " intent harder to review.")
                             .recommendation(
-                                    "Keep only the starter matching the intended stack. If"
-                                        + " WebClient is the only reason for the WebFlux"
-                                        + " dependency, that is fine — set"
-                                        + " spring.main.web-application-type explicitly to make the"
-                                        + " choice visible.")
+                                    "Keep both only when the secondary dependency is intentional."
+                                            + " If WebFlux is used only for WebClient in an MVC"
+                                            + " service, no server-stack migration is required."
+                                            + " Otherwise remove the unused starter or set"
+                                            + " spring.main.web-application-type explicitly.")
                             .evidence(
                                     "Both Servlet/MVC and WebFlux dependencies were resolved for"
                                             + " this project.")
@@ -496,40 +547,43 @@ public class RuntimeStackAnalyzer {
                             .location("Runtime stack")
                             .build());
         }
-        if (webStack == WebStack.SERVLET_MVC && evidence.reactiveSignalDetected()) {
+        if (webStack == WebStack.SERVLET_MVC
+                && evidence.webFluxRoutingDetected()
+                && !(servletDependency && reactiveDependency)) {
             String reactiveEvidence =
                     evidence.evidence().stream()
-                            .filter(
-                                    item ->
-                                            item.startsWith("Reactive types in ")
-                                                    || item.startsWith("WebFlux routing API in "))
+                            .filter(item -> item.startsWith("WebFlux routing API in "))
                             .limit(4)
                             .reduce((left, right) -> left + ", " + right)
                             .orElse("Reactive types or routing APIs were detected in source code.");
             findings.add(
                     FindingFactory.builder(
                                     FindingRules.SPRING_REACTIVE_API_IN_SERVLET_APP,
-                                    FindingConfidence.MEDIUM)
+                                    FindingConfidence.HIGH)
+                            .severity(
+                                    com.robbanhoglund.springbootanalyzer.analyzer.model
+                                            .FindingSeverity.WARNING)
                             .shortMessage(
-                                    "Reactive APIs were detected in code, but the build currently"
-                                            + " looks like a Servlet/MVC application.")
+                                    "WebFlux server routing APIs were detected, but the active"
+                                            + " application type is Servlet/MVC.")
                             .whyBadPractice(
-                                    "Mixing reactive APIs into a primarily Servlet/MVC application"
-                                            + " can make execution and error-handling assumptions"
-                                            + " harder to follow during review.")
+                                    "WebClient and reactive return types are valid in an MVC"
+                                            + " application, but WebFlux server routes require a"
+                                            + " reactive application type and are not registered by"
+                                            + " the MVC runtime.")
                             .possibleImpact(
-                                    "Developers may assume reactive behavior or shared"
-                                            + " infrastructure where the deployed application still"
-                                            + " behaves like a traditional Servlet stack.")
+                                    "Routes written for the WebFlux server API may never become"
+                                            + " reachable in the deployed application.")
                             .recommendation(
-                                    "Review whether the reactive usage is intentional, documented,"
-                                        + " and compatible with the application's main web stack.")
+                                    "If these are server routes, select the reactive application"
+                                        + " type and remove MVC, or port the routes to MVC. Keep"
+                                        + " client-only WebClient/Mono usage as-is.")
                             .evidence(reactiveEvidence)
                             .limitations(
-                                    "Static analysis can infer API usage from source and"
-                                        + " dependencies, but runtime behavior may still differ by"
-                                        + " profile, classpath, and configuration.")
-                            .target("reactive APIs")
+                                    "Static analysis cannot see profile-specific dependency"
+                                            + " substitutions or custom parent application"
+                                            + " contexts.")
+                            .target("WebFlux server routes")
                             .build());
         }
         if (webStack == WebStack.NON_WEB
@@ -592,18 +646,15 @@ public class RuntimeStackAnalyzer {
 
     private boolean isServletDependency(String dependency) {
         String normalized = dependency.toLowerCase(Locale.ROOT);
-        return normalized.contains("spring-boot-starter-web")
-                || normalized.contains("spring-webmvc")
-                || normalized.contains("starter-tomcat")
-                || normalized.contains("starter-jetty")
-                || normalized.contains("starter-undertow");
+        return (normalized.contains("spring-boot-starter-web")
+                        && !normalized.contains("spring-boot-starter-webflux"))
+                || normalized.contains("spring-webmvc");
     }
 
     private boolean isReactiveDependency(String dependency) {
         String normalized = dependency.toLowerCase(Locale.ROOT);
         return normalized.contains("spring-boot-starter-webflux")
-                || normalized.contains("spring-webflux")
-                || normalized.contains("reactor-netty");
+                || normalized.contains("spring-webflux");
     }
 
     /**
@@ -680,6 +731,7 @@ public class RuntimeStackAnalyzer {
             boolean enableSchedulingDetected,
             boolean directVirtualThreadUsage,
             boolean reactiveSignalDetected,
-            boolean webSignalDetected,
+            boolean webFluxRoutingDetected,
+            boolean controllerDetected,
             List<String> evidence) {}
 }

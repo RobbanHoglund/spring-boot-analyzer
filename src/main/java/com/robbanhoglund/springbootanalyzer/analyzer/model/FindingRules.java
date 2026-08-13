@@ -1017,7 +1017,7 @@ public final class FindingRules {
             rule(
                     "SPRING_TRANSACTIONAL_READONLY_WITH_WRITES",
                     "Writes inside a readOnly=true transaction are silently dropped",
-                    FindingSeverity.ERROR,
+                    FindingSeverity.WARNING,
                     FindingCategory.TRANSACTION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
@@ -1613,17 +1613,27 @@ public final class FindingRules {
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
     /** A Spring-managed component calls {@code .block()}, {@code .blockFirst()}, or
-     *  {@code .blockLast()} on a reactive stream, or calls {@code Thread.sleep()} directly.
-     *  In a WebFlux application these calls block the Netty event-loop thread, preventing it
-     *  from processing other requests and causing cascading latency under any concurrency.
-     *  Even in a Servlet/MVC application, calling {@code .block()} on a reactive type
-     *  indicates a reactive-to-blocking impedance mismatch that should be resolved by
-     *  switching to a non-reactive client or using the reactive stack throughout. */
+     *  {@code .blockLast()} on a reactive stream while WebFlux is the active (or unresolved)
+     *  server stack. In a WebFlux application these calls can block an event-loop worker and
+     *  prevent it from processing other requests. Deliberate blocking boundaries in a resolved
+     *  Servlet/MVC application are not reported by this rule. */
     public static final FindingRule SPRING_WEBFLUX_BLOCKING_CALL =
             rule(
                     "SPRING_WEBFLUX_BLOCKING_CALL",
                     "Blocking call inside Spring-managed component — event-loop thread hazard",
                     FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A Spring-managed execution path calls {@code Thread.sleep()} directly. The severity is
+     *  raised for WebFlux, HTTP handlers, scheduled work, async methods, and message listeners;
+     *  generic component methods remain informational because a bounded backoff can be
+     *  intentional. */
+    public static final FindingRule SPRING_MANAGED_THREAD_SLEEP =
+            rule(
+                    "SPRING_MANAGED_THREAD_SLEEP",
+                    "Thread.sleep() in a Spring-managed execution path",
+                    FindingSeverity.INFO,
                     FindingCategory.MAINTAINABILITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
@@ -2239,8 +2249,9 @@ public final class FindingRules {
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
     /** Both Spring MVC/Servlet and WebFlux starters are on the classpath. Spring MVC wins unless
-     *  {@code spring.main.web-application-type} says otherwise, so the reactive stack may be
-     *  silently inactive. */
+     *  {@code spring.main.web-application-type} says otherwise. This can be valid for MVC plus
+     *  {@code WebClient}; the occurrence is promoted from INFO to WARNING only when inactive
+     *  WebFlux server routing APIs are also detected. */
     public static final FindingRule SPRING_MIXED_MVC_AND_WEBFLUX =
             rule(
                     "SPRING_MIXED_MVC_AND_WEBFLUX",
