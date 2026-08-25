@@ -32,16 +32,10 @@ public class PropertyReferenceAnalyzer {
     private static final Logger LOGGER = LoggerFactory.getLogger(PropertyReferenceAnalyzer.class);
 
     private static final Pattern VALUE_PATTERN = Pattern.compile("\\$\\{([^}:]+)(?::([^}]*))?}");
-    private final JavaParser javaParser;
     private final PropertyNameNormalizer propertyNameNormalizer;
 
     public PropertyReferenceAnalyzer(PropertyNameNormalizer propertyNameNormalizer) {
         this.propertyNameNormalizer = propertyNameNormalizer;
-        this.javaParser =
-                new JavaParser(
-                        new ParserConfiguration()
-                                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                                .setCharacterEncoding(StandardCharsets.UTF_8));
     }
 
     public List<PropertyReference> analyze(Path repositoryRoot) {
@@ -51,11 +45,15 @@ public class PropertyReferenceAnalyzer {
         }
 
         List<PropertyReference> references = new ArrayList<>();
+        JavaParser javaParser = newJavaParser();
         try (Stream<Path> files = Files.walk(sourceRoot)) {
             files.filter(Files::isRegularFile)
                     .filter(path -> path.toString().endsWith(".java"))
                     .sorted(Comparator.naturalOrder())
-                    .forEach(path -> analyzeSourceFile(repositoryRoot, path, references));
+                    .forEach(
+                            path ->
+                                    analyzeSourceFile(
+                                            javaParser, repositoryRoot, path, references));
         } catch (IOException exception) {
             LOGGER.warn(
                     "Failed to fully scan property references under {}; returning partial results",
@@ -66,10 +64,18 @@ public class PropertyReferenceAnalyzer {
     }
 
     private void analyzeSourceFile(
-            Path repositoryRoot, Path sourceFile, List<PropertyReference> references) {
+            JavaParser javaParser,
+            Path repositoryRoot,
+            Path sourceFile,
+            List<PropertyReference> references) {
         try {
             var parseResult = javaParser.parse(sourceFile);
             if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
+                LOGGER.warn(
+                        "Failed to parse Java source {}; skipping property reference analysis for"
+                                + " this file (problems: {})",
+                        sourceFile,
+                        parseResult.getProblems());
                 return;
             }
 
@@ -100,8 +106,15 @@ public class PropertyReferenceAnalyzer {
             }
         } catch (IOException exception) {
             // Skip an individual unreadable file rather than aborting the scan.
-            LOGGER.debug("Failed to read source file {}; skipping", sourceFile, exception);
+            LOGGER.warn("Failed to read source file {}; skipping", sourceFile, exception);
         }
+    }
+
+    private JavaParser newJavaParser() {
+        return new JavaParser(
+                new ParserConfiguration()
+                        .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
+                        .setCharacterEncoding(StandardCharsets.UTF_8));
     }
 
     private Optional<List<PropertyReference>> collectAnnotationReference(

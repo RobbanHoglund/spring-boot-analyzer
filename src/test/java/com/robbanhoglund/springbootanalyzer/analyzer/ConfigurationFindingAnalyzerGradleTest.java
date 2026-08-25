@@ -2,9 +2,11 @@ package com.robbanhoglund.springbootanalyzer.analyzer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.robbanhoglund.springbootanalyzer.analyzer.configuration.SensitivePropertyValueRedactor;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildTool;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ApplicationProperty;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ConfigurationSummary;
@@ -35,7 +37,7 @@ class ConfigurationFindingAnalyzerGradleTest {
 
     @BeforeEach
     void setUp() {
-        analyzer = new ConfigurationFindingAnalyzer();
+        analyzer = new ConfigurationFindingAnalyzer(new SensitivePropertyValueRedactor());
         buildInfoBoot3 =
                 new BuildInfo(
                         BuildTool.GRADLE, true, "17", List.of(), "3.5.1", "Gradle plugins", "HIGH");
@@ -296,6 +298,7 @@ class ConfigurationFindingAnalyzerGradleTest {
         assertThat(byRule(result, "SPRING_FLYWAY_MISSING_MIGRATIONS")).isNull();
         Finding duplicate = byRule(result, "SPRING_FLYWAY_DUPLICATE_VERSION");
         assertThat(duplicate).isNotNull();
+        assertThat(duplicate.severity()).isEqualTo(FindingSeverity.ERROR);
         assertThat(duplicate.message()).contains("1");
     }
 

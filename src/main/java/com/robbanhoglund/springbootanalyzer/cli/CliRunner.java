@@ -160,7 +160,10 @@ public class CliRunner implements ApplicationRunner, Callable<Integer> {
                             result.httpSurfaceAnalysis(),
                             result.gradleModelAnalysis(),
                             result.schedulingAnalysis(),
-                            result.messagingAnalysis());
+                            result.messagingAnalysis(),
+                            result.suppressedRuleIds(),
+                            result.suppressedFindingCount(),
+                            result.unknownSuppressedRuleIds());
         } catch (Exception e) {
             System.err.println("Analysis failed: " + e.getMessage());
             LOGGER.error("CLI analysis failed for {}", repositoryUrl, e);

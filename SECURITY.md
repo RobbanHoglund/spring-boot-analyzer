@@ -56,7 +56,7 @@ Treat tokens with the minimum permissions required for read access to the target
 ## Known Limitations
 
 - **STATIC_ONLY does not sandbox the JVM parser.** Pathologically constructed source files (for example, deeply nested structures intended to exhaust memory or CPU) could affect availability. No parse output is executed, but resource consumption is not bounded by a strict limit beyond JVM heap settings.
-- **Symlink and path traversal handling.** The analyzer processes files within the cloned workspace. Repositories containing symlinks that point outside the workspace root are not explicitly blocked in all cases. Run with filesystem-level controls if this is a concern.
+- **Symlink and path traversal handling.** Source-snippet responses and configuration-file parsing resolve real paths and reject targets outside the cloned workspace or inside `.git`. Other static analyzers do not follow symlinked directories, but may inspect individual symlinked source files without returning their raw contents. Continue to use filesystem-level isolation for untrusted repositories.
 - **No authentication on the API itself.** The service has no built-in authentication. If you expose it beyond localhost, place it behind a reverse proxy with appropriate access controls.
 - **Temporary workspace cleanup.** Cleanup occurs after each analysis. In the event of a crash or hard failure, leftover workspaces may remain on disk and should be cleared manually.
 - **`EXTENDED` mode Gradle version compatibility.** The Tooling API executes the Gradle wrapper version specified by the repository. Older or unsupported Gradle versions may behave unexpectedly.

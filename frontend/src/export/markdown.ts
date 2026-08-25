@@ -199,6 +199,21 @@ export function generateMarkdown(result: AnalyzeRepositoryResponse): string {
   lines.push(`| **Total** | **${findings.length}** |`);
   lines.push('');
 
+  const suppressedRuleIds = result.suppressedRuleIds ?? [];
+  const unknownSuppressedRuleIds = result.unknownSuppressedRuleIds ?? [];
+  const suppressedFindingCount = result.suppressedFindingCount ?? 0;
+  if (suppressedRuleIds.length > 0
+      || unknownSuppressedRuleIds.length > 0
+      || suppressedFindingCount > 0) {
+    lines.push('> **Repository suppressions:** '
+      + `${suppressedFindingCount} finding(s) removed by \`.analyzer-suppress.yml\`. `
+      + `Valid rule IDs: ${suppressedRuleIds.map((id) => `\`${id}\``).join(', ') || 'none'}.`);
+    if (unknownSuppressedRuleIds.length > 0) {
+      lines.push(`> Unknown rule IDs ignored: ${unknownSuppressedRuleIds.map((id) => `\`${id}\``).join(', ')}.`);
+    }
+    lines.push('');
+  }
+
   if (findings.length === 0) {
     lines.push('*No findings detected.*');
     lines.push('');

@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
@@ -25,6 +26,16 @@ public class ConfigurationFileScanner {
             Pattern.compile("application-([^.]+)\\.(?:properties|ya?ml)", Pattern.CASE_INSENSITIVE);
 
     public List<ConfigurationCandidate> scan(Path repositoryRoot) {
+        Path realRepositoryRoot;
+        try {
+            realRepositoryRoot = repositoryRoot.toRealPath();
+        } catch (IOException exception) {
+            LOGGER.warn(
+                    "Failed to resolve repository root {}; skipping configuration scan",
+                    repositoryRoot,
+                    exception);
+            return List.of();
+        }
         List<ConfigurationCandidate> candidates = new ArrayList<>();
         for (String root : ROOTS) {
             Path start = repositoryRoot.resolve(root).normalize();
@@ -35,7 +46,9 @@ public class ConfigurationFileScanner {
                 stream.filter(Files::isRegularFile)
                         .filter(path -> isConfigurationFile(path.getFileName().toString()))
                         .sorted(Comparator.naturalOrder())
-                        .forEach(path -> candidates.add(toCandidate(repositoryRoot, path)));
+                        .map(path -> toCandidate(repositoryRoot, realRepositoryRoot, path))
+                        .flatMap(Optional::stream)
+                        .forEach(candidates::add);
             } catch (IOException exception) {
                 LOGGER.warn(
                         "Failed to scan configuration files under {}; skipping this root",
@@ -46,13 +59,29 @@ public class ConfigurationFileScanner {
         return candidates.stream().distinct().toList();
     }
 
-    private ConfigurationCandidate toCandidate(Path repositoryRoot, Path path) {
+    private Optional<ConfigurationCandidate> toCandidate(
+            Path repositoryRoot, Path realRepositoryRoot, Path path) {
+        Path realPath;
+        try {
+            realPath = path.toRealPath();
+        } catch (IOException exception) {
+            LOGGER.warn("Failed to resolve configuration file {}; skipping", path, exception);
+            return Optional.empty();
+        }
+        if (!realPath.startsWith(realRepositoryRoot)
+                || realPath.startsWith(realRepositoryRoot.resolve(".git"))) {
+            LOGGER.warn(
+                    "Configuration file {} resolves outside the analyzed repository; skipping",
+                    path);
+            return Optional.empty();
+        }
         String filename = path.getFileName().toString();
-        return new ConfigurationCandidate(
-                normalizePath(repositoryRoot, path),
-                path,
-                detectProfile(filename),
-                detectSourceType(filename));
+        return Optional.of(
+                new ConfigurationCandidate(
+                        normalizePath(repositoryRoot, path),
+                        realPath,
+                        detectProfile(filename),
+                        detectSourceType(filename)));
     }
 
     private boolean isConfigurationFile(String filename) {

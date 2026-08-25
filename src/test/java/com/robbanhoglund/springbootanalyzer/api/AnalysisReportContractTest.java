@@ -52,6 +52,7 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleExecutionMode;
 import com.robbanhoglund.springbootanalyzer.analyzer.runtime.RuntimeStackAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.scheduling.SchedulingAnalyzer;
+import com.robbanhoglund.springbootanalyzer.application.UserRuleConfigService;
 import com.robbanhoglund.springbootanalyzer.config.AnalyzerProperties;
 import com.robbanhoglund.springbootanalyzer.git.GitRepositoryReference;
 import java.io.IOException;
@@ -117,7 +118,7 @@ class AnalysisReportContractTest {
                     new SchedulingAnalyzer(),
                     new MessagingAnalyzer(),
                     new StaticPracticeFindingAnalyzer(),
-                    new ConfigurationFindingAnalyzer(),
+                    new ConfigurationFindingAnalyzer(new SensitivePropertyValueRedactor()),
                     new ObservabilityFindingAnalyzer(),
                     new TestingPracticeFindingAnalyzer(),
                     new CachingPracticeFindingAnalyzer(),
@@ -196,6 +197,9 @@ class AnalysisReportContractTest {
                         "Analysis should produce at least one rule-based finding from the contract"
                                 + " fixture")
                 .isNotEmpty();
+        assertThat(ruleFindings)
+                .extracting(Finding::ruleId)
+                .allMatch(new UserRuleConfigService().knownRuleIds()::contains);
 
         for (Finding finding : ruleFindings) {
             assertThat(finding.ruleId())

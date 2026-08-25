@@ -70,16 +70,6 @@ public class JavaSourceAnalyzer {
                     entry("Entity", SpringComponentType.ENTITY),
                     entry("ConfigurationProperties", SpringComponentType.CONFIGURATION_PROPERTIES));
 
-    private final JavaParser javaParser;
-
-    public JavaSourceAnalyzer() {
-        this.javaParser =
-                new JavaParser(
-                        new ParserConfiguration()
-                                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                                .setCharacterEncoding(StandardCharsets.UTF_8));
-    }
-
     /**
      * Walks every {@code .java} file under {@code <repositoryRoot>/src/main/java}, parses each
      * one with JavaParser, and returns a {@link SourceAnalysis} containing:
@@ -88,9 +78,9 @@ public class JavaSourceAnalyzer {
      *   <li>any structural {@link Finding}s (e.g. classes in the default package)</li>
      * </ul>
      *
-     * <p>Files that fail to parse or that contain no recognised Spring types are silently
-     * excluded from the result. If {@code src/main/java} does not exist under the repository
-     * root an empty {@code SourceAnalysis} is returned immediately.
+     * <p>Files that fail to parse are logged and excluded from the result. Files containing no
+     * recognised Spring types are also excluded. If {@code src/main/java} does not exist under the
+     * repository root an empty {@code SourceAnalysis} is returned immediately.
      *
      * @param repositoryRoot root directory of the project being analysed
      * @return the combined source analysis result; never null. If the source tree cannot be fully
@@ -104,6 +94,7 @@ public class JavaSourceAnalyzer {
 
         List<DetectedClass> detectedClasses = new ArrayList<>();
         List<Finding> findings = new ArrayList<>();
+        JavaParser javaParser = newJavaParser();
 
         try (Stream<Path> files = Files.walk(sourceRoot)) {
             files.filter(Files::isRegularFile)
@@ -112,7 +103,11 @@ public class JavaSourceAnalyzer {
                     .forEach(
                             path ->
                                     analyzeSourceFile(
-                                            repositoryRoot, path, detectedClasses, findings));
+                                            javaParser,
+                                            repositoryRoot,
+                                            path,
+                                            detectedClasses,
+                                            findings));
         } catch (IOException exception) {
             LOGGER.warn(
                     "Failed to fully scan Java sources under {}; returning partial results",
@@ -124,6 +119,7 @@ public class JavaSourceAnalyzer {
     }
 
     private void analyzeSourceFile(
+            JavaParser javaParser,
             Path repositoryRoot,
             Path sourceFile,
             List<DetectedClass> detectedClasses,
@@ -132,10 +128,16 @@ public class JavaSourceAnalyzer {
         try {
             parseResult = javaParser.parse(sourceFile);
         } catch (IOException exception) {
+            LOGGER.warn("Failed to read Java source {}; skipping", sourceFile, exception);
             return;
         }
 
         if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
+            LOGGER.warn(
+                    "Failed to parse Java source {}; skipping source analysis for this file"
+                            + " (problems: {})",
+                    sourceFile,
+                    parseResult.getProblems());
             return;
         }
 
@@ -181,6 +183,13 @@ public class JavaSourceAnalyzer {
             createDetectedClass(repositoryRoot, sourceFile, packageName, typeDeclaration)
                     .ifPresent(detectedClasses::add);
         }
+    }
+
+    private JavaParser newJavaParser() {
+        return new JavaParser(
+                new ParserConfiguration()
+                        .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
+                        .setCharacterEncoding(StandardCharsets.UTF_8));
     }
 
     private Optional<DetectedClass> createDetectedClass(

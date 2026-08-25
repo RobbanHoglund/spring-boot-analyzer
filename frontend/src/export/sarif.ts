@@ -24,8 +24,14 @@ interface SarifDocument {
 interface SarifRun {
   tool: SarifTool;
   results: SarifResult[];
+  invocations?: SarifInvocation[];
   artifacts?: SarifArtifact[];
   versionControlProvenance?: SarifVersionControlDetails[];
+}
+
+interface SarifInvocation {
+  executionSuccessful: boolean;
+  properties: { [key: string]: unknown };
 }
 
 interface SarifTool {
@@ -260,7 +266,18 @@ export function toSarif(response: AnalyzeRepositoryResponse): SarifDocument {
         rules: Array.from(ruleMap.values())
       }
     },
-    results: findings.map(buildResult)
+    results: findings.map(buildResult),
+    invocations: [
+      {
+        executionSuccessful: true,
+        properties: {
+          suppressedRuleIds: response.suppressedRuleIds ?? [],
+          suppressedFindingCount: response.suppressedFindingCount ?? 0,
+          unknownSuppressedRuleIds: response.unknownSuppressedRuleIds ?? [],
+          suppressionSource: '.analyzer-suppress.yml'
+        }
+      }
+    ]
   };
 
   // Version control provenance

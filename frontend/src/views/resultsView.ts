@@ -316,6 +316,10 @@ export function renderResultsView(
 
   panel.appendChild(renderSectionJumpNav(result));
   panel.appendChild(renderProjectSection(result, status?.analysisMode));
+  const suppressionNotice = renderSuppressionNotice(result);
+  if (suppressionNotice) {
+    panel.appendChild(suppressionNotice);
+  }
   panel.appendChild(renderResultsOverviewBlock(result, actions));
   panel.appendChild(renderFindingsSection(result, state, actions));
   panel.appendChild(renderTechnicalInventorySection(result, state, actions));
@@ -324,6 +328,30 @@ export function renderResultsView(
     panel.appendChild(renderCodeSnippetModal(state.codeModal, actions));
   }
   return panel;
+}
+
+function renderSuppressionNotice(result: AnalyzeRepositoryResponse): HTMLElement | null {
+  const suppressedRuleIds = result.suppressedRuleIds ?? [];
+  const unknownRuleIds = result.unknownSuppressedRuleIds ?? [];
+  const suppressedCount = result.suppressedFindingCount ?? 0;
+  if (suppressedRuleIds.length === 0 && unknownRuleIds.length === 0 && suppressedCount === 0) {
+    return null;
+  }
+
+  const parts: string[] = [];
+  if (suppressedRuleIds.length > 0 || suppressedCount > 0) {
+    parts.push(
+      `Repository-level suppressions from .analyzer-suppress.yml removed ${suppressedCount} finding${suppressedCount === 1 ? '' : 's'}. `
+      + `Declared valid rule IDs: ${suppressedRuleIds.join(', ') || 'none'}.`
+    );
+  }
+  if (unknownRuleIds.length > 0) {
+    parts.push(`Unknown suppression rule IDs were ignored: ${unknownRuleIds.join(', ')}.`);
+  }
+
+  const notice = element('div', { className: 'partial-analysis-notice suppression-notice' });
+  notice.appendChild(element('p', { text: parts.join(' ') }));
+  return notice;
 }
 
 type TechnicalInventoryItem = {

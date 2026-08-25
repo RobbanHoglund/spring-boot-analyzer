@@ -8,6 +8,7 @@ import com.robbanhoglund.springbootanalyzer.git.GitHubLinkBuilder;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -145,6 +146,40 @@ class SourceSnippetServiceTest {
     }
 
     @Test
+    void rejectsSymlinkThatResolvesOutsideRepository() throws IOException {
+        Path outsideDirectory = Files.createDirectories(tempDir.resolve("outside-host"));
+        Path outsideFile = outsideDirectory.resolve("host-secret.txt");
+        Files.writeString(outsideFile, "host-secret-value");
+        Path link = repositoryRoot.resolve("linked-host-directory");
+        createDirectoryLinkOrSkip(link, outsideDirectory);
+
+        assertThatThrownBy(
+                        () ->
+                                service.loadSnippet(
+                                        "analysis-1",
+                                        "linked-host-directory/host-secret.txt",
+                                        null,
+                                        null,
+                                        0))
+                .isInstanceOf(InvalidSourceSnippetRequestException.class);
+    }
+
+    @Test
+    void internalSymlinkCannotBypassSensitiveFileRedactionWithDifferentExtension()
+            throws IOException {
+        Path target = repositoryRoot.resolve("application.properties");
+        Files.writeString(target, "spring.datasource.password=repository-secret\n");
+        createSymbolicLinkOrSkip(repositoryRoot.resolve("notes.txt"), target);
+
+        SourceSnippetResponse response =
+                service.loadSnippet("analysis-1", "notes.txt", null, null, 0);
+
+        assertThat(response.lines())
+                .extracting(line -> line.text())
+                .containsExactly("spring.datasource.password=[redacted]");
+    }
+
+    @Test
     void rejectsUnknownAnalysisId() {
         assertThatThrownBy(
                         () ->
@@ -242,5 +277,47 @@ class SourceSnippetServiceTest {
                         "analysis-1", "src/main/resources/custom.properties", null, null, 0);
 
         assertThat(response.language()).isEqualTo("properties");
+    }
+
+    private static void createSymbolicLinkOrSkip(Path link, Path target) {
+        try {
+            Files.createSymbolicLink(link, target);
+        } catch (IOException | UnsupportedOperationException | SecurityException exception) {
+            Assumptions.assumeTrue(
+                    false, "Symbolic links are unavailable in this test environment: " + exception);
+        }
+    }
+
+    private static void createDirectoryLinkOrSkip(Path link, Path target) {
+        if (!System.getProperty("os.name").toLowerCase().contains("windows")) {
+            createSymbolicLinkOrSkip(link, target);
+            return;
+        }
+        try {
+            Process process =
+                    new ProcessBuilder(
+                                    "cmd.exe",
+                                    "/c",
+                                    "mklink",
+                                    "/J",
+                                    link.toString(),
+                                    target.toString())
+                            .redirectErrorStream(true)
+                            .start();
+            int exitCode = process.waitFor();
+            if (exitCode != 0) {
+                Assumptions.assumeTrue(
+                        false,
+                        "Directory junctions are unavailable in this test environment: "
+                                + new String(process.getInputStream().readAllBytes()));
+            }
+        } catch (IOException exception) {
+            Assumptions.assumeTrue(
+                    false,
+                    "Directory junctions are unavailable in this test environment: " + exception);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(exception);
+        }
     }
 }

@@ -161,6 +161,9 @@ public class FindingNormalizer {
         if (ruleA == null || ruleB == null) {
             return false;
         }
+        if (ruleA.equals(ruleB)) {
+            return false;
+        }
         return TARGET_OVERLAP_PAIRS.stream()
                 .anyMatch(pair -> pair.contains(ruleA) && pair.contains(ruleB));
     }

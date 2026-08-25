@@ -1,5 +1,9 @@
 package com.robbanhoglund.springbootanalyzer.analyzer.model;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.Optional;
+
 /**
  * Catalogue of all static-analysis rule definitions used by this tool.
  *
@@ -1316,8 +1320,28 @@ public final class FindingRules {
             rule(
                     "SPRING_REACTIVE_API_IN_SERVLET_APP",
                     "Reactive API usage in Servlet application",
-                    FindingSeverity.INFO,
+                    FindingSeverity.WARNING,
                     FindingCategory.API_SURFACE,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** One or more configured property names could not be matched to Spring Boot metadata,
+     *  discovered custom metadata, or known third-party metadata. */
+    public static final FindingRule CONFIG_UNKNOWN_PROPERTY =
+            rule(
+                    "CONFIG_UNKNOWN_PROPERTY",
+                    "Unknown configuration properties detected",
+                    FindingSeverity.INFO,
+                    FindingCategory.CONFIGURATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A property is referenced from application code but no matching property was found in the
+     *  scanned configuration files. */
+    public static final FindingRule CONFIG_CODE_REFERENCE_MISSING =
+            rule(
+                    "CONFIG_CODE_REFERENCE_MISSING",
+                    "Referenced property is not configured",
+                    FindingSeverity.INFO,
+                    FindingCategory.CONFIGURATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
     /** A Spring-managed component ({@code @Service}, {@code @Controller}, {@code @Repository},
@@ -2344,6 +2368,30 @@ public final class FindingRules {
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
     private FindingRules() {}
+
+    /** Returns the catalog entry for a stable rule ID, when the ID is registered. */
+    public static Optional<FindingRule> findById(String ruleId) {
+        if (ruleId == null) {
+            return Optional.empty();
+        }
+        for (Field field : FindingRules.class.getDeclaredFields()) {
+            if (!Modifier.isPublic(field.getModifiers())
+                    || !Modifier.isStatic(field.getModifiers())
+                    || !FindingRule.class.equals(field.getType())) {
+                continue;
+            }
+            try {
+                FindingRule rule = (FindingRule) field.get(null);
+                if (ruleId.equals(rule.ruleId())) {
+                    return Optional.of(rule);
+                }
+            } catch (IllegalAccessException exception) {
+                throw new IllegalStateException(
+                        "Could not read public finding rule catalog", exception);
+            }
+        }
+        return Optional.empty();
+    }
 
     private static FindingRule rule(
             String ruleId,

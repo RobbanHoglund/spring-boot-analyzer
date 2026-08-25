@@ -32,6 +32,9 @@ export interface AnalyzeRepositoryResponse {
   gradleModelAnalysis?: GradleModelAnalysis;
   schedulingAnalysis?: SchedulingAnalysis;
   messagingAnalysis?: MessagingAnalysis;
+  suppressedRuleIds?: string[];
+  suppressedFindingCount?: number;
+  unknownSuppressedRuleIds?: string[];
   [key: string]: unknown;
 }
 

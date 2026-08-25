@@ -5,7 +5,7 @@
 [![Java](https://img.shields.io/badge/java-25-orange.svg)](build.gradle)
 [![Spring Boot](https://img.shields.io/badge/spring--boot-3.5-brightgreen.svg)](build.gradle)
 
-A static analysis tool for Spring Boot projects. Point it at any Git repository and get a structured report of findings, component inventory, HTTP surface, configuration risks, and anti-patterns — without running the analyzed application. 199 rules across 19 categories out of the box.
+A static analysis tool for Spring Boot projects. Point it at any Git repository and get a structured report of findings, component inventory, HTTP surface, configuration risks, and anti-patterns — without running the analyzed application. 201 rules across 19 categories out of the box.
 
 **Safe by default.** The default `STATIC_ONLY` mode clones the repository into a temporary workspace and performs static analysis only. It does not run Gradle tasks, Maven goals, tests, or the analyzed Spring Boot application. See [SECURITY.md](SECURITY.md) for the full security model.
 
@@ -66,7 +66,7 @@ Detects Spring stereotypes and maps the application's component structure:
 
 ## Findings
 
-The analyzer produces **199 rules** across 19 categories. Each finding includes severity, confidence, why it matters, recommended action, evidence, and — for Gradle-model-backed rules — the exact resolved library versions involved.
+The analyzer produces **201 rules** across 19 categories. Each finding includes severity, confidence, why it matters, recommended action, evidence, and — for Gradle-model-backed rules — the exact resolved library versions involved.
 
 | Category | Rules | Highest severity |
 |----------|------:|-----------------|
@@ -455,7 +455,7 @@ suppress:
     reason: "Intentional: lazy loading required in view layer for this project"
 ```
 
-Each entry requires a `ruleId` (the stable identifier shown in the UI and in SARIF output). The `reason` field is optional but recommended for auditability. Suppressed findings are removed from the report entirely; the count of suppressed findings is logged at INFO level on the server.
+Each entry requires a `ruleId` (the stable identifier shown in the UI and in SARIF output). The `reason` field is optional but recommended for auditability. Suppressed findings are removed from the findings list, while the response, UI, CLI, and SARIF invocation metadata disclose the configured rule IDs and actual suppressed count. Unknown rule IDs are ignored, reported in the result, and logged at WARN so typos cannot fail silently.
 
 Rule IDs are listed in [docs/RULES.md](docs/RULES.md).
 
@@ -477,7 +477,7 @@ Spring Boot Analyzer is a static analysis tool. Its findings are advisory — no
 
 - **Dynamic behavior is not visible.** Runtime decisions, reflection, and dynamic proxies cannot be fully analyzed statically.
 - **Generated code is partially supported.** Lombok, MapStruct, and similar annotation processors generate bytecode that is not in the source tree. The analyzer reports this when the Gradle model confirms processors are present.
-- **Multi-module projects have partial support.** Dependency resolution across modules requires `EXTENDED` mode and a working Gradle build.
+- **Source-level rules require `src/main/java` at the repository root.** They do not run for source roots nested inside modules such as `app/src/main/java`. `EXTENDED` mode can improve dependency resolution for multi-module builds, but it does not add nested-module source discovery.
 - **Unconventional build setups may produce fewer findings.** The analyzer is optimized for standard Spring Boot projects.
 - **All findings require human review.** Use the analyzer to focus attention, not to replace code review or testing.
 

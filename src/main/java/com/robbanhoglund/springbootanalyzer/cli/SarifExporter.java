@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingOccurrence;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.robbanhoglund.springbootanalyzer.api.dto.AnalyzeRepositoryResponse;
 import java.util.ArrayList;
@@ -72,6 +73,14 @@ public final class SarifExporter {
         Map<String, Object> run = new LinkedHashMap<>();
         run.put("tool", Map.of("driver", buildDriver(ruleMap)));
         run.put("results", findings.stream().map(SarifExporter::buildResult).toList());
+        Map<String, Object> invocationProperties = new LinkedHashMap<>();
+        invocationProperties.put("suppressedRuleIds", response.suppressedRuleIds());
+        invocationProperties.put("suppressedFindingCount", response.suppressedFindingCount());
+        invocationProperties.put("unknownSuppressedRuleIds", response.unknownSuppressedRuleIds());
+        invocationProperties.put("suppressionSource", ".analyzer-suppress.yml");
+        run.put(
+                "invocations",
+                List.of(Map.of("executionSuccessful", true, "properties", invocationProperties)));
 
         if (response.repositoryUrl() != null) {
             Map<String, Object> vcp = new LinkedHashMap<>();
@@ -110,7 +119,11 @@ public final class SarifExporter {
         if (f.whyBadPractice() != null) {
             rule.put("fullDescription", Map.of("text", f.whyBadPractice()));
         }
-        rule.put("defaultConfiguration", Map.of("level", toLevel(f.severity())));
+        FindingSeverity defaultSeverity =
+                FindingRules.findById(ruleId(f))
+                        .map(catalogRule -> catalogRule.defaultSeverity())
+                        .orElse(f.severity());
+        rule.put("defaultConfiguration", Map.of("level", toLevel(defaultSeverity)));
 
         List<String> tags = new ArrayList<>();
         if (f.category() != null) tags.add(f.category().name());

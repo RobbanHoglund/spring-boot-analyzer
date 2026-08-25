@@ -50,16 +50,10 @@ public class ConfigurationPropertiesClassAnalyzer {
                     "DurationMin",
                     "DurationMax");
 
-    private final JavaParser javaParser;
     private final PropertyNameNormalizer propertyNameNormalizer;
 
     public ConfigurationPropertiesClassAnalyzer(PropertyNameNormalizer propertyNameNormalizer) {
         this.propertyNameNormalizer = propertyNameNormalizer;
-        this.javaParser =
-                new JavaParser(
-                        new ParserConfiguration()
-                                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                                .setCharacterEncoding(StandardCharsets.UTF_8));
     }
 
     public List<ConfigurationPropertiesClass> analyze(Path repositoryRoot) {
@@ -69,11 +63,12 @@ public class ConfigurationPropertiesClassAnalyzer {
         }
 
         List<ConfigurationPropertiesClass> classes = new ArrayList<>();
+        JavaParser javaParser = newJavaParser();
         try (Stream<Path> files = Files.walk(sourceRoot)) {
             files.filter(Files::isRegularFile)
                     .filter(path -> path.toString().endsWith(".java"))
                     .sorted(Comparator.naturalOrder())
-                    .forEach(path -> analyzeSourceFile(repositoryRoot, path, classes));
+                    .forEach(path -> analyzeSourceFile(javaParser, repositoryRoot, path, classes));
         } catch (IOException exception) {
             LOGGER.warn(
                     "Failed to fully scan @ConfigurationProperties classes under {};"
@@ -85,10 +80,18 @@ public class ConfigurationPropertiesClassAnalyzer {
     }
 
     private void analyzeSourceFile(
-            Path repositoryRoot, Path sourceFile, List<ConfigurationPropertiesClass> classes) {
+            JavaParser javaParser,
+            Path repositoryRoot,
+            Path sourceFile,
+            List<ConfigurationPropertiesClass> classes) {
         try {
             var parseResult = javaParser.parse(sourceFile);
             if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
+                LOGGER.warn(
+                        "Failed to parse Java source {}; skipping @ConfigurationProperties"
+                                + " analysis for this file (problems: {})",
+                        sourceFile,
+                        parseResult.getProblems());
                 return;
             }
 
@@ -112,8 +115,15 @@ public class ConfigurationPropertiesClassAnalyzer {
             }
         } catch (IOException exception) {
             // Skip an individual unreadable file rather than aborting the scan.
-            LOGGER.debug("Failed to read source file {}; skipping", sourceFile, exception);
+            LOGGER.warn("Failed to read source file {}; skipping", sourceFile, exception);
         }
+    }
+
+    private JavaParser newJavaParser() {
+        return new JavaParser(
+                new ParserConfiguration()
+                        .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
+                        .setCharacterEncoding(StandardCharsets.UTF_8));
     }
 
     private Optional<ConfigurationPropertiesClass> findConfigurationPropertiesClass(

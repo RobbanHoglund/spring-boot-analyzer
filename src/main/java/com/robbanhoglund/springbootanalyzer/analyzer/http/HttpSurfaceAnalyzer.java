@@ -88,16 +88,6 @@ public class HttpSurfaceAnalyzer {
                     "PatchMapping",
                     "DeleteMapping");
 
-    private final JavaParser javaParser;
-
-    public HttpSurfaceAnalyzer() {
-        this.javaParser =
-                new JavaParser(
-                        new ParserConfiguration()
-                                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                                .setCharacterEncoding(StandardCharsets.UTF_8));
-    }
-
     public Result analyze(
             Path repositoryRoot,
             ConfigurationAnalysis configurationAnalysis,
@@ -229,6 +219,7 @@ public class HttpSurfaceAnalyzer {
 
         List<InboundEndpoint> inboundEndpoints = new ArrayList<>();
         List<OutboundEndpoint> outboundEndpoints = new ArrayList<>();
+        JavaParser javaParser = newJavaParser();
 
         try (Stream<Path> files = Files.walk(sourceRoot)) {
             for (Path file :
@@ -237,7 +228,12 @@ public class HttpSurfaceAnalyzer {
                             .sorted(Comparator.naturalOrder())
                             .toList()) {
                 parseSourceFile(
-                        repositoryRoot, file, inboundEndpoints, outboundEndpoints, baseUrlCatalog);
+                        javaParser,
+                        repositoryRoot,
+                        file,
+                        inboundEndpoints,
+                        outboundEndpoints,
+                        baseUrlCatalog);
             }
         } catch (IOException exception) {
             LOGGER.warn(
@@ -249,6 +245,7 @@ public class HttpSurfaceAnalyzer {
     }
 
     private void parseSourceFile(
+            JavaParser javaParser,
             Path repositoryRoot,
             Path sourceFile,
             List<InboundEndpoint> inboundEndpoints,
@@ -257,6 +254,11 @@ public class HttpSurfaceAnalyzer {
         try {
             var parseResult = javaParser.parse(sourceFile);
             if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
+                LOGGER.warn(
+                        "Failed to parse Java source {}; skipping HTTP surface analysis for this"
+                                + " file (problems: {})",
+                        sourceFile,
+                        parseResult.getProblems());
                 return;
             }
             CompilationUnit compilationUnit = parseResult.getResult().orElseThrow();
@@ -294,9 +296,16 @@ public class HttpSurfaceAnalyzer {
             }
         } catch (IOException exception) {
             // Skip an individual unreadable file rather than aborting HTTP surface analysis.
-            LOGGER.debug(
+            LOGGER.warn(
                     "Failed to read {} for HTTP surface analysis; skipping", sourceFile, exception);
         }
+    }
+
+    private JavaParser newJavaParser() {
+        return new JavaParser(
+                new ParserConfiguration()
+                        .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
+                        .setCharacterEncoding(StandardCharsets.UTF_8));
     }
 
     private void collectInboundEndpoints(

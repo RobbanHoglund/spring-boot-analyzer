@@ -98,6 +98,13 @@ public final class JavaSources {
                             parseResult.isSuccessful()
                                     ? parseResult.getResult().orElse(null)
                                     : null;
+                    if (compilationUnit == null) {
+                        LOGGER.warn(
+                                "Failed to parse Java source {}; AST-based analysis will skip this"
+                                        + " file (problems: {})",
+                                path,
+                                parseResult.getProblems());
+                    }
                     String relativePath =
                             repositoryRoot.relativize(path).toString().replace('\\', '/');
                     files.add(new JavaFile(path, relativePath, compilationUnit, content));

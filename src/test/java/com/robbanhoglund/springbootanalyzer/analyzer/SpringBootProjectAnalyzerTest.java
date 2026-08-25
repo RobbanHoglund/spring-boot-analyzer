@@ -82,7 +82,7 @@ class SpringBootProjectAnalyzerTest {
                             .SchedulingAnalyzer(),
                     new com.robbanhoglund.springbootanalyzer.analyzer.messaging.MessagingAnalyzer(),
                     new StaticPracticeFindingAnalyzer(),
-                    new ConfigurationFindingAnalyzer(),
+                    new ConfigurationFindingAnalyzer(new SensitivePropertyValueRedactor()),
                     new ObservabilityFindingAnalyzer(),
                     new TestingPracticeFindingAnalyzer(),
                     new CachingPracticeFindingAnalyzer(),

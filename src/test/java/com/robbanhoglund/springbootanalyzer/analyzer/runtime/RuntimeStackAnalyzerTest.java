@@ -301,6 +301,47 @@ class RuntimeStackAnalyzerTest {
     }
 
     @Test
+    void emitsReactiveServerApiInServletAppAtCatalogWarningSeverity() throws IOException {
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Routes.java"),
+                """
+                package com.example.demo;
+                import org.springframework.web.reactive.function.server.RouterFunction;
+                import org.springframework.web.reactive.function.server.ServerResponse;
+                class Routes {
+                    RouterFunction<ServerResponse> routes() { return null; }
+                }
+                """);
+        BuildInfo buildInfo =
+                new BuildInfo(
+                        BuildTool.GRADLE,
+                        true,
+                        "21",
+                        List.of("org.springframework.boot:spring-boot-starter-web"),
+                        "3.5.13",
+                        "Gradle plugins",
+                        "HIGH");
+
+        var result =
+                analyzer.analyze(
+                        tempDir,
+                        buildInfo,
+                        GradleModelAnalysis.empty(
+                                GradleAnalysisStatus.NOT_REQUESTED, "SYSTEM_GRADLE", List.of()),
+                        emptyConfig(),
+                        List.of(),
+                        List.of());
+
+        assertThat(result.findings())
+                .filteredOn(
+                        finding -> "SPRING_REACTIVE_API_IN_SERVLET_APP".equals(finding.ruleId()))
+                .singleElement()
+                .satisfies(finding -> assertThat(finding.severity().name()).isEqualTo("WARNING"));
+    }
+
+    @Test
     void keepsSpringMvcReasonWhenControllersExistAndGradleModelIsPartial() throws IOException {
         Path sourceRoot =
                 Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));

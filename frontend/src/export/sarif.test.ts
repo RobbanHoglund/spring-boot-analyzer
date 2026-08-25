@@ -65,6 +65,20 @@ describe('toSarif', () => {
     expect(vcp[0].branch).toBe('main');
   });
 
+  it('emits repository suppression details in invocation properties', () => {
+    const response = baseResponse();
+    response.suppressedRuleIds = ['SPRING_FIELD_INJECTION'];
+    response.suppressedFindingCount = 2;
+    response.unknownSuppressedRuleIds = ['SPRING_TYPO'];
+
+    const invocation = toSarif(response).runs[0].invocations?.[0];
+
+    expect(invocation?.executionSuccessful).toBe(true);
+    expect(invocation?.properties['suppressedRuleIds']).toEqual(['SPRING_FIELD_INJECTION']);
+    expect(invocation?.properties['suppressedFindingCount']).toBe(2);
+    expect(invocation?.properties['unknownSuppressedRuleIds']).toEqual(['SPRING_TYPO']);
+  });
+
   it('omits versionControlProvenance when repositoryUrl is absent', () => {
     const response = baseResponse();
     delete response.repositoryUrl;

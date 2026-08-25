@@ -74,6 +74,22 @@ public final class CliOutputFormatter {
                 && response.runtimeStackAnalysis().springBootVersion() != null) {
             appendKv(sb, "Spring Boot", response.runtimeStackAnalysis().springBootVersion());
         }
+        if (response.suppressedFindingCount() > 0
+                || !response.suppressedRuleIds().isEmpty()
+                || !response.unknownSuppressedRuleIds().isEmpty()) {
+            appendKv(
+                    sb,
+                    "Suppressed",
+                    response.suppressedFindingCount()
+                            + " finding(s) by repository rule IDs "
+                            + response.suppressedRuleIds());
+            if (!response.unknownSuppressedRuleIds().isEmpty()) {
+                appendKv(
+                        sb,
+                        "Unknown suppression IDs",
+                        response.unknownSuppressedRuleIds().toString());
+            }
+        }
         sb.append("\n");
 
         if (findings.isEmpty()) {

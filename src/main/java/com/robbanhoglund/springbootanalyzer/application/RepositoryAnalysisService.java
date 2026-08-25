@@ -11,6 +11,7 @@ import com.robbanhoglund.springbootanalyzer.git.GitCloneService;
 import com.robbanhoglund.springbootanalyzer.git.GitHubLinkBuilder;
 import com.robbanhoglund.springbootanalyzer.git.GitRepositoryReference;
 import com.robbanhoglund.springbootanalyzer.suppression.SuppressionService;
+import com.robbanhoglund.springbootanalyzer.suppression.SuppressionService.SuppressionResult;
 import com.robbanhoglund.springbootanalyzer.workspace.WorkspaceService;
 import com.robbanhoglund.springbootanalyzer.workspace.WorkspaceService.Workspace;
 import java.nio.file.Path;
@@ -145,13 +146,13 @@ public class RepositoryAnalysisService {
     private AnalysisResult enrichAnalysisResult(
             AnalysisResult result, String analysisId, String commitSha, Path repositoryRoot) {
         List<Finding> normalizedFindings = findingNormalizer.normalize(result.findings());
-        List<Finding> suppressedFindings =
-                suppressionService.apply(normalizedFindings, repositoryRoot);
+        SuppressionResult suppressionResult =
+                suppressionService.applyWithSummary(normalizedFindings, repositoryRoot);
         Set<String> disabledRuleIds = userRuleConfigService.getDisabledRuleIds();
         Set<String> disabledSeverities =
                 userRuleConfigService.fullyDisabledSeverities(disabledRuleIds);
         List<Finding> findings =
-                suppressedFindings.stream()
+                suppressionResult.findings().stream()
                         .filter(
                                 finding ->
                                         isNotDisabled(finding, disabledRuleIds, disabledSeverities))
@@ -172,18 +173,22 @@ public class RepositoryAnalysisService {
                 result.httpSurfaceAnalysis(),
                 result.gradleModelAnalysis(),
                 result.schedulingAnalysis(),
-                result.messagingAnalysis());
+                result.messagingAnalysis(),
+                suppressionResult.suppressedRuleIds(),
+                suppressionResult.suppressedFindingCount(),
+                suppressionResult.unknownSuppressedRuleIds());
     }
 
-    private static boolean isNotDisabled(
+    static boolean isNotDisabled(
             Finding finding, Set<String> disabledRuleIds, Set<String> disabledSeverities) {
         // Explicit rule-level disable
         if (finding.ruleId() != null && disabledRuleIds.contains(finding.ruleId())) {
             return false;
         }
-        // Severity-level fallback: if all known rules of this severity are disabled,
-        // suppress even findings with unknown or null ruleIds of the same severity
-        if (finding.severity() != null && disabledSeverities.contains(finding.severity().name())) {
+        // Severity-level fallback applies only to structural findings without a stable rule ID.
+        if (finding.ruleId() == null
+                && finding.severity() != null
+                && disabledSeverities.contains(finding.severity().name())) {
             return false;
         }
         return true;

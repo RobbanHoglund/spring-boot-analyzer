@@ -23,6 +23,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
@@ -50,6 +52,8 @@ import org.springframework.stereotype.Component;
 @Component
 public class TestingPracticeFindingAnalyzer {
 
+    private static final Logger LOGGER =
+            LoggerFactory.getLogger(TestingPracticeFindingAnalyzer.class);
     private static final int MOCKBEAN_THRESHOLD = 5;
 
     private static final Set<String> SPRING_TEST_ANNOTATIONS =
@@ -66,16 +70,6 @@ public class TestingPracticeFindingAnalyzer {
 
     private static final Set<String> WEB_TEST_FIELD_TYPES =
             Set.of("MockMvc", "WebTestClient", "TestRestTemplate");
-
-    private final JavaParser javaParser;
-
-    public TestingPracticeFindingAnalyzer() {
-        this.javaParser =
-                new JavaParser(
-                        new ParserConfiguration()
-                                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                                .setCharacterEncoding(StandardCharsets.UTF_8));
-    }
 
     /**
      * Analyzes all Java source files under {@code src/test/java} within the given repository root.
@@ -102,16 +96,28 @@ public class TestingPracticeFindingAnalyzer {
             return findings;
         }
         boolean bootAtLeast34 = isBootVersionAtLeast(buildInfo, 3, 4);
+        JavaParser javaParser = newJavaParser();
         try (Stream<Path> files = Files.walk(testRoot)) {
             for (Path testFile :
                     files.filter(Files::isRegularFile)
                             .filter(p -> p.toString().endsWith(".java"))
                             .sorted(Comparator.naturalOrder())
                             .toList()) {
-                analyzeTestFile(repositoryRoot, testFile, bootAtLeast34, findings);
+                try {
+                    analyzeTestFile(javaParser, repositoryRoot, testFile, bootAtLeast34, findings);
+                } catch (IOException exception) {
+                    LOGGER.warn(
+                            "Failed to read or parse Java test {}; skipping test practice analysis"
+                                    + " for this file",
+                            testFile,
+                            exception);
+                }
             }
         } catch (IOException e) {
-            // Best-effort — skip unreadable files
+            LOGGER.warn(
+                    "Failed to fully scan Java tests under {}; returning partial results",
+                    testRoot,
+                    e);
         }
         return findings;
     }
@@ -137,10 +143,19 @@ public class TestingPracticeFindingAnalyzer {
     // ---------------------------------------------------------------------------
 
     private void analyzeTestFile(
-            Path repositoryRoot, Path testFile, boolean bootAtLeast34, List<Finding> findings)
+            JavaParser javaParser,
+            Path repositoryRoot,
+            Path testFile,
+            boolean bootAtLeast34,
+            List<Finding> findings)
             throws IOException {
         var parseResult = javaParser.parse(testFile);
         if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
+            LOGGER.warn(
+                    "Failed to parse Java test {}; skipping test practice analysis for this file"
+                            + " (problems: {})",
+                    testFile,
+                    parseResult.getProblems());
             return;
         }
         CompilationUnit cu = parseResult.getResult().orElseThrow();
@@ -156,6 +171,13 @@ public class TestingPracticeFindingAnalyzer {
                 detectMockBeanDeprecated(cu, cls, relativePath, findings);
             }
         }
+    }
+
+    private JavaParser newJavaParser() {
+        return new JavaParser(
+                new ParserConfiguration()
+                        .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
+                        .setCharacterEncoding(StandardCharsets.UTF_8));
     }
 
     // ---------------------------------------------------------------------------

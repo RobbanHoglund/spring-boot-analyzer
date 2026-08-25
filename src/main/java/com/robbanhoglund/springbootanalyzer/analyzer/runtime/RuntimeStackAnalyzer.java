@@ -38,12 +38,6 @@ public class RuntimeStackAnalyzer {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(RuntimeStackAnalyzer.class);
 
-    private final JavaParser javaParser =
-            new JavaParser(
-                    new ParserConfiguration()
-                            .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                            .setCharacterEncoding(StandardCharsets.UTF_8));
-
     public Result analyze(
             Path repositoryRoot,
             BuildInfo buildInfo,
@@ -124,6 +118,7 @@ public class RuntimeStackAnalyzer {
         boolean reactiveSignalDetected = false;
         boolean webFluxRoutingDetected = false;
         Set<String> evidence = new LinkedHashSet<>();
+        JavaParser javaParser = newJavaParser();
 
         try (Stream<Path> files = Files.walk(sourceRoot)) {
             for (Path file :
@@ -134,7 +129,7 @@ public class RuntimeStackAnalyzer {
                 String content = Files.readString(file, StandardCharsets.UTF_8);
                 String relativePath = repositoryRoot.relativize(file).toString().replace('\\', '/');
 
-                CompilationUnit compilationUnit = parseCompilationUnit(file);
+                CompilationUnit compilationUnit = parseCompilationUnit(javaParser, file);
                 if (hasAnnotation(compilationUnit, "Scheduled")) {
                     scheduledDetected = true;
                     evidence.add("@Scheduled in " + relativePath);
@@ -189,15 +184,30 @@ public class RuntimeStackAnalyzer {
                 List.copyOf(evidence));
     }
 
-    private CompilationUnit parseCompilationUnit(Path file) {
+    private CompilationUnit parseCompilationUnit(JavaParser javaParser, Path file) {
         try {
-            return javaParser.parse(file).getResult().orElse(null);
+            var parseResult = javaParser.parse(file);
+            if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
+                LOGGER.warn(
+                        "Failed to parse Java source {}; skipping runtime stack source evidence for"
+                                + " this file (problems: {})",
+                        file,
+                        parseResult.getProblems());
+                return null;
+            }
+            return parseResult.getResult().orElseThrow();
         } catch (IOException exception) {
             // Skip an individual unreadable file rather than aborting runtime stack analysis.
-            LOGGER.debug(
-                    "Failed to parse {} for runtime stack analysis; skipping", file, exception);
+            LOGGER.warn("Failed to parse {} for runtime stack analysis; skipping", file, exception);
             return null;
         }
+    }
+
+    private JavaParser newJavaParser() {
+        return new JavaParser(
+                new ParserConfiguration()
+                        .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
+                        .setCharacterEncoding(StandardCharsets.UTF_8));
     }
 
     private boolean hasAnnotation(CompilationUnit compilationUnit, String annotationSimpleName) {
@@ -560,9 +570,6 @@ public class RuntimeStackAnalyzer {
                     FindingFactory.builder(
                                     FindingRules.SPRING_REACTIVE_API_IN_SERVLET_APP,
                                     FindingConfidence.HIGH)
-                            .severity(
-                                    com.robbanhoglund.springbootanalyzer.analyzer.model
-                                            .FindingSeverity.WARNING)
                             .shortMessage(
                                     "WebFlux server routing APIs were detected, but the active"
                                             + " application type is Servlet/MVC.")

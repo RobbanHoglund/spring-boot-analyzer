@@ -670,13 +670,7 @@ public class ConfigurationAnalyzer {
                             .toList();
             findings.add(
                     FindingFactory.builder(
-                                    "CONFIG_UNKNOWN_PROPERTY",
-                                    "Unknown configuration properties detected",
-                                    FindingSeverity.INFO,
-                                    FindingCategory.CONFIGURATION,
-                                    com.robbanhoglund.springbootanalyzer.analyzer.model
-                                            .FindingRuntimeDetection.NOT_NORMALLY_DETECTED,
-                                    FindingConfidence.MEDIUM)
+                                    FindingRules.CONFIG_UNKNOWN_PROPERTY, FindingConfidence.MEDIUM)
                             .shortMessage(
                                     unknownCount
                                             + " configured properties could not be matched to"
@@ -822,12 +816,7 @@ public class ConfigurationAnalyzer {
                             .toList();
             FindingFactory.Builder builder =
                     FindingFactory.builder(
-                                    "CONFIG_CODE_REFERENCE_MISSING",
-                                    "Referenced property is not configured",
-                                    FindingSeverity.WARNING,
-                                    FindingCategory.CONFIGURATION,
-                                    com.robbanhoglund.springbootanalyzer.analyzer.model
-                                            .FindingRuntimeDetection.NOT_NORMALLY_DETECTED,
+                                    FindingRules.CONFIG_CODE_REFERENCE_MISSING,
                                     FindingConfidence.MEDIUM)
                             .shortMessage(
                                     "Property is referenced in code but no matching configured"

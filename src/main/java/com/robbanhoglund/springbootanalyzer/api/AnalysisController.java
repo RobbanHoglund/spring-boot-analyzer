@@ -77,7 +77,10 @@ public class AnalysisController {
                 result.httpSurfaceAnalysis(),
                 result.gradleModelAnalysis(),
                 result.schedulingAnalysis(),
-                result.messagingAnalysis());
+                result.messagingAnalysis(),
+                result.suppressedRuleIds(),
+                result.suppressedFindingCount(),
+                result.unknownSuppressedRuleIds());
     }
 
     @GetMapping("/analyses/{analysisId}/source-snippet")

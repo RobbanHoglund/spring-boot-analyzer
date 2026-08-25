@@ -29,4 +29,51 @@ public record AnalyzeRepositoryResponse(
         HttpSurfaceAnalysis httpSurfaceAnalysis,
         GradleModelAnalysis gradleModelAnalysis,
         SchedulingAnalysis schedulingAnalysis,
-        MessagingAnalysis messagingAnalysis) {}
+        MessagingAnalysis messagingAnalysis,
+        List<String> suppressedRuleIds,
+        int suppressedFindingCount,
+        List<String> unknownSuppressedRuleIds) {
+
+    public AnalyzeRepositoryResponse(
+            String repositoryUrl,
+            String branch,
+            String workspaceId,
+            String analysisId,
+            String commitSha,
+            BuildTool buildTool,
+            String javaVersionHint,
+            boolean springBootDetected,
+            List<String> mainApplicationClasses,
+            List<DetectedClass> detectedComponents,
+            List<String> dependencies,
+            List<Finding> findings,
+            ConfigurationAnalysis configurationAnalysis,
+            RuntimeStackAnalysis runtimeStackAnalysis,
+            HttpSurfaceAnalysis httpSurfaceAnalysis,
+            GradleModelAnalysis gradleModelAnalysis,
+            SchedulingAnalysis schedulingAnalysis,
+            MessagingAnalysis messagingAnalysis) {
+        this(
+                repositoryUrl,
+                branch,
+                workspaceId,
+                analysisId,
+                commitSha,
+                buildTool,
+                javaVersionHint,
+                springBootDetected,
+                mainApplicationClasses,
+                detectedComponents,
+                dependencies,
+                findings,
+                configurationAnalysis,
+                runtimeStackAnalysis,
+                httpSurfaceAnalysis,
+                gradleModelAnalysis,
+                schedulingAnalysis,
+                messagingAnalysis,
+                List.of(),
+                0,
+                List.of());
+    }
+}

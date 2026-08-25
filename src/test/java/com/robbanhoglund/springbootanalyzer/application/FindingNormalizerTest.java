@@ -156,6 +156,29 @@ class FindingNormalizerTest {
     }
 
     @Test
+    void doesNotMergeSameRuleAtSameTarget() {
+        Finding first =
+                targetFinding(
+                        "SPRING_PRINT_STACK_TRACE",
+                        FindingCategory.EXCEPTION_HANDLING,
+                        "src/Foo.java",
+                        10,
+                        "Foo#run");
+        Finding second =
+                targetFinding(
+                        "SPRING_PRINT_STACK_TRACE",
+                        FindingCategory.EXCEPTION_HANDLING,
+                        "src/Foo.java",
+                        20,
+                        "Foo#run");
+
+        List<Finding> result = normalizer.normalize(List.of(first, second));
+
+        assertThat(result).hasSize(2);
+        assertThat(result).allMatch(f -> f.relatedSignals().isEmpty());
+    }
+
+    @Test
     void doesNotMergeOverlappingPairFromDifferentTargets() {
         Finding interrupted =
                 catchFinding(

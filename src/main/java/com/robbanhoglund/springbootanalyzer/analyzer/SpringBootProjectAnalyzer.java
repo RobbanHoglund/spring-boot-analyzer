@@ -210,6 +210,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
                         detectedClasses));
         findings.addAll(
                 configurationFindingAnalyzer.analyze(
+                        javaSources,
                         repositoryRoot,
                         buildInfo,
                         configurationResult.configurationAnalysis(),

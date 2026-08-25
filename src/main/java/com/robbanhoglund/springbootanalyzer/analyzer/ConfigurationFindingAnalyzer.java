@@ -1,5 +1,8 @@
 package com.robbanhoglund.springbootanalyzer.analyzer;
 
+import com.github.javaparser.ast.expr.AnnotationExpr;
+import com.github.javaparser.ast.expr.SimpleName;
+import com.robbanhoglund.springbootanalyzer.analyzer.configuration.SensitivePropertyValueRedactor;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
@@ -12,8 +15,8 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.Configu
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertyReference;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleModelAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleResolvedDependencyModel;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -58,50 +61,19 @@ public class ConfigurationFindingAnalyzer {
                     "ManagementWebSecurityAutoConfiguration");
     private static final Set<String> SCHEDULING_DISABLE_PROPERTIES =
             Set.of("spring.task.scheduling.enabled", "spring.quartz.auto-startup");
-    private static final Set<String> SENSITIVE_MARKERS =
-            Set.of(
-                    "password",
-                    "passwd",
-                    "secret",
-                    "client-secret",
-                    "api-key",
-                    "apikey",
-                    "access-key",
-                    "private-key",
-                    "credential",
-                    "credentials",
-                    "authorization",
-                    "api-token",
-                    "access-token",
-                    "refresh-token",
-                    "bearer-token",
-                    "auth-token",
-                    "oauth-token",
-                    "github-token",
-                    "signing-key",
-                    "pat",
-                    "jwt-secret");
-    private static final Set<String> NON_SECRET_TOKEN_MARKERS =
-            Set.of(
-                    "max-output-tokens",
-                    "max-tokens",
-                    "token-limit",
-                    "token-count",
-                    "token-budget",
-                    "tokens-per-minute",
-                    "tokens-per-request",
-                    "tokenizer",
-                    "token-window",
-                    "output-tokens",
-                    "input-tokens",
-                    "input-token-budget",
-                    "output-token-budget");
     // Flyway versioned migration filename: V<version>__<description>.sql, where <version> is one or
     // more numeric segments separated by '.' or '_' (e.g. V1, V1.0, V2_1, V20230101). The version
     // is intentionally allowed to be a single digit — the common V1__init.sql form.
     private static final Pattern FLYWAY_MIGRATION_PATTERN =
             Pattern.compile(
                     "V(?<version>[0-9]+(?:[._][0-9]+)*)__.+\\.sql", Pattern.CASE_INSENSITIVE);
+
+    private final SensitivePropertyValueRedactor sensitivePropertyValueRedactor;
+
+    public ConfigurationFindingAnalyzer(
+            SensitivePropertyValueRedactor sensitivePropertyValueRedactor) {
+        this.sensitivePropertyValueRedactor = sensitivePropertyValueRedactor;
+    }
 
     /**
      * Runs all configuration-based detections and returns the combined findings list.
@@ -129,6 +101,20 @@ public class ConfigurationFindingAnalyzer {
             BuildInfo buildInfo,
             ConfigurationAnalysis configurationAnalysis,
             GradleModelAnalysis gradleModelAnalysis) {
+        return analyze(
+                JavaSources.from(repositoryRoot),
+                repositoryRoot,
+                buildInfo,
+                configurationAnalysis,
+                gradleModelAnalysis);
+    }
+
+    public List<Finding> analyze(
+            JavaSources javaSources,
+            Path repositoryRoot,
+            BuildInfo buildInfo,
+            ConfigurationAnalysis configurationAnalysis,
+            GradleModelAnalysis gradleModelAnalysis) {
         List<Finding> findings = new ArrayList<>();
         detectSensitiveProfileDuplication(configurationAnalysis, findings);
         detectAdditionalRiskyConfiguration(configurationAnalysis, findings);
@@ -149,7 +135,7 @@ public class ConfigurationFindingAnalyzer {
         detectActuatorExposure(configurationAnalysis, findings);
         detectConnectionPoolMisconfiguration(configurationAnalysis, findings);
         detectDevToolsInProduction(buildInfo, findings);
-        detectAsyncSecurityContextLost(repositoryRoot, buildInfo, findings);
+        detectAsyncSecurityContextLost(javaSources, buildInfo, findings);
         detectMultipartUnlimitedSize(configurationAnalysis, findings);
         detectJdbcUrlEmbeddedCredentials(configurationAnalysis, findings);
         detectDefaultUserPasswordLiteral(configurationAnalysis, findings);
@@ -1336,15 +1322,7 @@ public class ConfigurationFindingAnalyzer {
                         if (paths.size() > 1) {
                             findings.add(
                                     FindingFactory.builder(
-                                                    "SPRING_FLYWAY_DUPLICATE_VERSION",
-                                                    "Duplicate Flyway migration version detected",
-                                                    com.robbanhoglund.springbootanalyzer.analyzer
-                                                            .model.FindingSeverity.WARNING,
-                                                    com.robbanhoglund.springbootanalyzer.analyzer
-                                                            .model.FindingCategory.PERSISTENCE,
-                                                    com.robbanhoglund.springbootanalyzer.analyzer
-                                                            .model.FindingRuntimeDetection
-                                                            .NOT_NORMALLY_DETECTED,
+                                                    FindingRules.SPRING_FLYWAY_DUPLICATE_VERSION,
                                                     FindingConfidence.HIGH)
                                             .shortMessage(
                                                     "Flyway migration version "
@@ -1645,17 +1623,7 @@ public class ConfigurationFindingAnalyzer {
     }
 
     private boolean isSensitivePropertyName(String propertyName) {
-        String normalized = propertyName == null ? "" : propertyName.toLowerCase(Locale.ROOT);
-        if (NON_SECRET_TOKEN_MARKERS.stream().anyMatch(normalized::contains)) {
-            return false;
-        }
-        if (SENSITIVE_MARKERS.stream().anyMatch(normalized::contains)) {
-            return true;
-        }
-        return normalized.endsWith(".token")
-                || normalized.endsWith("-token")
-                || normalized.contains(".token.")
-                || normalized.contains("-token-");
+        return sensitivePropertyValueRedactor.isSensitive(propertyName);
     }
 
     private boolean isDriftRelevantProperty(String propertyName) {
@@ -2557,7 +2525,7 @@ public class ConfigurationFindingAnalyzer {
     // ---------------------------------------------------------------------------
 
     private void detectAsyncSecurityContextLost(
-            Path repositoryRoot, BuildInfo buildInfo, List<Finding> findings) {
+            JavaSources javaSources, BuildInfo buildInfo, List<Finding> findings) {
         if (buildInfo == null || buildInfo.dependencies() == null) {
             return;
         }
@@ -2571,13 +2539,14 @@ public class ConfigurationFindingAnalyzer {
         if (!hasSpringSecurity) {
             return;
         }
-        if (!sourceContainsText(repositoryRoot, "@Async")) {
+        if (!sourcesContainAnnotation(javaSources, "Async")) {
             return;
         }
         boolean hasDelegatingExecutor =
-                sourceContainsText(repositoryRoot, "DelegatingSecurityContextAsyncTaskExecutor")
-                        || sourceContainsText(repositoryRoot, "DelegatingSecurityContextExecutor")
-                        || sourceContainsText(repositoryRoot, "MODE_INHERITABLETHREADLOCAL");
+                sourcesContainIdentifier(javaSources, "DelegatingSecurityContextAsyncTaskExecutor")
+                        || sourcesContainIdentifier(
+                                javaSources, "DelegatingSecurityContextExecutor")
+                        || sourcesContainIdentifier(javaSources, "MODE_INHERITABLETHREADLOCAL");
         if (hasDelegatingExecutor) {
             return;
         }
@@ -2625,28 +2594,23 @@ public class ConfigurationFindingAnalyzer {
     }
 
     // ---------------------------------------------------------------------------
-    // Source scanning helper
+    // Parsed-source helpers
     // ---------------------------------------------------------------------------
 
-    private boolean sourceContainsText(Path repositoryRoot, String text) {
-        Path sourceRoot = repositoryRoot.resolve("src/main/java");
-        if (Files.notExists(sourceRoot)) {
-            return false;
-        }
-        try (Stream<Path> files = Files.walk(sourceRoot)) {
-            return files.filter(Files::isRegularFile)
-                    .filter(p -> p.toString().endsWith(".java"))
-                    .anyMatch(
-                            p -> {
-                                try {
-                                    return Files.readString(p, StandardCharsets.UTF_8)
-                                            .contains(text);
-                                } catch (IOException e) {
-                                    return false;
-                                }
-                            });
-        } catch (IOException e) {
-            return false;
-        }
+    private boolean sourcesContainAnnotation(JavaSources javaSources, String annotationName) {
+        return javaSources.files().stream()
+                .map(JavaSources.JavaFile::compilationUnit)
+                .filter(Objects::nonNull)
+                .flatMap(compilationUnit -> compilationUnit.findAll(AnnotationExpr.class).stream())
+                .anyMatch(
+                        annotation -> annotationName.equals(annotation.getName().getIdentifier()));
+    }
+
+    private boolean sourcesContainIdentifier(JavaSources javaSources, String identifier) {
+        return javaSources.files().stream()
+                .map(JavaSources.JavaFile::compilationUnit)
+                .filter(Objects::nonNull)
+                .flatMap(compilationUnit -> compilationUnit.findAll(SimpleName.class).stream())
+                .anyMatch(name -> identifier.equals(name.getIdentifier()));
     }
 }

@@ -48,7 +48,7 @@ class StaticPracticeFindingAnalyzerTest {
     private final HttpSurfaceAnalyzer httpSurfaceAnalyzer = new HttpSurfaceAnalyzer();
     private final StaticPracticeFindingAnalyzer analyzer = new StaticPracticeFindingAnalyzer();
     private final ConfigurationFindingAnalyzer configurationFindingAnalyzer =
-            new ConfigurationFindingAnalyzer();
+            new ConfigurationFindingAnalyzer(new SensitivePropertyValueRedactor());
     private final ObservabilityFindingAnalyzer observabilityFindingAnalyzer =
             new ObservabilityFindingAnalyzer();
 
@@ -4101,6 +4101,40 @@ class UserRepository {
                                 FindingRules.SPRING_LOGGING_PII_EXPOSURE
                                         .ruleId()
                                         .equals(finding.ruleId()));
+    }
+
+    @Test
+    void ignoresPatSubstringsAndLogMessageTemplatesButStillFlagsPasswordVariable()
+            throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("WorkspaceLogger.java"),
+                """
+                package com.example.demo;
+
+                class WorkspaceLogger {
+                    private Logger LOGGER;
+
+                    void log(String workspacePath, int retryCount, String password) {
+                        LOGGER.info("Copying workspace {} attempt {}", workspacePath, retryCount);
+                        LOGGER.debug("Using URL pattern {}", "/api/{id}");
+                        LOGGER.info("Password rotation completed");
+                        LOGGER.warn("Credential value: {}", password);
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .filteredOn(
+                        finding ->
+                                FindingRules.SPRING_LOGGING_PII_EXPOSURE
+                                        .ruleId()
+                                        .equals(finding.ruleId()))
+                .singleElement();
     }
 
     // -------------------------------------------------------------------------

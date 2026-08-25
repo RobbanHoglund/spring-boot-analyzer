@@ -2,6 +2,7 @@ package com.robbanhoglund.springbootanalyzer.analyzer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.robbanhoglund.springbootanalyzer.analyzer.configuration.SensitivePropertyValueRedactor;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildTool;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
@@ -33,7 +34,7 @@ class ConfigurationFindingAnalyzerMigrationSecurityTest {
 
     @BeforeEach
     void setUp() {
-        analyzer = new ConfigurationFindingAnalyzer();
+        analyzer = new ConfigurationFindingAnalyzer(new SensitivePropertyValueRedactor());
         emptyBuild =
                 new BuildInfo(BuildTool.GRADLE, true, "21", List.of(), "3.5.0", null, "MEDIUM");
         noGradle =

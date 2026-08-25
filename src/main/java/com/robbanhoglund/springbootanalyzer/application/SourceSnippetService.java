@@ -116,7 +116,7 @@ public class SourceSnippetService {
             snippetLines.add(
                     new SourceSnippetLine(
                             index,
-                            redactLineIfNeeded(relativePath, rawLine),
+                            redactLineIfNeeded(relativePath, resolvedPath, rawLine),
                             hasExactRange
                                     && index >= requestedStartLine
                                     && index <= requestedEndLine));
@@ -165,7 +165,20 @@ public class SourceSnippetService {
             throw new InvalidSourceSnippetRequestException(
                     "Source path must stay inside the analyzed repository.");
         }
-        return resolved;
+        try {
+            Path realRepositoryRoot = repositoryRoot.toRealPath();
+            Path real = resolved.toRealPath();
+            if (!real.startsWith(realRepositoryRoot)
+                    || real.startsWith(realRepositoryRoot.resolve(".git"))) {
+                throw new InvalidSourceSnippetRequestException(
+                        "Source path must stay inside the analyzed repository.");
+            }
+            return real;
+        } catch (InvalidSourceSnippetRequestException exception) {
+            throw exception;
+        } catch (IOException exception) {
+            throw new SourceSnippetNotFoundException("Source file was not found.");
+        }
     }
 
     private void ensureReadableSourceFile(Path resolvedPath) {
@@ -189,8 +202,9 @@ public class SourceSnippetService {
         }
     }
 
-    private String redactLineIfNeeded(String relativePath, String rawLine) {
-        if (!isRedactedFileType(relativePath)) {
+    private String redactLineIfNeeded(String relativePath, Path resolvedPath, String rawLine) {
+        if (!isRedactedFileType(relativePath)
+                && !isRedactedFileType(resolvedPath.toString().replace('\\', '/'))) {
             return rawLine;
         }
         return redactPropertyStyleLine(rawLine);
@@ -219,7 +233,6 @@ public class SourceSnippetService {
         if (!looksSensitiveKey(keyPart)) {
             return rawLine;
         }
-        char separator = rawLine.charAt(separatorIndex);
         return rawLine.substring(0, separatorIndex + 1)
                 + preserveLeadingWhitespace(rawLine.substring(separatorIndex + 1))
                 + "[redacted]";

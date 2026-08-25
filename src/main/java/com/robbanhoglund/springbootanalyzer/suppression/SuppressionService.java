@@ -3,11 +3,13 @@ package com.robbanhoglund.springbootanalyzer.suppression;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
+import com.robbanhoglund.springbootanalyzer.application.UserRuleConfigService;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,6 +32,11 @@ public class SuppressionService {
     private static final String SUPPRESSION_FILE = ".analyzer-suppress.yml";
 
     private final ObjectMapper yamlMapper = new ObjectMapper(new YAMLFactory());
+    private final UserRuleConfigService userRuleConfigService;
+
+    public SuppressionService(UserRuleConfigService userRuleConfigService) {
+        this.userRuleConfigService = userRuleConfigService;
+    }
 
     /**
      * Loads the suppression file from {@code repositoryRoot} and removes any findings whose
@@ -37,20 +44,40 @@ public class SuppressionService {
      * is absent or empty.
      */
     public List<Finding> apply(List<Finding> findings, Path repositoryRoot) {
+        return applyWithSummary(findings, repositoryRoot).findings();
+    }
+
+    public SuppressionResult applyWithSummary(List<Finding> findings, Path repositoryRoot) {
         SuppressionConfig config = loadConfig(repositoryRoot);
         if (config.suppress().isEmpty()) {
-            return findings;
+            return SuppressionResult.none(findings);
         }
 
-        Set<String> suppressedIds =
+        Set<String> configuredIds =
                 config.suppress().stream()
                         .map(SuppressionEntry::ruleId)
                         .filter(id -> id != null && !id.isBlank())
-                        .collect(Collectors.toSet());
+                        .collect(Collectors.toCollection(TreeSet::new));
 
-        if (suppressedIds.isEmpty()) {
-            return findings;
+        if (configuredIds.isEmpty()) {
+            return SuppressionResult.none(findings);
         }
+
+        Set<String> knownRuleIds = userRuleConfigService.knownRuleIds();
+        Set<String> unknownRuleIds =
+                configuredIds.stream()
+                        .filter(id -> !knownRuleIds.contains(id))
+                        .collect(Collectors.toCollection(TreeSet::new));
+        if (!unknownRuleIds.isEmpty()) {
+            LOGGER.warn(
+                    "Unknown rule IDs in {}: {}. These entries will not suppress findings.",
+                    repositoryRoot.resolve(SUPPRESSION_FILE),
+                    unknownRuleIds);
+        }
+        Set<String> suppressedIds =
+                configuredIds.stream()
+                        .filter(knownRuleIds::contains)
+                        .collect(Collectors.toCollection(TreeSet::new));
 
         List<Finding> filtered =
                 findings.stream()
@@ -65,7 +92,8 @@ public class SuppressionService {
                     SUPPRESSION_FILE,
                     suppressedIds);
         }
-        return filtered;
+        return new SuppressionResult(
+                filtered, List.copyOf(suppressedIds), removed, List.copyOf(unknownRuleIds));
     }
 
     private SuppressionConfig loadConfig(Path repositoryRoot) {
@@ -87,6 +115,17 @@ public class SuppressionService {
                     configFile,
                     exception);
             return SuppressionConfig.empty();
+        }
+    }
+
+    public record SuppressionResult(
+            List<Finding> findings,
+            List<String> suppressedRuleIds,
+            int suppressedFindingCount,
+            List<String> unknownSuppressedRuleIds) {
+
+        private static SuppressionResult none(List<Finding> findings) {
+            return new SuppressionResult(findings, List.of(), 0, List.of());
         }
     }
 }

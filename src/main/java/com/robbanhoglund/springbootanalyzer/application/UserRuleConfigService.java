@@ -107,8 +107,8 @@ public class UserRuleConfigService {
 
     /**
      * Returns severity names (e.g. {@code "INFO"}) for which every rule in the catalog is
-     * present in {@code disabledRuleIds}. Used as a fallback filter for findings whose
-     * {@code ruleId} is null or not yet registered in the catalog.
+     * present in {@code disabledRuleIds}. Used as a fallback filter only for structural findings
+     * whose {@code ruleId} is null.
      */
     public Set<String> fullyDisabledSeverities(Set<String> disabledRuleIds) {
         List<FindingRule> rules = allRules();

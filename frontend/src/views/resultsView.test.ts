@@ -1313,6 +1313,22 @@ describe('renderResultsView findings UI', () => {
     expect(document.querySelector('.partial-analysis-notice')).toBeNull();
   });
 
+  it('shows repository suppressions and unknown rule IDs prominently', () => {
+    const result = baseResult([baseFinding()]);
+    result.suppressedRuleIds = ['SPRING_FIELD_INJECTION'];
+    result.suppressedFindingCount = 4;
+    result.unknownSuppressedRuleIds = ['SPRING_TYPO'];
+
+    const view = renderResultsView(result, defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    const notice = document.querySelector('.suppression-notice');
+    expect(notice).not.toBeNull();
+    expect(notice?.textContent).toContain('removed 4 findings');
+    expect(notice?.textContent).toContain('SPRING_FIELD_INJECTION');
+    expect(notice?.textContent).toContain('SPRING_TYPO');
+  });
+
   // ── No-findings message ───────────────────────────────────────────────────
 
   it('shows a qualified no-findings message that includes a caveat about static analysis limits', () => {

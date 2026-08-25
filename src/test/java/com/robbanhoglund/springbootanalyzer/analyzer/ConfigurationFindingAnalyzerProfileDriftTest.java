@@ -2,6 +2,7 @@ package com.robbanhoglund.springbootanalyzer.analyzer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.robbanhoglund.springbootanalyzer.analyzer.configuration.SensitivePropertyValueRedactor;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildTool;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
@@ -33,7 +34,7 @@ class ConfigurationFindingAnalyzerProfileDriftTest {
 
     @BeforeEach
     void setUp() {
-        analyzer = new ConfigurationFindingAnalyzer();
+        analyzer = new ConfigurationFindingAnalyzer(new SensitivePropertyValueRedactor());
         emptyBuild =
                 new BuildInfo(BuildTool.GRADLE, true, "21", List.of(), "3.5.0", null, "MEDIUM");
         noGradle =
@@ -74,6 +75,26 @@ class ConfigurationFindingAnalyzerProfileDriftTest {
 
     private static Finding byRule(List<Finding> findings, String ruleId) {
         return findings.stream().filter(f -> ruleId.equals(f.ruleId())).findFirst().orElse(null);
+    }
+
+    @Test
+    void contextPathAcrossProfilesIsNotClassifiedAsDuplicatedSecret() {
+        ConfigurationAnalysis cfg =
+                config(
+                        prop("server.servlet.context-path", "/dev", "dev"),
+                        prop("server.servlet.context-path", "/prod", "prod"));
+
+        assertThat(byRule(findings(cfg), "SPRING_SECRET_MULTI_PROFILE")).isNull();
+    }
+
+    @Test
+    void datasourcePasswordAcrossProfilesRemainsASecretDuplication() {
+        ConfigurationAnalysis cfg =
+                config(
+                        prop("spring.datasource.password", "dev-secret", "dev"),
+                        prop("spring.datasource.password", "prod-secret", "prod"));
+
+        assertThat(byRule(findings(cfg), "SPRING_SECRET_MULTI_PROFILE")).isNotNull();
     }
 
     // ── SPRING_SECURITY_AUTOCONFIGURE_EXCLUDED ────────────────────────────────

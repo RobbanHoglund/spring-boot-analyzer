@@ -22,7 +22,6 @@ public class SensitivePropertyValueRedactor {
                     "access-key",
                     "private-key",
                     "credential",
-                    "credentials",
                     "authorization",
                     "api-token",
                     "access-token",
@@ -130,7 +129,7 @@ public class SensitivePropertyValueRedactor {
                 : propertyName;
     }
 
-    private boolean hasSegment(String propertyName, String segment) {
+    public static boolean hasSegment(String propertyName, String segment) {
         String[] segments = propertyName.split("[.\\-_\\[\\]]+");
         for (String candidate : segments) {
             if (segment.equals(candidate)) {

@@ -23,4 +23,45 @@ public record AnalysisResult(
         HttpSurfaceAnalysis httpSurfaceAnalysis,
         GradleModelAnalysis gradleModelAnalysis,
         SchedulingAnalysis schedulingAnalysis,
-        MessagingAnalysis messagingAnalysis) {}
+        MessagingAnalysis messagingAnalysis,
+        List<String> suppressedRuleIds,
+        int suppressedFindingCount,
+        List<String> unknownSuppressedRuleIds) {
+
+    public AnalysisResult(
+            String repositoryUrl,
+            String branch,
+            String workspaceId,
+            String analysisId,
+            String commitSha,
+            BuildInfo buildInfo,
+            List<String> mainApplicationClasses,
+            List<DetectedClass> detectedComponents,
+            List<Finding> findings,
+            ConfigurationAnalysis configurationAnalysis,
+            RuntimeStackAnalysis runtimeStackAnalysis,
+            HttpSurfaceAnalysis httpSurfaceAnalysis,
+            GradleModelAnalysis gradleModelAnalysis,
+            SchedulingAnalysis schedulingAnalysis,
+            MessagingAnalysis messagingAnalysis) {
+        this(
+                repositoryUrl,
+                branch,
+                workspaceId,
+                analysisId,
+                commitSha,
+                buildInfo,
+                mainApplicationClasses,
+                detectedComponents,
+                findings,
+                configurationAnalysis,
+                runtimeStackAnalysis,
+                httpSurfaceAnalysis,
+                gradleModelAnalysis,
+                schedulingAnalysis,
+                messagingAnalysis,
+                List.of(),
+                0,
+                List.of());
+    }
+}

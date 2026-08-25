@@ -39,6 +39,7 @@ import com.github.javaparser.ast.stmt.ThrowStmt;
 import com.github.javaparser.ast.stmt.TryStmt;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.github.javaparser.ast.type.UnionType;
+import com.robbanhoglund.springbootanalyzer.analyzer.configuration.SensitivePropertyValueRedactor;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.DetectedClass;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
@@ -95,7 +96,6 @@ public class StaticPracticeFindingAnalyzer {
                     "access-key",
                     "private-key",
                     "credential",
-                    "credentials",
                     "authorization",
                     "api-token",
                     "access-token",
@@ -105,7 +105,6 @@ public class StaticPracticeFindingAnalyzer {
                     "oauth-token",
                     "github-token",
                     "signing-key",
-                    "pat",
                     "jwt-secret");
     private static final Set<String> HTTP_WRITE_METHODS = Set.of("POST", "PUT", "PATCH", "DELETE");
     private static final Set<String> WRITE_CALL_MARKERS =
@@ -219,16 +218,6 @@ public class StaticPracticeFindingAnalyzer {
         return false;
     }
 
-    private final JavaParser javaParser;
-
-    public StaticPracticeFindingAnalyzer() {
-        this.javaParser =
-                new JavaParser(
-                        new ParserConfiguration()
-                                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                                .setCharacterEncoding(StandardCharsets.UTF_8));
-    }
-
     public List<Finding> analyze(
             Path repositoryRoot,
             BuildInfo buildInfo,
@@ -287,6 +276,7 @@ public class StaticPracticeFindingAnalyzer {
                                                         == SpringComponentType.CONTROLLER)
                         .map(DetectedClass::fullyQualifiedClassName)
                         .collect(Collectors.toSet());
+        JavaParser javaParser = newJavaParser();
 
         try (Stream<Path> files = Files.walk(sourceRoot)) {
             for (Path sourceFile :
@@ -294,13 +284,22 @@ public class StaticPracticeFindingAnalyzer {
                             .filter(path -> path.toString().endsWith(".java"))
                             .sorted(Comparator.naturalOrder())
                             .toList()) {
-                parseSourcePractices(
-                        repositoryRoot,
-                        sourceFile,
-                        outboundByFile,
-                        controllerClasses,
-                        legacyTransactionalVisibility,
-                        findings);
+                try {
+                    parseSourcePractices(
+                            javaParser,
+                            repositoryRoot,
+                            sourceFile,
+                            outboundByFile,
+                            controllerClasses,
+                            legacyTransactionalVisibility,
+                            findings);
+                } catch (IOException exception) {
+                    LOGGER.warn(
+                            "Failed to read or parse Java source {}; skipping static practice"
+                                    + " analysis for this file",
+                            sourceFile,
+                            exception);
+                }
             }
         } catch (IOException exception) {
             LOGGER.warn(
@@ -313,6 +312,7 @@ public class StaticPracticeFindingAnalyzer {
     }
 
     private void parseSourcePractices(
+            JavaParser javaParser,
             Path repositoryRoot,
             Path sourceFile,
             Map<String, List<OutboundEndpoint>> outboundByFile,
@@ -322,6 +322,11 @@ public class StaticPracticeFindingAnalyzer {
             throws IOException {
         var parseResult = javaParser.parse(sourceFile);
         if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
+            LOGGER.warn(
+                    "Failed to parse Java source {}; skipping static practice analysis for this"
+                            + " file (problems: {})",
+                    sourceFile,
+                    parseResult.getProblems());
             return;
         }
         CompilationUnit compilationUnit = parseResult.getResult().orElseThrow();
@@ -338,6 +343,13 @@ public class StaticPracticeFindingAnalyzer {
                     legacyTransactionalVisibility,
                     findings);
         }
+    }
+
+    private JavaParser newJavaParser() {
+        return new JavaParser(
+                new ParserConfiguration()
+                        .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
+                        .setCharacterEncoding(StandardCharsets.UTF_8));
     }
 
     private void analyzeClassSourceSignals(
@@ -4820,9 +4832,7 @@ public class StaticPracticeFindingAnalyzer {
                     continue;
                 }
                 for (Expression arg : call.getArguments()) {
-                    String argStr = arg.toString().toLowerCase(Locale.ROOT);
-                    boolean hasSensitiveRef = SENSITIVE_MARKERS.stream().anyMatch(argStr::contains);
-                    if (hasSensitiveRef) {
+                    if (hasSensitiveIdentifierReference(arg)) {
                         Integer line = call.getBegin().map(p -> p.line).orElse(null);
                         String target =
                                 declaration.getNameAsString() + "#" + method.getNameAsString();
@@ -4868,6 +4878,28 @@ public class StaticPracticeFindingAnalyzer {
                 }
             }
         }
+    }
+
+    private boolean hasSensitiveIdentifierReference(Expression argument) {
+        if (!(argument instanceof NameExpr)
+                && !(argument instanceof FieldAccessExpr)
+                && !(argument instanceof MethodCallExpr)) {
+            return false;
+        }
+        return Stream.of(
+                        argument.findAll(NameExpr.class).stream().map(NameExpr::getNameAsString),
+                        argument.findAll(FieldAccessExpr.class).stream()
+                                .map(FieldAccessExpr::getNameAsString),
+                        argument.findAll(MethodCallExpr.class).stream()
+                                .map(MethodCallExpr::getNameAsString))
+                .flatMap(stream -> stream)
+                .map(identifier -> identifier.toLowerCase(Locale.ROOT))
+                .anyMatch(this::isSensitiveIdentifierName);
+    }
+
+    private boolean isSensitiveIdentifierName(String normalizedIdentifier) {
+        return SensitivePropertyValueRedactor.hasSegment(normalizedIdentifier, "pat")
+                || SENSITIVE_MARKERS.stream().anyMatch(normalizedIdentifier::contains);
     }
 
     private static final Set<String> PRINT_STREAM_TARGETS = Set.of("out", "err");

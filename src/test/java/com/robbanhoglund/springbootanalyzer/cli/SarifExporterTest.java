@@ -7,7 +7,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingCategory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingOccurrence;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRuntimeDetection;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.SourceLocation;
@@ -196,6 +198,74 @@ class SarifExporterTest {
                         .get(0);
 
         assertThat(result.get("level").asText()).isEqualTo("note");
+    }
+
+    @Test
+    void ruleDefaultSeverityComesFromCatalogRegardlessOfFindingOrder() throws Exception {
+        Finding promoted =
+                FindingFactory.builder(
+                                FindingRules.SPRING_SECRET_MULTI_PROFILE, FindingConfidence.HIGH)
+                        .severity(FindingSeverity.WARNING)
+                        .build();
+        Finding catalogDefault =
+                FindingFactory.builder(
+                                FindingRules.SPRING_SECRET_MULTI_PROFILE, FindingConfidence.HIGH)
+                        .build();
+
+        for (List<Finding> order :
+                List.of(List.of(promoted, catalogDefault), List.of(catalogDefault, promoted))) {
+            JsonNode rule =
+                    MAPPER.readTree(SarifExporter.toJson(baseResponse(order)))
+                            .get("runs")
+                            .get(0)
+                            .get("tool")
+                            .get("driver")
+                            .get("rules")
+                            .get(0);
+
+            assertThat(rule.get("defaultConfiguration").get("level").asText()).isEqualTo("note");
+        }
+    }
+
+    @Test
+    void emitsRepositorySuppressionsInInvocationProperties() throws Exception {
+        AnalyzeRepositoryResponse response =
+                new AnalyzeRepositoryResponse(
+                        "https://github.com/example/demo.git",
+                        "main",
+                        "ws-001",
+                        "ws-001",
+                        "abc1234567890",
+                        null,
+                        null,
+                        true,
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(baseFinding()),
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        List.of("SPRING_FIELD_INJECTION"),
+                        3,
+                        List.of("SPRING_TYPO"));
+
+        JsonNode properties =
+                MAPPER.readTree(SarifExporter.toJson(response))
+                        .get("runs")
+                        .get(0)
+                        .get("invocations")
+                        .get(0)
+                        .get("properties");
+
+        assertThat(properties.get("suppressedFindingCount").asInt()).isEqualTo(3);
+        assertThat(properties.get("suppressedRuleIds").get(0).asText())
+                .isEqualTo("SPRING_FIELD_INJECTION");
+        assertThat(properties.get("unknownSuppressedRuleIds").get(0).asText())
+                .isEqualTo("SPRING_TYPO");
     }
 
     @Test

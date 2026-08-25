@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
+import com.robbanhoglund.springbootanalyzer.application.UserRuleConfigService;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -13,7 +14,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 class SuppressionServiceTest {
 
-    private final SuppressionService service = new SuppressionService();
+    private final SuppressionService service = new SuppressionService(new UserRuleConfigService());
 
     @TempDir Path repoRoot;
 
@@ -159,6 +160,46 @@ class SuppressionServiceTest {
                 """);
 
         assertThat(service.apply(List.of(), repoRoot)).isEmpty();
+    }
+
+    @Test
+    void reportsConfiguredIdsActualCountAndUnknownIdsSeparately() throws IOException {
+        writeSuppressionFile(
+                """
+                suppress:
+                  - ruleId: SPRING_FIELD_INJECTION
+                  - ruleId: SPRING_TYPO_DOES_NOT_EXIST
+                """);
+
+        var result =
+                service.applyWithSummary(
+                        List.of(
+                                finding("SPRING_FIELD_INJECTION"),
+                                finding("SPRING_FIELD_INJECTION"),
+                                finding("SPRING_JPA_OPEN_IN_VIEW")),
+                        repoRoot);
+
+        assertThat(result.findings())
+                .extracting(Finding::ruleId)
+                .containsExactly("SPRING_JPA_OPEN_IN_VIEW");
+        assertThat(result.suppressedRuleIds()).containsExactly("SPRING_FIELD_INJECTION");
+        assertThat(result.suppressedFindingCount()).isEqualTo(2);
+        assertThat(result.unknownSuppressedRuleIds()).containsExactly("SPRING_TYPO_DOES_NOT_EXIST");
+    }
+
+    @Test
+    void unknownSuppressionIdCannotRemoveUnknownFinding() throws IOException {
+        writeSuppressionFile(
+                """
+                suppress:
+                  - ruleId: UNKNOWN_EMISSION
+                """);
+
+        var result = service.applyWithSummary(List.of(finding("UNKNOWN_EMISSION")), repoRoot);
+
+        assertThat(result.findings()).hasSize(1);
+        assertThat(result.suppressedFindingCount()).isZero();
+        assertThat(result.unknownSuppressedRuleIds()).containsExactly("UNKNOWN_EMISSION");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
