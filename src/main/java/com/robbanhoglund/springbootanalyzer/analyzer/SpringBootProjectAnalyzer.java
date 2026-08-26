@@ -23,6 +23,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
@@ -75,6 +78,8 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class SpringBootProjectAnalyzer implements StaticAnalyzer {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(SpringBootProjectAnalyzer.class);
 
     private final BuildFileAnalyzer buildFileAnalyzer;
     private final JavaSourceAnalyzer javaSourceAnalyzer;
@@ -199,37 +204,70 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
                         buildInfo,
                         runtimeResult.runtimeStackAnalysis().webStack());
         findings.addAll(httpResult.findings());
-        findings.addAll(
-                staticPracticeFindingAnalyzer.analyze(
-                        repositoryRoot,
-                        buildInfo,
-                        configurationResult.configurationAnalysis(),
-                        gradleResult.gradleModelAnalysis(),
-                        runtimeResult.runtimeStackAnalysis(),
-                        httpResult.httpSurfaceAnalysis(),
-                        detectedClasses));
-        findings.addAll(
-                configurationFindingAnalyzer.analyze(
-                        javaSources,
-                        repositoryRoot,
-                        buildInfo,
-                        configurationResult.configurationAnalysis(),
-                        gradleResult.gradleModelAnalysis()));
-        findings.addAll(
-                observabilityFindingAnalyzer.analyze(
-                        javaSources, runtimeResult.runtimeStackAnalysis(), buildInfo));
-        findings.addAll(testingPracticeFindingAnalyzer.analyze(repositoryRoot, buildInfo));
-        findings.addAll(cachingPracticeFindingAnalyzer.analyze(javaSources));
-        findings.addAll(observabilityGapFindingAnalyzer.analyze(javaSources, buildInfo));
-        findings.addAll(transactionPracticeFindingAnalyzer.analyze(javaSources));
-        findings.addAll(securityPracticeFindingAnalyzer.analyze(javaSources));
-        findings.addAll(
-                scalabilityPracticeFindingAnalyzer.analyze(
-                        javaSources, runtimeResult.runtimeStackAnalysis()));
-        findings.addAll(schedulingPracticeFindingAnalyzer.analyze(javaSources));
-        findings.addAll(
-                migrationPracticeFindingAnalyzer.analyze(
-                        javaSources, runtimeResult.runtimeStackAnalysis()));
+        collectStage(
+                "static-practice",
+                findings,
+                () ->
+                        staticPracticeFindingAnalyzer.analyze(
+                                repositoryRoot,
+                                buildInfo,
+                                configurationResult.configurationAnalysis(),
+                                gradleResult.gradleModelAnalysis(),
+                                runtimeResult.runtimeStackAnalysis(),
+                                httpResult.httpSurfaceAnalysis(),
+                                detectedClasses));
+        collectStage(
+                "configuration-findings",
+                findings,
+                () ->
+                        configurationFindingAnalyzer.analyze(
+                                javaSources,
+                                repositoryRoot,
+                                buildInfo,
+                                configurationResult.configurationAnalysis(),
+                                gradleResult.gradleModelAnalysis()));
+        collectStage(
+                "observability",
+                findings,
+                () ->
+                        observabilityFindingAnalyzer.analyze(
+                                javaSources, runtimeResult.runtimeStackAnalysis(), buildInfo));
+        collectStage(
+                "testing-practice",
+                findings,
+                () -> testingPracticeFindingAnalyzer.analyze(repositoryRoot, buildInfo));
+        collectStage(
+                "caching-practice",
+                findings,
+                () -> cachingPracticeFindingAnalyzer.analyze(javaSources));
+        collectStage(
+                "observability-gaps",
+                findings,
+                () -> observabilityGapFindingAnalyzer.analyze(javaSources, buildInfo));
+        collectStage(
+                "transaction-practice",
+                findings,
+                () -> transactionPracticeFindingAnalyzer.analyze(javaSources));
+        collectStage(
+                "security-practice",
+                findings,
+                () -> securityPracticeFindingAnalyzer.analyze(javaSources));
+        collectStage(
+                "scalability-practice",
+                findings,
+                () ->
+                        scalabilityPracticeFindingAnalyzer.analyze(
+                                javaSources, runtimeResult.runtimeStackAnalysis()));
+        collectStage(
+                "scheduling-practice",
+                findings,
+                () -> schedulingPracticeFindingAnalyzer.analyze(javaSources));
+        collectStage(
+                "migration-practice",
+                findings,
+                () ->
+                        migrationPracticeFindingAnalyzer.analyze(
+                                javaSources, runtimeResult.runtimeStackAnalysis()));
 
         return new AnalysisResult(
                 repositoryReference.repositoryUrl(),
@@ -247,6 +285,35 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
                 gradleResult.gradleModelAnalysis(),
                 schedulingAnalyzer.analyze(javaSources),
                 messagingAnalyzer.analyze(javaSources));
+    }
+
+    /**
+     * Runs one finding-producing analyzer and appends its findings, containing any failure to
+     * that single stage.
+     *
+     * <p>The analyzed repository is untrusted input, and the finding analyzers walk it with
+     * hand-written AST heuristics. Without this boundary a {@code StackOverflowError} from a
+     * pathologically nested expression, or a defect in any one of the ~200 rules, propagates out
+     * of {@code analyze} and costs the caller the entire report — including the findings every
+     * other stage already produced. A degraded report is far more useful than none, so a failing
+     * stage is logged and skipped.
+     *
+     * <p>{@code StackOverflowError} is caught deliberately: it is a recoverable, input-driven
+     * failure of a recursive-descent parser, not a symptom of a broken JVM. Other {@link Error}s
+     * (notably {@code OutOfMemoryError}) are intentionally left to propagate.
+     *
+     * @param stage      short stage name used in the warning log
+     * @param findings   accumulator the stage's findings are appended to
+     * @param stageCall  the analyzer invocation to run
+     */
+    private void collectStage(
+            String stage, List<Finding> findings, Supplier<List<Finding>> stageCall) {
+        try {
+            findings.addAll(stageCall.get());
+        } catch (RuntimeException | StackOverflowError failure) {
+            LOGGER.warn(
+                    "Analyzer stage '{}' failed; continuing with partial results", stage, failure);
+        }
     }
 
     private void addApplicationStructureFindings(

@@ -107,6 +107,10 @@ public class PropertyReferenceAnalyzer {
         } catch (IOException exception) {
             // Skip an individual unreadable file rather than aborting the scan.
             LOGGER.warn("Failed to read source file {}; skipping", sourceFile, exception);
+        } catch (RuntimeException | StackOverflowError failure) {
+            // A pathologically nested expression overflows JavaParser's recursive descent; one
+            // such file must not cost the whole scan.
+            LOGGER.warn("Failed to analyze source file {}; skipping", sourceFile, failure);
         }
     }
 

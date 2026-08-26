@@ -111,6 +111,16 @@ public final class JavaSources {
                 } catch (IOException exception) {
                     // Skip an individual unreadable file rather than aborting the whole analysis.
                     LOGGER.debug("Failed to read Java source {}; skipping", path, exception);
+                } catch (RuntimeException | StackOverflowError failure) {
+                    // The analyzed repository is untrusted input: a pathologically nested
+                    // expression makes JavaParser's recursive descent overflow the stack, and a
+                    // malformed construct can trip a parser bug. Neither may cost us the rest of
+                    // the source tree, so drop this one file and carry on.
+                    LOGGER.warn(
+                            "Failed to parse Java source {}; AST-based analysis will skip this"
+                                    + " file",
+                            path,
+                            failure);
                 }
             }
         } catch (IOException exception) {

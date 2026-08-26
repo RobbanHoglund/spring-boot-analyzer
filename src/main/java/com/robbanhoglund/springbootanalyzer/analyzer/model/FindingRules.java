@@ -1335,12 +1335,13 @@ public final class FindingRules {
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
     /** A property is referenced from application code but no matching property was found in the
-     *  scanned configuration files. */
+     *  scanned configuration files. WARNING rather than INFO: a {@code @Value("${x}")} with no
+     *  configured value and no default fails context startup, so this is not a cosmetic gap. */
     public static final FindingRule CONFIG_CODE_REFERENCE_MISSING =
             rule(
                     "CONFIG_CODE_REFERENCE_MISSING",
                     "Referenced property is not configured",
-                    FindingSeverity.INFO,
+                    FindingSeverity.WARNING,
                     FindingCategory.CONFIGURATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 

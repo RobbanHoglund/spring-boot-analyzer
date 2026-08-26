@@ -55,6 +55,53 @@ class ConfigurationFindingAnalyzerAsyncSecurityTest {
                 .anyMatch(finding -> "SPRING_ASYNC_SECURITY_CONTEXT_LOST".equals(finding.ruleId()));
     }
 
+    @Test
+    void strategyNameSetAsStringLiteralCountsAsPropagation() throws Exception {
+        // SecurityContextHolder.setStrategyName takes a String, so the literal form is the
+        // documented usage — matching only SimpleName nodes would report a propagation problem
+        // in a project that has already solved it.
+        writeSource(
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.Async;
+                import org.springframework.security.core.context.SecurityContextHolder;
+                class Worker {
+                    Worker() {
+                        SecurityContextHolder.setStrategyName("MODE_INHERITABLETHREADLOCAL");
+                    }
+
+                    @Async
+                    void run() {}
+                }
+                """);
+
+        assertThat(findings())
+                .noneMatch(
+                        finding -> "SPRING_ASYNC_SECURITY_CONTEXT_LOST".equals(finding.ruleId()));
+    }
+
+    @Test
+    void strategySetThroughSystemPropertyLiteralCountsAsPropagation() throws Exception {
+        writeSource(
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.Async;
+                class Worker {
+                    static {
+                        System.setProperty(
+                                "spring.security.strategy", "MODE_INHERITABLETHREADLOCAL");
+                    }
+
+                    @Async
+                    void run() {}
+                }
+                """);
+
+        assertThat(findings())
+                .noneMatch(
+                        finding -> "SPRING_ASYNC_SECURITY_CONTEXT_LOST".equals(finding.ruleId()));
+    }
+
     private void writeSource(String source) throws Exception {
         Path directory =
                 Files.createDirectories(repositoryRoot.resolve("src/main/java/com/example"));

@@ -242,4 +242,50 @@ class SpringBootProjectAnalyzerTest {
                 .extracting(finding -> finding.message())
                 .anyMatch(message -> message.contains("No @SpringBootApplication class was found"));
     }
+
+    @Test
+    void pathologicallyNestedSourceDoesNotDiscardTheRestOfTheAnalysis() throws IOException {
+        // The analyzed repository is untrusted input. A deeply nested expression overflows
+        // JavaParser's recursive descent with a StackOverflowError; before per-file and
+        // per-stage isolation that error propagated out of analyze() and the caller lost the
+        // entire report, including everything the other stages had already produced.
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Deep.java"),
+                "package com.example.demo;\npublic class Deep {\n  int v = "
+                        + "(".repeat(2000)
+                        + "1"
+                        + ")".repeat(2000)
+                        + ";\n}\n");
+        Files.writeString(
+                sourceRoot.resolve("GreetingService.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Service;
+
+                @Service
+                public class GreetingService {
+                }
+                """);
+
+        var result =
+                analyzer.analyze(
+                        new GitRepositoryReference("https://github.com/example/demo.git", null),
+                        tempDir,
+                        "workspace-789");
+
+        // The healthy file is still analyzed and the pipeline still produces its structural
+        // findings — a degraded report rather than none at all.
+        assertThat(result.detectedComponents())
+                .extracting(component -> component.fullyQualifiedClassName())
+                .contains("com.example.demo.GreetingService");
+        assertThat(result.findings())
+                .extracting(finding -> finding.message())
+                .anyMatch(message -> message.contains("No @SpringBootApplication class was found"));
+        assertThat(result.configurationAnalysis()).isNotNull();
+        assertThat(result.runtimeStackAnalysis()).isNotNull();
+        assertThat(result.httpSurfaceAnalysis()).isNotNull();
+    }
 }

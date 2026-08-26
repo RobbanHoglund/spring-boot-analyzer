@@ -4137,6 +4137,41 @@ class UserRepository {
                 .singleElement();
     }
 
+    @Test
+    void flagsSecretsLoggedThroughStringConcatenation() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ConcatLogger.java"),
+                """
+                package com.example.demo;
+
+                class ConcatLogger {
+                    private Logger LOGGER;
+
+                    void log(String password, String clientSecret, String workspacePath) {
+                        LOGGER.info("Authenticating with password=" + password);
+                        LOGGER.warn("secret: " + clientSecret);
+                        LOGGER.info("Copying workspace " + workspacePath);
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        // Concatenating a secret into the message is the most common way it reaches a log, so
+        // both concatenated secrets must be flagged — and the "pat" substring in workspacePath
+        // must still not be.
+        assertThat(findings)
+                .filteredOn(
+                        finding ->
+                                FindingRules.SPRING_LOGGING_PII_EXPOSURE
+                                        .ruleId()
+                                        .equals(finding.ruleId()))
+                .hasSize(2);
+    }
+
     // -------------------------------------------------------------------------
     // SPRING_JPA_LAZY_LOADING_OUTSIDE_TRANSACTION
     // -------------------------------------------------------------------------

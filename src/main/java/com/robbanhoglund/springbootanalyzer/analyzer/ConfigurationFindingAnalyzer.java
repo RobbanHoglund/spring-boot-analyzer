@@ -2,6 +2,7 @@ package com.robbanhoglund.springbootanalyzer.analyzer;
 
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.SimpleName;
+import com.github.javaparser.ast.expr.StringLiteralExpr;
 import com.robbanhoglund.springbootanalyzer.analyzer.configuration.SensitivePropertyValueRedactor;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
@@ -2606,11 +2607,32 @@ public class ConfigurationFindingAnalyzer {
                         annotation -> annotationName.equals(annotation.getName().getIdentifier()));
     }
 
+    /**
+     * Returns whether any parsed source references the given identifier, either symbolically or
+     * as a string literal.
+     *
+     * <p>The literal form matters: {@code SecurityContextHolder.setStrategyName(String)} takes the
+     * strategy name as text, so {@code setStrategyName("MODE_INHERITABLETHREADLOCAL")} and
+     * {@code System.setProperty("spring.security.strategy", "MODE_INHERITABLETHREADLOCAL")} are
+     * both idiomatic. Matching only {@link SimpleName} nodes would miss them and report a
+     * SecurityContext propagation problem in projects that have already solved it. Comments are
+     * still excluded, because the search runs over the AST rather than raw file text.
+     */
     private boolean sourcesContainIdentifier(JavaSources javaSources, String identifier) {
         return javaSources.files().stream()
                 .map(JavaSources.JavaFile::compilationUnit)
                 .filter(Objects::nonNull)
-                .flatMap(compilationUnit -> compilationUnit.findAll(SimpleName.class).stream())
-                .anyMatch(name -> identifier.equals(name.getIdentifier()));
+                .anyMatch(
+                        compilationUnit ->
+                                compilationUnit.findAll(SimpleName.class).stream()
+                                                .anyMatch(
+                                                        name ->
+                                                                identifier.equals(
+                                                                        name.getIdentifier()))
+                                        || compilationUnit.findAll(StringLiteralExpr.class).stream()
+                                                .anyMatch(
+                                                        literal ->
+                                                                identifier.equals(
+                                                                        literal.asString())));
     }
 }

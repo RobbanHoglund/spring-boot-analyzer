@@ -477,6 +477,9 @@ public class TradingService {
                 .singleElement()
                 .satisfies(
                         finding -> {
+                            // WARNING, not INFO: a @Value("${x}") with no configured value and no
+                            // default fails context startup, and CI gates run --fail-on warning.
+                            assertThat(finding.severity()).isEqualTo(FindingSeverity.WARNING);
                             assertThat(finding.primaryLocation()).isNotNull();
                             assertThat(finding.primaryLocation().filePath())
                                     .isEqualTo(

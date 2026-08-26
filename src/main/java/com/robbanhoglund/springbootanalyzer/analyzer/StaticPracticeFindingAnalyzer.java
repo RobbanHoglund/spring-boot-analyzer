@@ -293,12 +293,12 @@ public class StaticPracticeFindingAnalyzer {
                             controllerClasses,
                             legacyTransactionalVisibility,
                             findings);
-                } catch (IOException exception) {
+                } catch (IOException | RuntimeException | StackOverflowError failure) {
                     LOGGER.warn(
                             "Failed to read or parse Java source {}; skipping static practice"
                                     + " analysis for this file",
                             sourceFile,
-                            exception);
+                            failure);
                 }
             }
         } catch (IOException exception) {
@@ -4880,12 +4880,16 @@ public class StaticPracticeFindingAnalyzer {
         }
     }
 
+    /**
+     * Returns whether the logged argument references an identifier whose name looks sensitive.
+     *
+     * <p>Only identifier names are inspected — never string-literal content — so a log template
+     * such as {@code "Using URL pattern {}"} cannot trigger the rule. The argument itself is not
+     * required to be an identifier: {@code "password=" + password} is a {@link BinaryExpr}, and
+     * string concatenation is the most common way a secret reaches a log statement, so the whole
+     * expression tree is searched.
+     */
     private boolean hasSensitiveIdentifierReference(Expression argument) {
-        if (!(argument instanceof NameExpr)
-                && !(argument instanceof FieldAccessExpr)
-                && !(argument instanceof MethodCallExpr)) {
-            return false;
-        }
         return Stream.of(
                         argument.findAll(NameExpr.class).stream().map(NameExpr::getNameAsString),
                         argument.findAll(FieldAccessExpr.class).stream()

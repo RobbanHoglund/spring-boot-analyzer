@@ -227,13 +227,21 @@ public class HttpSurfaceAnalyzer {
                             .filter(path -> path.toString().endsWith(".java"))
                             .sorted(Comparator.naturalOrder())
                             .toList()) {
-                parseSourceFile(
-                        javaParser,
-                        repositoryRoot,
-                        file,
-                        inboundEndpoints,
-                        outboundEndpoints,
-                        baseUrlCatalog);
+                try {
+                    parseSourceFile(
+                            javaParser,
+                            repositoryRoot,
+                            file,
+                            inboundEndpoints,
+                            outboundEndpoints,
+                            baseUrlCatalog);
+                } catch (RuntimeException | StackOverflowError failure) {
+                    LOGGER.warn(
+                            "Failed to analyze Java source {} for HTTP surface analysis; skipping"
+                                    + " this file",
+                            file,
+                            failure);
+                }
             }
         } catch (IOException exception) {
             LOGGER.warn(

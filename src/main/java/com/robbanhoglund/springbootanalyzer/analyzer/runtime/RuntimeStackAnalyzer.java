@@ -200,6 +200,11 @@ public class RuntimeStackAnalyzer {
             // Skip an individual unreadable file rather than aborting runtime stack analysis.
             LOGGER.warn("Failed to parse {} for runtime stack analysis; skipping", file, exception);
             return null;
+        } catch (RuntimeException | StackOverflowError failure) {
+            // A pathologically nested expression overflows JavaParser's recursive descent; one
+            // such file must not cost the whole runtime stack analysis.
+            LOGGER.warn("Failed to parse {} for runtime stack analysis; skipping", file, failure);
+            return null;
         }
     }
 

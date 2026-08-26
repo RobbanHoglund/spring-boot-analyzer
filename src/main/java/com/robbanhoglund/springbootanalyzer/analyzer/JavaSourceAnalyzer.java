@@ -101,13 +101,21 @@ public class JavaSourceAnalyzer {
                     .filter(path -> path.toString().endsWith(".java"))
                     .sorted(Comparator.naturalOrder())
                     .forEach(
-                            path ->
+                            path -> {
+                                try {
                                     analyzeSourceFile(
                                             javaParser,
                                             repositoryRoot,
                                             path,
                                             detectedClasses,
-                                            findings));
+                                            findings);
+                                } catch (RuntimeException | StackOverflowError failure) {
+                                    LOGGER.warn(
+                                            "Failed to analyze Java source {}; skipping this file",
+                                            path,
+                                            failure);
+                                }
+                            });
         } catch (IOException exception) {
             LOGGER.warn(
                     "Failed to fully scan Java sources under {}; returning partial results",

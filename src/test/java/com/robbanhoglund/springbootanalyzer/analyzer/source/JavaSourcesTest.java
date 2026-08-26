@@ -66,4 +66,34 @@ class JavaSourcesTest {
         assertThat(broken.compilationUnit()).isNull();
         assertThat(broken.content()).contains("not valid java");
     }
+
+    @Test
+    void pathologicallyNestedExpressionDoesNotAbortTheScan() throws IOException {
+        // JavaParser uses recursive descent, so a deeply nested expression throws
+        // StackOverflowError rather than returning a failed ParseResult. It must be contained
+        // to the offending file: the rest of the source tree still has to be parsed.
+        writeSource(
+                "src/main/java/com/example/Deep.java",
+                "package com.example;\nclass Deep {\n  int v = "
+                        + "(".repeat(2000)
+                        + "1"
+                        + ")".repeat(2000)
+                        + ";\n}\n");
+        writeSource(
+                "src/main/java/com/example/Healthy.java",
+                """
+                package com.example;
+                class Healthy {}
+                """);
+
+        JavaSources sources = JavaSources.from(repoRoot);
+
+        assertThat(sources.files())
+                .extracting(JavaSources.JavaFile::relativePath)
+                .contains("src/main/java/com/example/Healthy.java");
+        assertThat(sources.files())
+                .filteredOn(file -> file.relativePath().endsWith("Healthy.java"))
+                .singleElement()
+                .satisfies(file -> assertThat(file.compilationUnit()).isNotNull());
+    }
 }

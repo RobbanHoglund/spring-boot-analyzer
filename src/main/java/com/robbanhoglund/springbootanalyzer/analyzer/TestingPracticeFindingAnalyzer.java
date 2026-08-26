@@ -105,12 +105,12 @@ public class TestingPracticeFindingAnalyzer {
                             .toList()) {
                 try {
                     analyzeTestFile(javaParser, repositoryRoot, testFile, bootAtLeast34, findings);
-                } catch (IOException exception) {
+                } catch (IOException | RuntimeException | StackOverflowError failure) {
                     LOGGER.warn(
                             "Failed to read or parse Java test {}; skipping test practice analysis"
                                     + " for this file",
                             testFile,
-                            exception);
+                            failure);
                 }
             }
         } catch (IOException e) {
