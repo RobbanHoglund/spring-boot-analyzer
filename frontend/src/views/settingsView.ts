@@ -805,7 +805,7 @@ function renderRulesSection(model: SettingsViewModel, actions: SettingsViewActio
   return panel;
 }
 
-function categoryDisplayName(category: string): string {
+export function categoryDisplayName(category: string): string {
   const names: Record<string, string> = {
     SECURITY: 'Security',
     CONFIGURATION: 'Configuration',
@@ -820,6 +820,7 @@ function categoryDisplayName(category: string): string {
     OBSERVABILITY: 'Observability',
     CACHING: 'Caching',
     TESTING: 'Testing practice',
+    MIGRATION: 'Spring Boot 3 migration',
     CONDITIONAL_BEAN: 'Conditional beans',
     STARTUP: 'Startup',
     ACTUATOR: 'Actuator',

@@ -214,6 +214,18 @@ export function generateMarkdown(result: AnalyzeRepositoryResponse): string {
     lines.push('');
   }
 
+  const disabledRuleIds = result.disabledRuleIds ?? [];
+  const disabledRuleFindingCount = result.disabledRuleFindingCount ?? 0;
+  if (disabledRuleIds.length > 0) {
+    // A shared report must state how much of the catalog was switched off, otherwise the
+    // reader cannot tell a clean project from a narrowly configured analyzer.
+    lines.push('> **Disabled rules:** '
+      + `${disabledRuleIds.length} rule(s) are disabled in this installation `
+      + `(\`~/.spring-boot-analyzer/rule-config.json\`), hiding ${disabledRuleFindingCount} finding(s) from this report.`);
+    lines.push(`> Disabled rule IDs: ${disabledRuleIds.map((id) => `\`${id}\``).join(', ')}.`);
+    lines.push('');
+  }
+
   if (findings.length === 0) {
     lines.push('*No findings detected.*');
     lines.push('');

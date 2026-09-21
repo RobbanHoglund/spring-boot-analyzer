@@ -45,7 +45,7 @@ import type {
 } from '../types';
 
 const FINDING_SEVERITIES = ['ALL', 'ERROR', 'WARNING', 'INFO'] as const;
-const FINDING_CATEGORIES = [
+export const FINDING_CATEGORIES = [
   'ALL',
   'SECURITY',
   'CONFIGURATION',
@@ -64,7 +64,8 @@ const FINDING_CATEGORIES = [
   'OBSERVABILITY',
   'MAINTAINABILITY',
   'TESTING',
-  'CACHING'
+  'CACHING',
+  'MIGRATION'
 ] as const;
 const FINDING_RUNTIME_DETECTIONS = [
   'ALL',
@@ -334,7 +335,14 @@ function renderSuppressionNotice(result: AnalyzeRepositoryResponse): HTMLElement
   const suppressedRuleIds = result.suppressedRuleIds ?? [];
   const unknownRuleIds = result.unknownSuppressedRuleIds ?? [];
   const suppressedCount = result.suppressedFindingCount ?? 0;
-  if (suppressedRuleIds.length === 0 && unknownRuleIds.length === 0 && suppressedCount === 0) {
+  const disabledRuleIds = result.disabledRuleIds ?? [];
+  const disabledCount = result.disabledRuleFindingCount ?? 0;
+  if (
+    suppressedRuleIds.length === 0
+    && unknownRuleIds.length === 0
+    && suppressedCount === 0
+    && disabledRuleIds.length === 0
+  ) {
     return null;
   }
 
@@ -348,10 +356,43 @@ function renderSuppressionNotice(result: AnalyzeRepositoryResponse): HTMLElement
   if (unknownRuleIds.length > 0) {
     parts.push(`Unknown suppression rule IDs were ignored: ${unknownRuleIds.join(', ')}.`);
   }
+  if (disabledRuleIds.length > 0) {
+    parts.push(disabledRulesSummary(disabledRuleIds.length, disabledCount));
+  }
 
   const notice = element('div', { className: 'partial-analysis-notice suppression-notice' });
   notice.appendChild(element('p', { text: parts.join(' ') }));
+  if (disabledRuleIds.length > 0) {
+    notice.appendChild(renderDisabledRuleList(disabledRuleIds));
+  }
   return notice;
+}
+
+/**
+ * One sentence describing how much of the rule catalog is switched off in Settings.
+ * Without it, an analysis run against a heavily pruned catalog is indistinguishable
+ * from a clean one — both simply show few or no findings.
+ */
+function disabledRulesSummary(ruleCount: number, findingCount: number): string {
+  return (
+    `${ruleCount} rule${ruleCount === 1 ? ' is' : 's are'} disabled in Settings → Rule management, `
+    + `hiding ${findingCount} finding${findingCount === 1 ? '' : 's'} from this analysis. `
+    + 'Re-enable them there to see the full picture.'
+  );
+}
+
+function renderDisabledRuleList(disabledRuleIds: string[]): HTMLElement {
+  const details = document.createElement('details');
+  details.className = 'suppression-disabled-rules';
+  details.appendChild(
+    element('summary', { text: `Show the ${disabledRuleIds.length} disabled rule ID${disabledRuleIds.length === 1 ? '' : 's'}` })
+  );
+  const list = element('ul', { className: 'suppression-disabled-rule-list' });
+  for (const ruleId of disabledRuleIds) {
+    list.appendChild(element('li', {}, element('code', { text: ruleId })));
+  }
+  details.appendChild(list);
+  return details;
 }
 
 type TechnicalInventoryItem = {
@@ -1125,26 +1166,41 @@ function renderFindingsSection(
   const findings = result.findings ?? [];
   const warningCount = findings.filter((finding) => normalizeSeverity(finding.severity) === 'WARNING').length;
   const staticOnlyCount = findings.filter((finding) => normalizeRuntimeDetection(finding.runtimeDetection) === 'NOT_NORMALLY_DETECTED').length;
+  const disabledRuleIds = result.disabledRuleIds ?? [];
+  const disabledRuleFindingCount = result.disabledRuleFindingCount ?? 0;
+  const chips = [
+    sectionChip(`${warningCount} warnings to review`, warningCount > 0 ? 'warning' : 'default'),
+    sectionChip(`${staticOnlyCount} detected statically`, 'info')
+  ];
+  if (disabledRuleIds.length > 0) {
+    chips.push(sectionChip(`${disabledRuleIds.length} rules disabled`, 'warning'));
+  }
   const section = resultsSection(
     `Findings (${findings.length})`,
     'results-findings',
     'Prioritized static findings from configuration, code patterns, HTTP usage, and profile drift.',
-    [
-      sectionChip(`${warningCount} warnings to review`, warningCount > 0 ? 'warning' : 'default'),
-      sectionChip(`${staticOnlyCount} detected statically`, 'info')
-    ]
+    chips
   );
   if (findings.length === 0) {
-    section.appendChild(
-      element(
-        'div',
-        { className: 'empty-note success-note' },
-        element('strong', { text: 'No issues detected. ' }),
-        element('span', {
-          text: 'The current rule set found nothing of concern in the analyzed source, configuration, and dependency tree. This does not guarantee the application is free of issues — always complement static analysis with code review and testing.'
-        })
-      )
+    const emptyNote = element(
+      'div',
+      { className: 'empty-note success-note' },
+      element('strong', { text: 'No issues detected. ' }),
+      element('span', {
+        text: 'The current rule set found nothing of concern in the analyzed source, configuration, and dependency tree. This does not guarantee the application is free of issues — always complement static analysis with code review and testing.'
+      })
     );
+    // A clean result means little if most of the catalog was switched off, so say so here
+    // rather than only in the notice above the section.
+    if (disabledRuleIds.length > 0) {
+      emptyNote.appendChild(
+        element('span', {
+          className: 'empty-note-caveat',
+          text: ` ${disabledRulesSummary(disabledRuleIds.length, disabledRuleFindingCount)}`
+        })
+      );
+    }
+    section.appendChild(emptyNote);
     return section;
   }
 
@@ -6992,7 +7048,7 @@ function normalizeConfidence(value: string | undefined): string {
   return value.trim().toUpperCase();
 }
 
-function findingCategoryLabel(value: string): string {
+export function findingCategoryLabel(value: string): string {
   switch (value) {
     case 'PROFILE_DRIFT':
       return 'Profile drift';
@@ -7002,6 +7058,10 @@ function findingCategoryLabel(value: string): string {
       return 'Conditional bean';
     case 'API_SURFACE':
       return 'API surface';
+    case 'HTTP':
+      return 'HTTP clients';
+    case 'MIGRATION':
+      return 'Spring Boot 3 migration';
     default:
       return value
         .toLowerCase()

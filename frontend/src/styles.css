@@ -1698,6 +1698,36 @@ a:focus-visible {
   margin: 0;
 }
 
+/* The suppression notice stacks a sentence above an optional disabled-rule list. */
+.suppression-notice {
+  flex-direction: column;
+  gap: 6px;
+}
+
+.suppression-disabled-rules summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.suppression-disabled-rule-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+.suppression-disabled-rule-list code {
+  font-size: 0.78rem;
+}
+
+.empty-note-caveat {
+  display: block;
+  margin-top: 8px;
+  font-weight: 600;
+}
+
 .runtime-overview {
   display: grid;
   grid-template-columns: minmax(420px, 1.5fr) minmax(320px, 1fr);

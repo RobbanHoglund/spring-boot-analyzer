@@ -90,10 +90,16 @@ public final class CliOutputFormatter {
                         response.unknownSuppressedRuleIds().toString());
             }
         }
+        if (!response.disabledRuleIds().isEmpty()) {
+            appendKv(sb, "Disabled rules", describeDisabledRules(response));
+        }
         sb.append("\n");
 
         if (findings.isEmpty()) {
             sb.append("Findings  : none — no issues detected by the current checks.\n");
+            if (!response.disabledRuleIds().isEmpty()) {
+                sb.append("            ").append(describeDisabledRules(response)).append("\n");
+            }
             sb.append("\n");
             sb.append("Static analysis has limits. Complement with code review and testing.\n");
         } else {
@@ -160,5 +166,17 @@ public final class CliOutputFormatter {
 
     private static String str(String value, String fallback) {
         return (value != null && !value.isBlank()) ? value : fallback;
+    }
+
+    /**
+     * Describes how much of the rule catalog the user has switched off, so that a pruned run
+     * is never mistaken for a clean one.
+     */
+    private static String describeDisabledRules(AnalyzeRepositoryResponse response) {
+        int ruleCount = response.disabledRuleIds().size();
+        return response.disabledRuleFindingCount()
+                + " finding(s) hidden by "
+                + ruleCount
+                + " rule(s) disabled in ~/.spring-boot-analyzer/rule-config.json";
     }
 }

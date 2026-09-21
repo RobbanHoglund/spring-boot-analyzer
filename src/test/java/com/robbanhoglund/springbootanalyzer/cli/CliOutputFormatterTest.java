@@ -78,6 +78,68 @@ class CliOutputFormatterTest {
                 List.of());
     }
 
+    private static AnalyzeRepositoryResponse responseWithDisabledRules(
+            List<Finding> findings, List<String> disabledRuleIds, int disabledRuleFindingCount) {
+        return new AnalyzeRepositoryResponse(
+                "https://github.com/example/demo.git",
+                "main",
+                "ws-001",
+                "ws-001",
+                "abc1234567890",
+                BuildTool.GRADLE,
+                "25",
+                true,
+                List.of(),
+                List.of(),
+                List.of(),
+                findings,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                List.of(),
+                0,
+                List.of(),
+                disabledRuleIds,
+                disabledRuleFindingCount);
+    }
+
+    @Test
+    void reportsRulesDisabledByTheUser() {
+        String output =
+                CliOutputFormatter.format(
+                        responseWithDisabledRules(
+                                List.of(warningFinding()),
+                                List.of("SPRING_SYSTEM_OUT_PRINTLN", "SPRING_FIELD_INJECTION"),
+                                6),
+                        Format.text);
+
+        assertThat(output).contains("Disabled rules");
+        assertThat(output).contains("6 finding(s) hidden by 2 rule(s)");
+        assertThat(output).contains("~/.spring-boot-analyzer/rule-config.json");
+    }
+
+    @Test
+    void qualifiesAnEmptyResultWhenRulesAreDisabled() {
+        String output =
+                CliOutputFormatter.format(
+                        responseWithDisabledRules(List.of(), List.of("SPRING_FIELD_INJECTION"), 2),
+                        Format.text);
+
+        assertThat(output).contains("Findings  : none");
+        assertThat(output).contains("2 finding(s) hidden by 1 rule(s)");
+    }
+
+    @Test
+    void doesNotMentionDisabledRulesWhenNoneAreDisabled() {
+        String output =
+                CliOutputFormatter.format(baseResponse(List.of(warningFinding())), Format.text);
+
+        assertThat(output).doesNotContain("Disabled rules");
+    }
+
     private static AnalyzeRepositoryResponse baseResponse(List<Finding> findings) {
         return new AnalyzeRepositoryResponse(
                 "https://github.com/example/demo.git",

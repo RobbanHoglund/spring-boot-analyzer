@@ -151,11 +151,18 @@ public class RepositoryAnalysisService {
         Set<String> disabledRuleIds = userRuleConfigService.getDisabledRuleIds();
         Set<String> disabledSeverities =
                 userRuleConfigService.fullyDisabledSeverities(disabledRuleIds);
-        List<Finding> findings =
+        List<Finding> retainedFindings =
                 suppressionResult.findings().stream()
                         .filter(
                                 finding ->
                                         isNotDisabled(finding, disabledRuleIds, disabledSeverities))
+                        .toList();
+        // Report how much of the catalog the user switched off: without this, a heavily
+        // pruned run is indistinguishable from a clean one in the UI and in exported reports.
+        int disabledRuleFindingCount =
+                suppressionResult.findings().size() - retainedFindings.size();
+        List<Finding> findings =
+                retainedFindings.stream()
                         .map(finding -> enrichFinding(finding, result.repositoryUrl(), commitSha))
                         .toList();
         return new AnalysisResult(
@@ -176,7 +183,9 @@ public class RepositoryAnalysisService {
                 result.messagingAnalysis(),
                 suppressionResult.suppressedRuleIds(),
                 suppressionResult.suppressedFindingCount(),
-                suppressionResult.unknownSuppressedRuleIds());
+                suppressionResult.unknownSuppressedRuleIds(),
+                disabledRuleIds.stream().sorted().toList(),
+                disabledRuleFindingCount);
     }
 
     static boolean isNotDisabled(

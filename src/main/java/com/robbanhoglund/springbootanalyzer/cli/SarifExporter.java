@@ -78,6 +78,9 @@ public final class SarifExporter {
         invocationProperties.put("suppressedFindingCount", response.suppressedFindingCount());
         invocationProperties.put("unknownSuppressedRuleIds", response.unknownSuppressedRuleIds());
         invocationProperties.put("suppressionSource", ".analyzer-suppress.yml");
+        invocationProperties.put("disabledRuleIds", response.disabledRuleIds());
+        invocationProperties.put("disabledRuleFindingCount", response.disabledRuleFindingCount());
+        invocationProperties.put("disabledRuleSource", "~/.spring-boot-analyzer/rule-config.json");
         run.put(
                 "invocations",
                 List.of(Map.of("executionSuccessful", true, "properties", invocationProperties)));

@@ -1329,6 +1329,38 @@ describe('renderResultsView findings UI', () => {
     expect(notice?.textContent).toContain('SPRING_TYPO');
   });
 
+  it('reports rules the user disabled in settings, so a pruned run is not mistaken for a clean one', () => {
+    const result = baseResult([baseFinding()]);
+    result.disabledRuleIds = ['SPRING_FIELD_INJECTION', 'SPRING_SYSTEM_OUT_PRINTLN'];
+    result.disabledRuleFindingCount = 7;
+
+    const view = renderResultsView(result, defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    const notice = document.querySelector('.suppression-notice');
+    expect(notice).not.toBeNull();
+    expect(notice?.textContent).toContain('2 rules are disabled');
+    expect(notice?.textContent).toContain('hiding 7 findings');
+    expect(notice?.textContent).toContain('SPRING_SYSTEM_OUT_PRINTLN');
+
+    const findingsSection = document.getElementById('results-findings');
+    expect(findingsSection?.textContent).toContain('2 rules disabled');
+  });
+
+  it('warns that a zero-finding run had rules disabled', () => {
+    const result = baseResult([]);
+    result.disabledRuleIds = ['SPRING_FIELD_INJECTION'];
+    result.disabledRuleFindingCount = 3;
+
+    const view = renderResultsView(result, defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    const note = document.getElementById('results-findings')?.querySelector('.empty-note.success-note');
+    expect(note?.textContent).toContain('No issues detected.');
+    expect(note?.textContent).toContain('1 rule is disabled');
+    expect(note?.textContent).toContain('hiding 3 findings');
+  });
+
   // ── No-findings message ───────────────────────────────────────────────────
 
   it('shows a qualified no-findings message that includes a caveat about static analysis limits', () => {

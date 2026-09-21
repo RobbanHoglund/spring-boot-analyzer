@@ -89,6 +89,57 @@ class RepositoryAnalysisServiceSuppressionTest {
         assertThat(result.unknownSuppressedRuleIds()).containsExactly("SPRING_TYPO");
     }
 
+    @Test
+    void reportsRulesTheUserDisabledSeparatelyFromRepositorySuppressions() throws Exception {
+        Path workspacePath = Files.createDirectories(tempDir.resolve("workspace"));
+        Path repositoryRoot = Files.createDirectories(workspacePath.resolve("repository"));
+        Finding finding =
+                FindingFactory.builder(FindingRules.SPRING_FIELD_INJECTION, FindingConfidence.HIGH)
+                        .build();
+        GitRepositoryReference reference =
+                new GitRepositoryReference("https://github.com/example/demo.git", "main");
+
+        WorkspaceService workspaceService = mock(WorkspaceService.class);
+        when(workspaceService.createWorkspace())
+                .thenReturn(new WorkspaceService.Workspace("ws-1", workspacePath));
+        GitCloneService gitCloneService = mock(GitCloneService.class);
+        when(gitCloneService.cloneRepository(eq(reference), any())).thenReturn(repositoryRoot);
+        when(gitCloneService.resolveHeadCommit(repositoryRoot)).thenReturn(Optional.of("abc123"));
+        StaticAnalyzer staticAnalyzer = mock(StaticAnalyzer.class);
+        when(staticAnalyzer.analyze(reference, repositoryRoot, "ws-1"))
+                .thenReturn(baseResult(finding));
+        AnalyzerProperties analyzerProperties = mock(AnalyzerProperties.class);
+        when(analyzerProperties.cleanupAfterAnalysis()).thenReturn(false);
+        Set<String> disabled = Set.of(FindingRules.SPRING_FIELD_INJECTION.ruleId());
+        UserRuleConfigService userRuleConfigService = mock(UserRuleConfigService.class);
+        when(userRuleConfigService.knownRuleIds()).thenReturn(disabled);
+        when(userRuleConfigService.getDisabledRuleIds()).thenReturn(disabled);
+        when(userRuleConfigService.fullyDisabledSeverities(disabled)).thenReturn(Set.of());
+        Environment environment = mock(Environment.class);
+
+        RepositoryAnalysisService service =
+                new RepositoryAnalysisService(
+                        workspaceService,
+                        gitCloneService,
+                        staticAnalyzer,
+                        analyzerProperties,
+                        new GitHubLinkBuilder(),
+                        new AnalysisSessionRegistry(),
+                        new FindingNormalizer(),
+                        new SuppressionService(userRuleConfigService),
+                        userRuleConfigService,
+                        environment);
+
+        AnalysisResult result = service.analyze(reference);
+
+        assertThat(result.findings()).isEmpty();
+        assertThat(result.disabledRuleIds()).containsExactly("SPRING_FIELD_INJECTION");
+        assertThat(result.disabledRuleFindingCount()).isEqualTo(1);
+        // Repository-level suppression is a separate mechanism and must not absorb the count.
+        assertThat(result.suppressedFindingCount()).isZero();
+        assertThat(result.suppressedRuleIds()).isEmpty();
+    }
+
     private static AnalysisResult baseResult(Finding finding) {
         return new AnalysisResult(
                 "https://github.com/example/demo.git",

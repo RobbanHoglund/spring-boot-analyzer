@@ -163,7 +163,9 @@ public class CliRunner implements ApplicationRunner, Callable<Integer> {
                             result.messagingAnalysis(),
                             result.suppressedRuleIds(),
                             result.suppressedFindingCount(),
-                            result.unknownSuppressedRuleIds());
+                            result.unknownSuppressedRuleIds(),
+                            result.disabledRuleIds(),
+                            result.disabledRuleFindingCount());
         } catch (Exception e) {
             System.err.println("Analysis failed: " + e.getMessage());
             LOGGER.error("CLI analysis failed for {}", repositoryUrl, e);

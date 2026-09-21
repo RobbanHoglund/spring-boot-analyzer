@@ -35,6 +35,10 @@ export interface AnalyzeRepositoryResponse {
   suppressedRuleIds?: string[];
   suppressedFindingCount?: number;
   unknownSuppressedRuleIds?: string[];
+  /** Rule IDs switched off in ~/.spring-boot-analyzer/rule-config.json via Settings. */
+  disabledRuleIds?: string[];
+  /** Findings removed from this run because their rule is disabled. */
+  disabledRuleFindingCount?: number;
   [key: string]: unknown;
 }
 

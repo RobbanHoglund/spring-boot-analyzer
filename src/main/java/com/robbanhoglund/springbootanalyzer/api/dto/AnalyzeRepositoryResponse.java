@@ -32,7 +32,9 @@ public record AnalyzeRepositoryResponse(
         MessagingAnalysis messagingAnalysis,
         List<String> suppressedRuleIds,
         int suppressedFindingCount,
-        List<String> unknownSuppressedRuleIds) {
+        List<String> unknownSuppressedRuleIds,
+        List<String> disabledRuleIds,
+        int disabledRuleFindingCount) {
 
     public AnalyzeRepositoryResponse(
             String repositoryUrl,
@@ -74,6 +76,8 @@ public record AnalyzeRepositoryResponse(
                 messagingAnalysis,
                 List.of(),
                 0,
-                List.of());
+                List.of(),
+                List.of(),
+                0);
     }
 }

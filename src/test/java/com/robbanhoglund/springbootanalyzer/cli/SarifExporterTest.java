@@ -251,7 +251,9 @@ class SarifExporterTest {
                         null,
                         List.of("SPRING_FIELD_INJECTION"),
                         3,
-                        List.of("SPRING_TYPO"));
+                        List.of("SPRING_TYPO"),
+                        List.of("SPRING_SYSTEM_OUT_PRINTLN", "SPRING_CACHEABLE_NO_TTL_PROVIDER"),
+                        5);
 
         JsonNode properties =
                 MAPPER.readTree(SarifExporter.toJson(response))
@@ -262,6 +264,11 @@ class SarifExporterTest {
                         .get("properties");
 
         assertThat(properties.get("suppressedFindingCount").asInt()).isEqualTo(3);
+        assertThat(properties.get("disabledRuleFindingCount").asInt()).isEqualTo(5);
+        assertThat(properties.get("disabledRuleIds").get(0).asText())
+                .isEqualTo("SPRING_SYSTEM_OUT_PRINTLN");
+        assertThat(properties.get("disabledRuleSource").asText())
+                .isEqualTo("~/.spring-boot-analyzer/rule-config.json");
         assertThat(properties.get("suppressedRuleIds").get(0).asText())
                 .isEqualTo("SPRING_FIELD_INJECTION");
         assertThat(properties.get("unknownSuppressedRuleIds").get(0).asText())

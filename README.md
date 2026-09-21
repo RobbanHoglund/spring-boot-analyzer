@@ -459,6 +459,27 @@ Each entry requires a `ruleId` (the stable identifier shown in the UI and in SAR
 
 Rule IDs are listed in [docs/RULES.md](docs/RULES.md).
 
+### Disabling rules for the whole installation
+
+Repository suppression is per-project. To switch a rule off for **every** analysis this
+installation runs, use **Settings → Rule management** in the UI. Disabled rule IDs are stored in
+`~/.spring-boot-analyzer/rule-config.json`:
+
+```json
+{
+  "disabledRuleIds": [
+    "SPRING_SYSTEM_OUT_PRINTLN",
+    "SPRING_JPA_OPEN_IN_VIEW"
+  ]
+}
+```
+
+Because this setting is invisible from the analyzed repository, every output discloses it: the
+results page shows a notice and a `N rules disabled` chip, the CLI prints a `Disabled rules` line,
+and both the Markdown report and the SARIF invocation metadata carry `disabledRuleIds` and
+`disabledRuleFindingCount`. A run against a narrowed catalog is therefore never mistaken for a
+clean one.
+
 ---
 
 ## Security model

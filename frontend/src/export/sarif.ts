@@ -274,7 +274,10 @@ export function toSarif(response: AnalyzeRepositoryResponse): SarifDocument {
           suppressedRuleIds: response.suppressedRuleIds ?? [],
           suppressedFindingCount: response.suppressedFindingCount ?? 0,
           unknownSuppressedRuleIds: response.unknownSuppressedRuleIds ?? [],
-          suppressionSource: '.analyzer-suppress.yml'
+          suppressionSource: '.analyzer-suppress.yml',
+          disabledRuleIds: response.disabledRuleIds ?? [],
+          disabledRuleFindingCount: response.disabledRuleFindingCount ?? 0,
+          disabledRuleSource: '~/.spring-boot-analyzer/rule-config.json'
         }
       }
     ]

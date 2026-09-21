@@ -80,7 +80,9 @@ public class AnalysisController {
                 result.messagingAnalysis(),
                 result.suppressedRuleIds(),
                 result.suppressedFindingCount(),
-                result.unknownSuppressedRuleIds());
+                result.unknownSuppressedRuleIds(),
+                result.disabledRuleIds(),
+                result.disabledRuleFindingCount());
     }
 
     @GetMapping("/analyses/{analysisId}/source-snippet")
