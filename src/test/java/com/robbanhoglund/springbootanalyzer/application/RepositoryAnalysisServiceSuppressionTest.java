@@ -110,9 +110,12 @@ class RepositoryAnalysisServiceSuppressionTest {
                 .thenReturn(baseResult(finding));
         AnalyzerProperties analyzerProperties = mock(AnalyzerProperties.class);
         when(analyzerProperties.cleanupAfterAnalysis()).thenReturn(false);
-        Set<String> disabled = Set.of(FindingRules.SPRING_FIELD_INJECTION.ruleId());
+        // The config file still lists a rule that has since been retired from the catalog.
+        Set<String> disabled =
+                Set.of(FindingRules.SPRING_FIELD_INJECTION.ruleId(), "SPRING_RETIRED_RULE");
         UserRuleConfigService userRuleConfigService = mock(UserRuleConfigService.class);
-        when(userRuleConfigService.knownRuleIds()).thenReturn(disabled);
+        when(userRuleConfigService.knownRuleIds())
+                .thenReturn(Set.of(FindingRules.SPRING_FIELD_INJECTION.ruleId()));
         when(userRuleConfigService.getDisabledRuleIds()).thenReturn(disabled);
         when(userRuleConfigService.fullyDisabledSeverities(disabled)).thenReturn(Set.of());
         Environment environment = mock(Environment.class);
@@ -133,6 +136,8 @@ class RepositoryAnalysisServiceSuppressionTest {
         AnalysisResult result = service.analyze(reference);
 
         assertThat(result.findings()).isEmpty();
+        // The retired ID is not counted: Settings, which lists catalog rules, shows the same
+        // number.
         assertThat(result.disabledRuleIds()).containsExactly("SPRING_FIELD_INJECTION");
         assertThat(result.disabledRuleFindingCount()).isEqualTo(1);
         // Repository-level suppression is a separate mechanism and must not absorb the count.

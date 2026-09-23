@@ -71,6 +71,16 @@ public class TestingPracticeFindingAnalyzer {
     private static final Set<String> WEB_TEST_FIELD_TYPES =
             Set.of("MockMvc", "WebTestClient", "TestRestTemplate");
 
+    /** Field types a test uses to call its own running server over HTTP. */
+    private static final Set<String> HTTP_CLIENT_TEST_FIELD_TYPES =
+            Set.of(
+                    "TestRestTemplate",
+                    "WebTestClient",
+                    "RestTemplateBuilder",
+                    "RestTemplate",
+                    "RestClient",
+                    "RestTestClient");
+
     /**
      * Analyzes all Java source files under {@code src/test/java} within the given repository root.
      *
@@ -265,31 +275,20 @@ public class TestingPracticeFindingAnalyzer {
 
     private void detectSpringBootTestOverused(
             ClassOrInterfaceDeclaration cls, String relativePath, List<Finding> findings) {
-        if (!hasAnnotation(cls, "SpringBootTest")) {
+        if (!hasAnnotation(cls, "SpringBootTest") || usesRealServer(cls)) {
+            // A test that drives the embedded server over HTTP needs the full context.
             return;
         }
 
+        // The advice only holds when the test injects nothing but controllers (or nothing but
+        // repositories); any other bean means it exercises more than one layer.
+        List<String> injectedTypes = autowiredFieldTypes(cls);
         boolean hasControllerField =
-                cls.getFields().stream()
-                        .filter(f -> hasAnnotation(f, "Autowired"))
-                        .anyMatch(
-                                f ->
-                                        f.getVariables().stream()
-                                                .anyMatch(
-                                                        v ->
-                                                                v.getTypeAsString()
-                                                                        .endsWith("Controller")));
-
+                !injectedTypes.isEmpty()
+                        && injectedTypes.stream().allMatch(type -> type.endsWith("Controller"));
         boolean hasRepositoryField =
-                cls.getFields().stream()
-                        .filter(f -> hasAnnotation(f, "Autowired"))
-                        .anyMatch(
-                                f ->
-                                        f.getVariables().stream()
-                                                .anyMatch(
-                                                        v ->
-                                                                v.getTypeAsString()
-                                                                        .endsWith("Repository")));
+                !injectedTypes.isEmpty()
+                        && injectedTypes.stream().allMatch(type -> type.endsWith("Repository"));
 
         if (hasControllerField) {
             String controllerType =
@@ -363,15 +362,70 @@ public class TestingPracticeFindingAnalyzer {
         }
     }
 
+    /**
+     * Whether a {@code @SpringBootTest} class exercises a real embedded server: a {@code
+     * RANDOM_PORT}/{@code DEFINED_PORT} web environment, an injected {@code @LocalServerPort}, or
+     * an HTTP client field aimed at the server. A slice test cannot replace such a test, and the
+     * server handles each request on its own thread — outside any transaction the test opens.
+     */
+    private boolean usesRealServer(ClassOrInterfaceDeclaration cls) {
+        boolean portEnvironment =
+                cls.getAnnotations().stream()
+                        .filter(a -> "SpringBootTest".equals(simpleName(a.getNameAsString())))
+                        .filter(AnnotationExpr::isNormalAnnotationExpr)
+                        .flatMap(a -> a.asNormalAnnotationExpr().getPairs().stream())
+                        .filter(pair -> "webEnvironment".equals(pair.getNameAsString()))
+                        .map(pair -> pair.getValue().toString())
+                        .anyMatch(
+                                value ->
+                                        value.contains("RANDOM_PORT")
+                                                || value.contains("DEFINED_PORT"));
+        if (portEnvironment) {
+            return true;
+        }
+        return cls.getFields().stream()
+                .anyMatch(
+                        field ->
+                                hasAnnotation(field, "LocalServerPort")
+                                        || field.getVariables().stream()
+                                                .anyMatch(
+                                                        v ->
+                                                                HTTP_CLIENT_TEST_FIELD_TYPES
+                                                                        .contains(
+                                                                                simpleName(
+                                                                                        rawType(
+                                                                                                v
+                                                                                                        .getTypeAsString())))));
+    }
+
+    /** Simple type names of the class's {@code @Autowired} fields. */
+    private List<String> autowiredFieldTypes(ClassOrInterfaceDeclaration cls) {
+        return cls.getFields().stream()
+                .filter(f -> hasAnnotation(f, "Autowired"))
+                .flatMap(f -> f.getVariables().stream())
+                .map(v -> simpleName(rawType(v.getTypeAsString())))
+                .toList();
+    }
+
+    private static String rawType(String type) {
+        int generic = type.indexOf('<');
+        return generic < 0 ? type : type.substring(0, generic);
+    }
+
     // ---------------------------------------------------------------------------
     // Rule: SPRING_TEST_NO_TRANSACTIONAL_ROLLBACK
     // ---------------------------------------------------------------------------
 
     private void detectNoTransactionalRollback(
             ClassOrInterfaceDeclaration cls, String relativePath, List<Finding> findings) {
-        boolean isIntegrationTest =
-                hasAnnotation(cls, "SpringBootTest") || hasAnnotation(cls, "DataJpaTest");
-        if (!isIntegrationTest) {
+        // @DataJpaTest (like the JDBC/jOOQ slices) is already @Transactional and rolls back each
+        // test, so only a full @SpringBootTest can leak committed rows between tests.
+        if (!hasAnnotation(cls, "SpringBootTest")) {
+            return;
+        }
+        // Against a real server the writes happen on the server's request threads, so a
+        // test-level @Transactional would not roll them back; the advice below would not help.
+        if (usesRealServer(cls)) {
             return;
         }
         boolean hasRepositoryField =

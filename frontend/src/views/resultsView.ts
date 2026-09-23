@@ -3965,12 +3965,12 @@ function findingSummaryCell(
     element('span', {
       className: 'badge badge-confidence',
       text: finding.confidence,
-      attributes: { title: `Confidence: ${finding.confidence}` }
+      attributes: { title: confidenceExplanation(finding.confidence) }
     }),
     element('span', {
       className: 'badge badge-runtime',
       text: finding.runtimeDetection,
-      attributes: { title: `Runtime detection: ${finding.runtimeDetection}` }
+      attributes: { title: runtimeDetectionExplanation(finding.runtimeDetection) }
     })
   );
   if (grouped && finding.occurrences > 1) {
@@ -4116,21 +4116,19 @@ function renderFindingDetailsCard(
     })
   );
   const badgeRow = element('div', { className: 'finding-detail-badges' });
-  for (const [text, className, tooltipPrefix] of [
-    [primary.severity, `badge badge-${primary.severity.toLowerCase()}`, ''] as const,
-    [primary.category, 'badge badge-category', 'Category: '] as const,
-    [primary.confidence, 'badge badge-confidence', 'Confidence: '] as const,
-    [primary.runtimeDetection, 'badge badge-runtime', 'Runtime detection: '] as const
+  for (const [text, className, explain] of [
+    [primary.severity, `badge badge-${primary.severity.toLowerCase()}`, severityExplanation] as const,
+    [primary.category, 'badge badge-category', categoryExplanation] as const,
+    [primary.confidence, 'badge badge-confidence', confidenceExplanation] as const,
+    [primary.runtimeDetection, 'badge badge-runtime', runtimeDetectionExplanation] as const
   ]) {
-    const title = tooltipPrefix === ''
-      ? severityExplanation(text)
-      : `${tooltipPrefix}${text}`;
+    const title = explain(text);
     badgeRow.appendChild(element('span', { className, text, attributes: { title, 'aria-label': title } }));
   }
   if (primary.finding?.ruleId) {
     badgeRow.appendChild(
       element('code', { className: 'finding-detail-rule-id', text: primary.finding.ruleId,
-        attributes: { title: `Rule ID: ${primary.finding.ruleId}` } })
+        attributes: { title: ruleIdExplanation(primary.finding.ruleId) } })
     );
   }
   if (mixedSeverity) {
@@ -5130,10 +5128,40 @@ public SyncResult syncPortfolio() {
     };
   }
 
+  if (ruleId === 'SPRING_BROAD_EXCEPTION_HANDLER') {
+    return {
+      lead: 'Keep the catch-all as the last line of defence: specific handlers map expected errors to their status codes, and the catch-all logs the failure and returns a sanitized 500 so clients and monitoring see a server error.',
+      actions: [
+        'Add @ExceptionHandler methods for the exceptions the application expects (not found, validation, conflicts).',
+        'Let the catch-all log the exception with context and return HTTP 500 without internal details.',
+        'Never map the catch-all to 2xx or 4xx: that reports bugs and outages as client mistakes or success.'
+      ],
+      examples: [
+        {
+          title: 'Specific handlers plus a sanitized 500 fallback',
+          code: `
+@RestControllerAdvice
+class ApiExceptionHandler {
+    @ExceptionHandler(OrderNotFoundException.class)
+    ProblemDetail notFound(OrderNotFoundException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, "Order not found");
+    }
+
+    @ExceptionHandler(Exception.class)
+    ProblemDetail unexpected(Exception ex) {
+        log.error("Unhandled request failure", ex);
+        return ProblemDetail.forStatusAndDetail(
+                HttpStatus.INTERNAL_SERVER_ERROR, "Unexpected error");
+    }
+}`
+        }
+      ]
+    };
+  }
+
   if (
     ruleId === 'JAVA_EMPTY_CATCH_BLOCK'
     || ruleId === 'SPRING_SWALLOWED_EXCEPTION_FALLBACK'
-    || ruleId === 'SPRING_BROAD_EXCEPTION_HANDLER'
   ) {
     return {
       lead: 'Make the exception handling visible and intentional. Log useful context, rethrow when the caller must know, or return a documented fallback only after preserving the failure signal.',
@@ -5207,6 +5235,7 @@ function officialReferencesForFinding(finding: Finding): FindingReference[] {
         url: 'https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/rolling-back.html'
       }];
     case 'SPRING_RAW_EXCEPTION_MESSAGE_HTTP':
+    case 'SPRING_BROAD_EXCEPTION_HANDLER':
       return [{
         label: 'Spring Framework — RFC 9457 problem details',
         url: 'https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-ann-rest-exceptions.html'
@@ -5384,7 +5413,7 @@ function badgeCell(text: string, badgeClass: string): HTMLTableCellElement {
   const cell = document.createElement('td');
   cell.className = 'cell-badge';
   const title = badgeClass.includes('badge-category')
-    ? `Category: ${text}`
+    ? categoryExplanation(text)
     : severityExplanation(text);
   const badge = element('span', {
     className: badgeClass,
@@ -5832,6 +5861,42 @@ function severityLabel(value: string): string {
     default:
       return value;
   }
+}
+
+/** Tooltip for a confidence badge; takes the displayed label (High/Medium/Low). */
+function confidenceExplanation(label: string): string {
+  switch (normalizeConfidence(label)) {
+    case 'HIGH':
+      return 'High confidence — the matched code has this effect in every context the analyzer can see.';
+    case 'MEDIUM':
+      return 'Medium confidence — the pattern matched, but a context the analyzer cannot see could make it safe. Review before acting.';
+    case 'LOW':
+      return 'Low confidence — a heuristic signal. Treat it as a pointer for manual review.';
+    default:
+      return `Confidence: ${label}`;
+  }
+}
+
+/** Tooltip for a runtime-detection badge; takes the displayed label. */
+function runtimeDetectionExplanation(label: string): string {
+  switch (label) {
+    case runtimeDetectionLabel('NOT_NORMALLY_DETECTED'):
+      return 'Detected statically — the problem would not normally surface in ordinary runs or tests; static analysis is how it is found.';
+    case runtimeDetectionLabel('ACTIVE_PROFILE_RUNTIME_MAY_DETECT'):
+      return 'Depends on active profile — it only shows up at runtime when a profile carrying this configuration is active.';
+    case runtimeDetectionLabel('RUNTIME_REQUIRED'):
+      return 'Requires runtime verification — the defect appears only when the code runs (e.g. on first invocation); confirm it with a test.';
+    default:
+      return `Runtime detection: ${label}`;
+  }
+}
+
+function categoryExplanation(label: string): string {
+  return `Category: ${label} — the area of the application this rule covers. Use the Category filter to show only these findings.`;
+}
+
+function ruleIdExplanation(ruleId: string): string {
+  return `Rule ID ${ruleId} — disable it in Settings → Rule management, or suppress it for one repository in .analyzer-suppress.yml.`;
 }
 
 function severityExplanation(value: string): string {
@@ -6656,59 +6721,52 @@ function deriveFindingPresentation(finding: Finding): PresentedFinding {
   let title = finding.title?.trim() || ruleType;
   let target = finding.target || finding.location || '—';
 
-  const riskyMatch = message.match(/^(?<property>[\w.-]+)=.+ is risky in production\./i);
-  if (riskyMatch?.groups?.property) {
-    ruleType = 'Risky production config';
-    title = 'Risky production config';
-    target = riskyMatch.groups.property;
-  } else if (normalized.startsWith('sensitive configuration property appears to use a literal value')) {
-    ruleType = 'Sensitive literal value';
-    title = 'Sensitive literal value';
-    const propertyMatch = message.match(/:\s*([\w.-]+)\s*$/);
-    target = propertyMatch?.[1] ?? target;
+  // A rule-based finding keeps its catalog title, so the results table, Settings → Rule
+  // management and the exports name a rule the same way — and a Settings search for the name
+  // shown here finds it. The message patterns below only label rule-less notices (Gradle model
+  // and project-structure warnings) and fill in a target the backend did not provide.
+  const catalogTitled = Boolean(finding.ruleId?.trim() && finding.title?.trim());
+  const label = (value: string) => {
+    if (!catalogTitled) {
+      ruleType = value;
+      title = value;
+    }
+  };
+  const fallbackTarget = (value: string | null | undefined) => {
+    if (!finding.target && value) {
+      target = value;
+    }
+  };
+
+  if (normalized.startsWith('sensitive configuration property appears to use a literal value')) {
+    label('Sensitive literal value');
+    fallbackTarget(message.match(/:\s*([\w.-]+)\s*$/)?.[1]);
   } else if (normalized.startsWith('profile-specific configuration files')) {
-    ruleType = 'Profile-specific config';
-    title = 'Profile-specific config';
-    target = 'profiles';
+    label('Profile-specific config');
+    fallbackTarget('profiles');
   } else if (normalized.includes('@configurationproperties prefix was found')) {
-    ruleType = 'Orphan configuration prefix';
-    title = 'Orphan configuration prefix';
-    const prefixMatch = message.match(/prefix\s+"([^"]+)"/i);
-    target = prefixMatch?.[1] ?? target;
+    label('Orphan configuration prefix');
+    fallbackTarget(message.match(/prefix\s+"([^"]+)"/i)?.[1]);
   } else if (normalized.includes('management.endpoint.health.show-details=always')) {
-    ruleType = 'Health details exposure';
-    title = 'Health details exposure';
-    target = 'management.endpoint.health.show-details';
-  } else if (normalized.includes('management.endpoints.web.exposure.include=*')
-    || normalized.includes("actuator web exposure includes '*'")) {
-    ruleType = 'Actuator exposure';
-    title = 'Actuator exposure';
-    target = 'management.endpoints.web.exposure.include';
+    label('Health details exposure');
+    fallbackTarget('management.endpoint.health.show-details');
   } else if (normalized.startsWith('gradle executed successfully, but no dependency-bearing configuration resolved a dependency graph')) {
-    ruleType = 'Gradle model incomplete';
-    title = 'Gradle model incomplete';
-    target = 'dependency graph';
+    label('Gradle model incomplete');
+    fallbackTarget('dependency graph');
   } else if (normalized.startsWith('dependency resolution failed for ')) {
-    ruleType = 'Gradle dependency resolution';
-    title = 'Gradle dependency resolution';
-    const configurationMatch = message.match(/^Dependency resolution failed for\s+([^:.]+)(?:[:.].*)?$/i);
-    target = configurationMatch?.[1]?.trim() ?? target;
+    label('Gradle dependency resolution');
+    fallbackTarget(message.match(/^Dependency resolution failed for\s+([^:.]+)(?:[:.].*)?$/i)?.[1]?.trim());
   } else if (normalized.includes('plain http://')) {
-    ruleType = 'Plain HTTP endpoint';
-    title = 'Plain HTTP endpoint';
-    target = target === '—' ? 'external endpoint' : target;
-  } else if (normalized.startsWith('reactive apis were detected in code')) {
-    ruleType = 'Reactive API usage in Servlet application';
-    title = 'Reactive API usage in Servlet application';
-    target = 'reactive APIs';
+    label('Plain HTTP endpoint');
+    if (target === '—') {
+      target = 'external endpoint';
+    }
   } else if (normalized.startsWith('build-aware analysis disabled')
     || normalized.startsWith('gradle model analysis was requested, but analyzer.gradle.enabled=false')) {
-    ruleType = 'Build-aware analysis disabled';
-    title = 'Build-aware analysis disabled';
-    target = 'Gradle model';
+    label('Build-aware analysis disabled');
+    fallbackTarget('Gradle model');
   } else if (normalized.includes('outside the main application package')) {
-    ruleType = 'Component outside main package';
-    title = 'Component outside main package';
+    label('Component outside main package');
   } else if (title === 'Static finding' || title === 'Analyzer finding') {
     title = fallbackFindingTitle(finding);
     ruleType = title;
@@ -6772,6 +6830,9 @@ function deriveLocationDetails(finding: Finding): { meta: string; known: boolean
       return { meta: `Line ${primaryLocation.startLine}`, known: true };
     }
     return { meta: `Lines ${primaryLocation.startLine}-${primaryLocation.endLine}`, known: true };
+  }
+  if (!finding.sourceFile) {
+    return { meta: 'Project-wide finding — no single source file', known: false };
   }
   return { meta: '', known: false };
 }
@@ -7305,17 +7366,20 @@ function compactSourceText(value: string, maxLength = 64): string {
   return middleEllipsis(text, maxLength);
 }
 
+const PROJECT_WIDE_LOCATION = 'Project-wide';
+
 function buildFindingLocation(finding: Finding): string {
   const primaryLocation = primaryFindingLocation(finding);
   if (primaryLocation?.filePath) {
     return sourceLabel(primaryLocation.filePath, primaryLocation.startLine ?? null, primaryLocation.endLine ?? null);
   }
-  const source = sourceLabel(finding.sourceFile, finding.line, finding.line);
-  if (source !== '—') {
-    return source;
+  if (finding.sourceFile) {
+    return sourceLabel(finding.sourceFile, finding.line, finding.line);
   }
+  // No file to point at: show what the analyzer said the finding is about (e.g. "Build
+  // configuration") rather than a generic placeholder.
   const locationParts = [finding.location, finding.target].filter((value): value is string => Boolean(value));
-  return locationParts.join(' | ') || '—';
+  return locationParts.join(' | ') || PROJECT_WIDE_LOCATION;
 }
 
 function middleEllipsis(value: string, maxLength: number): string {

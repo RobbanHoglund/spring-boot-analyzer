@@ -17,8 +17,10 @@ import java.util.Optional;
  */
 public final class FindingRules {
 
-    /** A sensitive property (password, secret, token, …) is set to a plain-text literal value
-     *  rather than referencing an environment variable or secret-management placeholder. */
+    /** A sensitive property (password, secret, token, ...) is set to a plain-text literal value,
+     *  or to a placeholder whose fallback is a literal credential ({@code ${DB_PASSWORD:secret}})
+     *  that every environment without the variable silently uses. Well-known weak fallbacks are
+     *  reported as {@code SPRING_SECRET_WEAK_PLACEHOLDER_DEFAULT}. */
     public static final FindingRule SPRING_SECRET_LITERAL =
             rule(
                     "SPRING_SECRET_LITERAL",
@@ -304,13 +306,16 @@ public final class FindingRules {
                     FindingCategory.EXCEPTION_HANDLING,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** A {@code @ControllerAdvice} or {@code @ExceptionHandler} method catches
-     *  {@code Exception} or broader and returns a generic response, suppressing
-     *  more specific handlers that might be registered lower in the chain. */
+    /** An {@code @ExceptionHandler} catches {@code Exception}, {@code RuntimeException} or
+     *  {@code Throwable}. Spring still routes each exception to the most specific handler in the
+     *  same advice, so the risk is what the catch-all returns: mapping unexpected failures to a
+     *  4xx or 2xx response hides server errors (reported as WARNING); a catch-all whose response
+     *  cannot be determined is INFO; a sanitized 500 fallback is the recommended pattern and is
+     *  not reported. */
     public static final FindingRule SPRING_BROAD_EXCEPTION_HANDLER =
             rule(
                     "SPRING_BROAD_EXCEPTION_HANDLER",
-                    "Broad Spring exception handler",
+                    "Catch-all exception handler may hide server errors",
                     FindingSeverity.INFO,
                     FindingCategory.EXCEPTION_HANDLING,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
@@ -532,18 +537,6 @@ public final class FindingRules {
                     FindingCategory.PERSISTENCE,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** {@code @Transactional} and {@code @Scheduled} are placed on the same method.
-     *  Scheduled methods run in a dedicated thread pool that does not participate in
-     *  caller-supplied transaction contexts, so the transaction semantics are often
-     *  unintentional or misunderstood. */
-    public static final FindingRule SPRING_TRANSACTIONAL_ON_SCHEDULED =
-            rule(
-                    "SPRING_TRANSACTIONAL_ON_SCHEDULED",
-                    "@Transactional and @Scheduled on the same method",
-                    FindingSeverity.WARNING,
-                    FindingCategory.TRANSACTION,
-                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
-
     /** CSRF protection is explicitly disabled in a Spring Security configuration.
      *  Disabling CSRF is only safe for stateless APIs that use token-based authentication
      *  and never rely on browser session cookies. */
@@ -643,9 +636,11 @@ public final class FindingRules {
                     FindingCategory.SECURITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** A sensitive value (password, token, API key, …) is passed as a URL query parameter
-     *  or path variable, where it may be logged by proxies, CDNs, or the application itself
-     *  as part of the request URL. */
+    /** A sensitive value (password, token, API key, ...) travels in the URL: a path variable, or a
+     *  {@code @RequestParam} on a handler that accepts GET or any method. URLs are logged by
+     *  proxies, CDNs, and the application itself. {@code @RequestParam} on handlers mapped only to
+     *  POST, PUT or PATCH is not reported — such values normally arrive as form fields in the
+     *  request body. */
     public static final FindingRule SPRING_REQUEST_PARAM_SENSITIVE_NAME =
             rule(
                     "SPRING_REQUEST_PARAM_SENSITIVE_NAME",
@@ -654,13 +649,14 @@ public final class FindingRules {
                     FindingCategory.SECURITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** A {@code @Value("${property}")} annotation has no default ({@code :}) and the
-     *  application will throw {@code IllegalArgumentException} on startup if the property
-     *  is absent from the environment. */
+    /** A {@code @Value("${property}")} annotation has no default ({@code :}) and the property is
+     *  configured only in profile-specific documents, so starting with any other profile fails
+     *  bean creation. Properties configured in the default profile, and properties configured
+     *  nowhere (reported by {@code CONFIG_CODE_REFERENCE_MISSING}), are not reported. */
     public static final FindingRule SPRING_VALUE_NO_DEFAULT =
             rule(
                     "SPRING_VALUE_NO_DEFAULT",
-                    "@Value property reference has no default value",
+                    "@Value without default relies on a property only some profiles define",
                     FindingSeverity.WARNING,
                     FindingCategory.CONFIGURATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
@@ -774,25 +770,15 @@ public final class FindingRules {
                     FindingCategory.SCHEDULING,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** A {@code @FeignClient} has no {@code fallback} or {@code fallbackFactory} attribute
-     *  and no circuit-breaker configuration. Any transient upstream failure propagates
-     *  directly to the caller, and the default read timeout is infinite. */
+    /** A {@code @FeignClient} has no {@code fallback} or {@code fallbackFactory}, and no timeout
+     *  or circuit breaker is configured for it ({@code spring.cloud.openfeign.client.config.*},
+     *  legacy {@code feign.client.config.*}, or {@code ...circuitbreaker.enabled}). With Feign's
+     *  defaults (10 s connect / 60 s read) a degraded upstream keeps caller threads blocked and
+     *  every failure propagates to the caller. */
     public static final FindingRule SPRING_FEIGN_NO_FALLBACK_OR_TIMEOUT =
             rule(
                     "SPRING_FEIGN_NO_FALLBACK_OR_TIMEOUT",
-                    "@FeignClient has no fallback or timeout configuration",
-                    FindingSeverity.WARNING,
-                    FindingCategory.HTTP,
-                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
-
-    /** A {@code RestTemplate} {@code @Bean} method does not call {@code setErrorHandler},
-     *  leaving the default behaviour of throwing {@code HttpClientErrorException} or
-     *  {@code HttpServerErrorException} on non-2xx responses. Error details from downstream
-     *  services are lost or inconsistently handled at different call sites. */
-    public static final FindingRule SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER =
-            rule(
-                    "SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER",
-                    "RestTemplate used without HTTP status error handling",
+                    "@FeignClient has neither a fallback nor timeout configuration",
                     FindingSeverity.WARNING,
                     FindingCategory.HTTP,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
@@ -845,9 +831,10 @@ public final class FindingRules {
 
     // ── Testing ───────────────────────────────────────────────────────────────
 
-    /** {@code @SpringBootTest} loads the entire application context, but the test class only
-     *  injects a controller (suggesting {@code @WebMvcTest}) or a repository (suggesting
-     *  {@code @DataJpaTest}). Using a slice annotation is significantly faster and more focused. */
+    /** {@code @SpringBootTest} loads the entire application context, but the test class injects
+     *  nothing except controllers (suggesting {@code @WebMvcTest}) or nothing except
+     *  repositories (suggesting {@code @DataJpaTest}). Tests that drive the embedded server over
+     *  HTTP are not reported, because no slice can replace them. */
     public static final FindingRule SPRING_TEST_SPRINGBOOTTEST_OVERUSED =
             rule(
                     "SPRING_TEST_SPRINGBOOTTEST_OVERUSED",
@@ -856,9 +843,12 @@ public final class FindingRules {
                     FindingCategory.TESTING,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** An integration test class injects a {@code Repository} but has no class-level
-     *  {@code @Transactional}. Without it, each test method that writes to the database
-     *  leaves rows behind, causing order-dependent failures. */
+    /** A {@code @SpringBootTest} class injects a {@code Repository} but has no class-level
+     *  {@code @Transactional}, so each test method that writes to the database leaves rows
+     *  behind. Slices that are already transactional ({@code @DataJpaTest}) and tests that drive
+     *  a real server ({@code RANDOM_PORT}/{@code DEFINED_PORT}, {@code @LocalServerPort}, an HTTP
+     *  client field) are not reported: there a test transaction cannot roll back the server's
+     *  writes. */
     public static final FindingRule SPRING_TEST_NO_TRANSACTIONAL_ROLLBACK =
             rule(
                     "SPRING_TEST_NO_TRANSACTIONAL_ROLLBACK",
@@ -917,7 +907,8 @@ public final class FindingRules {
     /** {@code @Cacheable} or {@code @CachePut} returns a mutable collection type
      *  ({@code List}, {@code Map}, {@code Set}, etc.). Callers that mutate the returned
      *  collection are directly mutating the cached instance, causing subsequent cache hits to
-     *  return corrupt data. */
+     *  return corrupt data. Methods whose every return statement builds an unmodifiable
+     *  collection are not reported. */
     public static final FindingRule SPRING_CACHEABLE_MUTABLE_RETURN_TYPE =
             rule(
                     "SPRING_CACHEABLE_MUTABLE_RETURN_TYPE",
@@ -1027,13 +1018,15 @@ public final class FindingRules {
 
     /** A {@code @TransactionalEventListener} that runs after the transaction commits (the default
      *  {@code AFTER_COMMIT} phase, or {@code AFTER_COMPLETION}) performs persistence writes without
-     *  {@code @Transactional(propagation = REQUIRES_NEW)}. There is no active transaction at that
-     *  point, so the writes are silently never flushed. */
+     *  {@code @Transactional(propagation = REQUIRES_NEW)}. The writes join the already committed
+     *  transaction, so they are silently never flushed. {@code @Async} listeners are exempt when
+     *  {@code @EnableAsync} is present. WARNING rather than ERROR because write calls are matched
+     *  by method name. */
     public static final FindingRule SPRING_TX_EVENT_LISTENER_WRITE_LOST =
             rule(
                     "SPRING_TX_EVENT_LISTENER_WRITE_LOST",
                     "Writes in an after-commit @TransactionalEventListener are silently lost",
-                    FindingSeverity.ERROR,
+                    FindingSeverity.WARNING,
                     FindingCategory.TRANSACTION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
@@ -1089,14 +1082,17 @@ public final class FindingRules {
     // ── Observability gaps ────────────────────────────────────────────────────
 
     /** An {@code @Async} method's return type is not {@code void}, {@code Future},
-     *  {@code CompletableFuture}, {@code ListenableFuture}, {@code Mono}, or {@code Flux}.
-     *  Spring's async proxy discards the actual return value; the caller always receives
-     *  {@code null} or a failed future. */
+     *  {@code CompletableFuture} or {@code ListenableFuture} (Reactor's {@code Mono}/{@code Flux}
+     *  are not supported either). On Spring Framework 6+ every call throws
+     *  {@code IllegalArgumentException}; on Framework 5 the caller silently receives
+     *  {@code null}. Reported only when {@code @EnableAsync} is present, because the annotation
+     *  is inert without it. */
     public static final FindingRule SPRING_ASYNC_NON_FUTURE_RETURN =
             rule(
                     "SPRING_ASYNC_NON_FUTURE_RETURN",
-                    "@Async method has a non-Future return type — caller always receives null",
-                    FindingSeverity.WARNING,
+                    "@Async method has an unsupported return type — every call fails or returns"
+                            + " null",
+                    FindingSeverity.ERROR,
                     FindingCategory.MAINTAINABILITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
@@ -1201,9 +1197,10 @@ public final class FindingRules {
                     FindingCategory.PROFILE_DRIFT,
                     FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT);
 
-    /** An explicit dependency overrides the Spring Boot BOM and pins {@code org.hibernate:hibernate-core}
-     *  to a version below 6.x while the resolved Spring Boot version is 3.x, which ships Hibernate 6.
-     *  The mismatch causes runtime failures at startup. Only detectable with Gradle model data. */
+    /** An explicit dependency overrides the Spring Boot BOM and pins {@code hibernate-core} below
+     *  the major the resolved Spring Boot line manages (Boot 3 → Hibernate 6, Boot 4 → Hibernate
+     *  7). The mismatch causes runtime failures at startup. Only detectable with Gradle model
+     *  data. */
     public static final FindingRule SPRING_HIBERNATE_VERSION_MISMATCH =
             rule(
                     "SPRING_HIBERNATE_VERSION_MISMATCH",
@@ -1212,20 +1209,21 @@ public final class FindingRules {
                     FindingCategory.DEPENDENCY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** The detected Spring Boot version is 3.x but the Java version (from Gradle toolchain or
-     *  build-file hint) is below 17. Spring Boot 3 requires Java 17 as a minimum; the
-     *  application will fail to start on Java 11 or earlier. */
+    /** The detected Spring Boot version is 3.x or later but the Java version (from Gradle
+     *  toolchain or build-file hint) is below 17. Spring Boot 3 and 4 require Java 17 as a
+     *  minimum; the build or the application start fails on older JVMs. The ID keeps its
+     *  original name for stability. */
     public static final FindingRule SPRING_BOOT3_REQUIRES_JAVA17 =
             rule(
                     "SPRING_BOOT3_REQUIRES_JAVA17",
-                    "Spring Boot 3.x requires Java 17 or later",
+                    "Spring Boot 3+ requires Java 17 or later",
                     FindingSeverity.ERROR,
                     FindingCategory.DEPENDENCY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
     /** {@code spring.threads.virtual.enabled=true} is configured but the detected Java version
-     *  is below 21. Virtual threads (Project Loom) require Java 21 or later; on older JVMs
-     *  Spring Boot may fail to start or silently fall back to platform threads. */
+     *  is below 21. Spring Boot treats the property as active only on Java 21+, so on an older
+     *  JVM it is silently ignored and the application keeps running on platform threads. */
     public static final FindingRule SPRING_VIRTUAL_THREADS_JAVA_TOO_OLD =
             rule(
                     "SPRING_VIRTUAL_THREADS_JAVA_TOO_OLD",
@@ -1370,11 +1368,11 @@ public final class FindingRules {
                     FindingCategory.SCHEDULING,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** {@code @Cacheable} is used in the project but no explicit cache provider with TTL support
-     *  (Caffeine, Redis, JCache) is configured via {@code spring.cache.type},
-     *  {@code spring.cache.caffeine.spec}, or {@code spring.cache.redis.*}. The default
-     *  Spring Boot cache implementation ({@code ConcurrentHashMap}) has no eviction or TTL
-     *  policy; cached values accumulate indefinitely, leading to memory growth and stale data. */
+    /** {@code @Cacheable} is used but neither the classpath (Caffeine, JCache, Redis, Hazelcast,
+     *  ...) nor the configuration selects a cache provider with expiry support, or
+     *  {@code spring.cache.type=simple} forces the default. Spring Boot then uses the simple
+     *  {@code ConcurrentHashMap} cache, which never evicts; cached values accumulate
+     *  indefinitely, leading to memory growth and stale data. */
     public static final FindingRule SPRING_CACHEABLE_NO_TTL_PROVIDER =
             rule(
                     "SPRING_CACHEABLE_NO_TTL_PROVIDER",
@@ -1473,13 +1471,15 @@ public final class FindingRules {
                     FindingCategory.SECURITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** {@code spring-boot-devtools} appears on the runtime classpath. DevTools enables
-     *  remote restart endpoints, file-system watchers, and live-reload servers that add
-     *  CPU overhead and expose restart/reload attack surfaces in production containers. */
+    /** {@code spring-boot-devtools} is declared so that it ships in the production artifact: in a
+     *  packaged Gradle configuration ({@code implementation}, {@code runtimeOnly}, ...) instead of
+     *  {@code developmentOnly}, or in Maven with the repackage goal's {@code excludeDevtools}
+     *  turned off. DevTools deactivates itself in a fully packaged application, but it still adds
+     *  restart and remote-update machinery to the artifact. */
     public static final FindingRule SPRING_DEVTOOLS_IN_PRODUCTION =
             rule(
                     "SPRING_DEVTOOLS_IN_PRODUCTION",
-                    "spring-boot-devtools is on the runtime classpath",
+                    "spring-boot-devtools is packaged into the production artifact",
                     FindingSeverity.WARNING,
                     FindingCategory.SECURITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
@@ -1544,10 +1544,9 @@ public final class FindingRules {
      *  {@code new ObjectInputStream(...)} for Java serialization, and SnakeYAML's
      *  {@code new Yaml()} default constructor. The Jackson and Java-serialization patterns are
      *  well-known remote-code-execution vectors for attacker-controlled input. The SnakeYAML
-     *  constructor allowed arbitrary class instantiation on SnakeYAML 1.x (CVE-2022-1471);
-     *  SnakeYAML 2.x (the Spring Boot 3.1+ default) rejects global tags by default, but
-     *  {@code SafeConstructor}/explicit {@code LoaderOptions} remain preferable for untrusted
-     *  input. */
+     *  constructor allowed arbitrary class instantiation on SnakeYAML 1.x (CVE-2022-1471); it is
+     *  reported only when the project is not known to run Spring Boot 3.1+ (which manages
+     *  SnakeYAML 2.x, safe by default) or pins SnakeYAML 1.x explicitly. */
     public static final FindingRule SPRING_INSECURE_DESERIALIZATION =
             rule(
                     "SPRING_INSECURE_DESERIALIZATION",
@@ -1628,7 +1627,7 @@ public final class FindingRules {
      *  {@code Repository} (field or constructor parameter), bypassing the service layer.
      *  This couples the HTTP layer to persistence, prevents reuse of business logic, and
      *  makes it impossible to add cross-cutting concerns (transactions, caching, auditing)
-     *  in a single place. */
+     *  in a single place. Reported once per injected repository type. */
     public static final FindingRule SPRING_REPOSITORY_IN_CONTROLLER =
             rule(
                     "SPRING_REPOSITORY_IN_CONTROLLER",
@@ -1716,7 +1715,9 @@ public final class FindingRules {
     /** A redirect target is built from concatenated input: a returned
      *  {@code "redirect:" + value} view name, or {@code response.sendRedirect(... + value)}.
      *  If the value is attacker-influenced this is an open-redirect used for phishing and
-     *  OAuth token theft. */
+     *  OAuth token theft. A literal prefix that fixes the host — a path such as
+     *  {@code "/owners/"} or an absolute URL whose host is followed by a slash — cannot redirect
+     *  off-site and is not reported. */
     public static final FindingRule SPRING_OPEN_REDIRECT =
             rule(
                     "SPRING_OPEN_REDIRECT",
@@ -2191,13 +2192,15 @@ public final class FindingRules {
 
     /** A {@code @Scheduled} annotation declares zero or more than one trigger attribute
      *  ({@code cron}, {@code fixedDelay}/{@code fixedDelayString},
-     *  {@code fixedRate}/{@code fixedRateString}). Spring requires exactly one trigger and throws
-     *  {@code IllegalStateException} while registering the task, so the application context fails
-     *  to start. */
+     *  {@code fixedRate}/{@code fixedRateString}), or combines a cron trigger with
+     *  {@code initialDelay}. Spring throws {@code IllegalStateException} while registering the
+     *  task, so the application context fails to start. An {@code initialDelay}-only annotation is
+     *  a valid one-time task from Spring Framework 6.1 (Spring Boot 3.2) and is reported only for
+     *  projects known to run an older line. */
     public static final FindingRule SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING =
             rule(
                     "SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING",
-                    "@Scheduled needs exactly one trigger attribute — startup fails otherwise",
+                    "@Scheduled trigger attributes are missing or conflicting — startup fails",
                     FindingSeverity.ERROR,
                     FindingCategory.SCHEDULING,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);

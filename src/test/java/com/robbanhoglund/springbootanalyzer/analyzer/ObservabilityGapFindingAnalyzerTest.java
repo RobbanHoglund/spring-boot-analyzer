@@ -48,6 +48,33 @@ class ObservabilityGapFindingAnalyzerTest {
         return analyzer.analyze(repoRoot);
     }
 
+    private List<Finding> findingsOnBoot(String springBootVersion) {
+        return analyzer.analyze(
+                com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources.from(repoRoot),
+                new com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo(
+                        com.robbanhoglund.springbootanalyzer.analyzer.model.BuildTool.GRADLE,
+                        true,
+                        "17",
+                        List.of(),
+                        springBootVersion,
+                        "build.gradle plugin",
+                        "HIGH"));
+    }
+
+    /** The return-type rule applies only once async execution is enabled somewhere. */
+    private void writeAsyncConfig() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/AsyncConfig.java",
+                """
+                package com.example;
+                import org.springframework.context.annotation.Configuration;
+                import org.springframework.scheduling.annotation.EnableAsync;
+                @Configuration
+                @EnableAsync
+                public class AsyncConfig {}
+                """);
+    }
+
     private static Finding byRule(List<Finding> findings, String ruleId) {
         return findings.stream().filter(f -> ruleId.equals(f.ruleId())).findFirst().orElse(null);
     }
@@ -288,6 +315,7 @@ class ObservabilityGapFindingAnalyzerTest {
 
     @Test
     void flagsAsyncMethodReturningString() throws IOException {
+        writeAsyncConfig();
         writeSourceFile(
                 "src/main/java/com/example/ReportService.java",
                 """
@@ -303,10 +331,73 @@ class ObservabilityGapFindingAnalyzerTest {
         assertThat(f).isNotNull();
         assertThat(f.target()).isEqualTo("ReportService#generateReport");
         assertThat(f.message()).contains("String");
+        assertThat(f.severity())
+                .isEqualTo(
+                        com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity.ERROR);
+        // Spring Boot 3.5 runs Spring Framework 6, which rejects the call outright.
+        assertThat(f.whyBadPractice()).contains("IllegalArgumentException");
+    }
+
+    @Test
+    void flagsAsyncMethodReturningMono() throws IOException {
+        // AsyncExecutionAspectSupport only returns void or a Future; Reactor types are rejected.
+        writeAsyncConfig();
+        writeSourceFile(
+                "src/main/java/com/example/QuoteService.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.Async;
+                import reactor.core.publisher.Mono;
+                public class QuoteService {
+                    @Async
+                    public Mono<String> quote() { return Mono.just("q"); }
+                }
+                """);
+
+        Finding f = byRule(findings(), "SPRING_ASYNC_NON_FUTURE_RETURN");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("Mono");
+    }
+
+    @Test
+    void doesNotFlagUnsupportedReturnTypeWhenAsyncIsNotEnabled() throws IOException {
+        // Without @EnableAsync the annotation is inert and the value is returned synchronously.
+        writeSourceFile(
+                "src/main/java/com/example/ReportService.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.Async;
+                public class ReportService {
+                    @Async
+                    public String generateReport() { return "report"; }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_ASYNC_NON_FUTURE_RETURN")).isNull();
+    }
+
+    @Test
+    void describesTheSilentNullOnSpringBoot2() throws IOException {
+        writeAsyncConfig();
+        writeSourceFile(
+                "src/main/java/com/example/ReportService.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.Async;
+                public class ReportService {
+                    @Async
+                    public String generateReport() { return "report"; }
+                }
+                """);
+
+        Finding f = byRule(findingsOnBoot("2.7.18"), "SPRING_ASYNC_NON_FUTURE_RETURN");
+        assertThat(f).isNotNull();
+        assertThat(f.whyBadPractice()).contains("returns null");
     }
 
     @Test
     void flagsAsyncMethodReturningCustomObject() throws IOException {
+        writeAsyncConfig();
         writeSourceFile(
                 "src/main/java/com/example/ReportService.java",
                 """

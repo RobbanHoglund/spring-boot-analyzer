@@ -925,7 +925,81 @@ record CreateRequest(@NotBlank String symbol, int quantity) {
     }
 
     @Test
-    void flagsBroadSpringExceptionHandler() throws IOException {
+    void doesNotFlagCatchAllHandlerThatReturnsServerError() throws IOException {
+        // A catch-all that returns a sanitized 500 is the recommended final fallback.
+        writeGlobalErrors(
+                """
+                    @ExceptionHandler(Exception.class)
+                    ResponseEntity<String> handle(Exception ex) {
+                        return ResponseEntity.status(500).body("nope");
+                    }
+                """);
+
+        assertThat(broadHandlerFindings()).isEmpty();
+    }
+
+    @Test
+    void flagsCatchAllHandlerWhoseResponseCannotBeDetermined() throws IOException {
+        writeGlobalErrors(
+                """
+                    @ExceptionHandler(Exception.class)
+                    ErrorBody handle(Exception ex) {
+                        return new ErrorBody("unexpected");
+                    }
+
+                    record ErrorBody(String code) {}
+                """);
+
+        assertThat(broadHandlerFindings())
+                .singleElement()
+                .satisfies(
+                        finding -> {
+                            assertThat(finding.severity()).isEqualTo(FindingSeverity.INFO);
+                            assertThat(finding.category())
+                                    .isEqualTo(FindingCategory.EXCEPTION_HANDLING);
+                            assertThat(finding.runtimeDetection())
+                                    .isEqualTo(FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+                            assertThat(finding.message())
+                                    .contains("verify it returns a sanitized 500");
+                        });
+    }
+
+    @Test
+    void doesNotTreatSpecificExceptionTypesAsBroad() throws IOException {
+        // IllegalArgumentException.class contains the text "Exception.class"; only the exact
+        // Exception, RuntimeException and Throwable types are broad.
+        writeGlobalErrors(
+                """
+                    @ExceptionHandler({IllegalArgumentException.class, IllegalStateException.class})
+                    ResponseEntity<String> badRequest(RuntimeException ex) {
+                        return ResponseEntity.badRequest().body("bad");
+                    }
+                """);
+
+        assertThat(broadHandlerFindings()).isEmpty();
+    }
+
+    @Test
+    void flagsCatchAllInferredFromTheParameterType() throws IOException {
+        // Without an explicit value Spring infers the handled type from the parameter.
+        writeGlobalErrors(
+                """
+                    @ExceptionHandler
+                    ResponseEntity<String> handle(Exception ex) {
+                        return ResponseEntity.ok("handled");
+                    }
+                """);
+
+        assertThat(broadHandlerFindings())
+                .singleElement()
+                .satisfies(
+                        finding -> {
+                            assertThat(finding.severity()).isEqualTo(FindingSeverity.WARNING);
+                            assertThat(finding.evidence()).contains("200-style success");
+                        });
+    }
+
+    private void writeGlobalErrors(String members) throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
         Path sourceRoot =
                 Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
@@ -940,29 +1014,23 @@ record CreateRequest(@NotBlank String symbol, int quantity) {
 
                 @RestControllerAdvice
                 class GlobalErrors {
-                    @ExceptionHandler(Exception.class)
-                    ResponseEntity<String> handle(Exception ex) {
-                        return ResponseEntity.status(500).body("nope");
-                    }
+                %s
                 }
-                """);
+                """
+                        .formatted(members));
+    }
 
-        List<Finding> findings =
-                analyzeStaticPractice(
+    private List<Finding> broadHandlerFindings() {
+        return analyzeStaticPractice(
                         tempDir,
-                        emptyBuildInfo(
-                                List.of("org.springframework.boot:spring-boot-starter-web")));
-
-        assertThat(findings)
-                .anyMatch(
+                        emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web")))
+                .stream()
+                .filter(
                         finding ->
                                 FindingRules.SPRING_BROAD_EXCEPTION_HANDLER
-                                                .ruleId()
-                                                .equals(finding.ruleId())
-                                        && finding.severity() == FindingSeverity.INFO
-                                        && finding.category() == FindingCategory.EXCEPTION_HANDLING
-                                        && finding.runtimeDetection()
-                                                == FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+                                        .ruleId()
+                                        .equals(finding.ruleId()))
+                .toList();
     }
 
     @Test
@@ -1002,7 +1070,7 @@ record CreateRequest(@NotBlank String symbol, int quantity) {
                                                 .equals(finding.ruleId())
                                         && finding.severity() == FindingSeverity.WARNING
                                         && finding.evidence() != null
-                                        && finding.evidence().contains("HTTP 400-style response"));
+                                        && finding.evidence().contains("400-style client error"));
     }
 
     @Test
@@ -2508,82 +2576,6 @@ class PriceRefreshJob {
     // @Transactional + @Scheduled on same method
     // -------------------------------------------------------------------------
 
-    @Test
-    void flagsTransactionalOnScheduledMethod() throws IOException {
-        Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot =
-                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(
-                sourceRoot.resolve("DailyReportJob.java"),
-                """
-                package com.example.demo;
-
-                import org.springframework.scheduling.annotation.Scheduled;
-                import org.springframework.stereotype.Component;
-                import org.springframework.transaction.annotation.Transactional;
-
-                @Component
-                class DailyReportJob {
-                    @Scheduled(cron = "0 0 3 * * *", zone = "UTC")
-                    @Transactional
-                    public void generate() {
-                        writeReport();
-                    }
-
-                    void writeReport() {
-                    }
-                }
-                """);
-
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
-
-        assertThat(findings)
-                .anyMatch(
-                        finding ->
-                                FindingRules.SPRING_TRANSACTIONAL_ON_SCHEDULED
-                                                .ruleId()
-                                                .equals(finding.ruleId())
-                                        && finding.severity() == FindingSeverity.WARNING
-                                        && "DailyReportJob#generate".equals(finding.target())
-                                        && finding.primaryLocation() != null);
-    }
-
-    @Test
-    void doesNotFlagScheduledAloneOrTransactionalAlone() throws IOException {
-        Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot =
-                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(
-                sourceRoot.resolve("Jobs.java"),
-                """
-                package com.example.demo;
-
-                import org.springframework.scheduling.annotation.Scheduled;
-                import org.springframework.stereotype.Component;
-                import org.springframework.transaction.annotation.Transactional;
-
-                @Component
-                class Jobs {
-                    @Scheduled(fixedDelay = 300000)
-                    public void pollJob() {
-                    }
-
-                    @Transactional
-                    public void doWork() {
-                    }
-                }
-                """);
-
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
-
-        assertThat(findings)
-                .noneMatch(
-                        finding ->
-                                FindingRules.SPRING_TRANSACTIONAL_ON_SCHEDULED
-                                        .ruleId()
-                                        .equals(finding.ruleId()));
-    }
-
     // -------------------------------------------------------------------------
     // CSRF disabled
     // -------------------------------------------------------------------------
@@ -2885,8 +2877,12 @@ class SecurityConfig {
     // -------------------------------------------------------------------------
 
     @Test
-    void flagsValueAnnotationWithoutDefault() throws IOException {
-        Files.createDirectories(tempDir.resolve("src/main/resources"));
+    void flagsValueWithoutDefaultWhosePropertyOnlyAProfileDefines() throws IOException {
+        Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
+        // Only the prod profile defines it, so the default profile fails to start.
+        Files.writeString(
+                resources.resolve("application-prod.properties"),
+                "api.base-url=https://api.example.com\n");
         Path sourceRoot =
                 Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
         Files.writeString(
@@ -2914,7 +2910,52 @@ class SecurityConfig {
                                                 .equals(finding.ruleId())
                                         && finding.severity() == FindingSeverity.WARNING
                                         && "ApiClient.baseUrl".equals(finding.target())
-                                        && finding.primaryLocation() != null);
+                                        && finding.primaryLocation() != null
+                                        && finding.message().contains("profile(s) prod"));
+    }
+
+    @Test
+    void doesNotFlagValueWithoutDefaultWhenTheDefaultProfileDefinesIt() throws IOException {
+        // Present in every environment; a required value without a fallback is fail-fast.
+        writeApiClientWithConfiguration("application.properties");
+
+        assertThat(analyzeStaticPractice(tempDir, emptyBuildInfo(List.of())))
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_VALUE_NO_DEFAULT.ruleId());
+    }
+
+    @Test
+    void leavesUnconfiguredValuePropertiesToTheMissingReferenceRule() throws IOException {
+        // CONFIG_CODE_REFERENCE_MISSING reports a property that no configuration file defines.
+        writeApiClientWithConfiguration(null);
+
+        assertThat(analyzeStaticPractice(tempDir, emptyBuildInfo(List.of())))
+                .extracting(Finding::ruleId)
+                .doesNotContain(FindingRules.SPRING_VALUE_NO_DEFAULT.ruleId());
+    }
+
+    private void writeApiClientWithConfiguration(String configurationFile) throws IOException {
+        Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
+        if (configurationFile != null) {
+            Files.writeString(
+                    resources.resolve(configurationFile), "api.base-url=https://api.example.com\n");
+        }
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ApiClient.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.beans.factory.annotation.Value;
+                import org.springframework.stereotype.Component;
+
+                @Component
+                class ApiClient {
+                    @Value("${api.base-url}")
+                    private String baseUrl;
+                }
+                """);
     }
 
     @Test
@@ -3754,7 +3795,9 @@ class ParserC {
 
     @Test
     void allNewRuleFindingsCarryRichMetadata() throws IOException {
-        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
+        // SPRING_VALUE_NO_DEFAULT needs a property that only a profile-specific file defines.
+        Files.writeString(resources.resolve("application-dev.properties"), "some.prop=value\n");
         Path sourceRoot =
                 Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
         Files.writeString(
@@ -3831,7 +3874,6 @@ class ParserC {
                         FindingRules.SPRING_ASYNC_PROXY_BYPASS.ruleId(),
                         FindingRules.SPRING_ASYNC_VOID_SWALLOWED_EXCEPTION.ruleId(),
                         FindingRules.SPRING_MESSAGING_LISTENER_NO_ERROR_HANDLER.ruleId(),
-                        FindingRules.SPRING_TRANSACTIONAL_ON_SCHEDULED.ruleId(),
                         FindingRules.SPRING_BEAN_ON_NON_CONFIGURATION.ruleId(),
                         FindingRules.SPRING_FIELD_INJECTION.ruleId(),
                         FindingRules.SPRING_VALUE_NO_DEFAULT.ruleId(),
@@ -4489,80 +4531,6 @@ interface InventoryClient {
                 .noneMatch(
                         finding ->
                                 FindingRules.SPRING_FEIGN_NO_FALLBACK_OR_TIMEOUT
-                                        .ruleId()
-                                        .equals(finding.ruleId()));
-    }
-
-    // -------------------------------------------------------------------------
-    // SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER
-    // -------------------------------------------------------------------------
-
-    @Test
-    void flagsRestTemplateBeanWithoutErrorHandler() throws IOException {
-        Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot =
-                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(
-                sourceRoot.resolve("WebConfig.java"),
-                """
-                package com.example.demo;
-
-                import org.springframework.context.annotation.Bean;
-                import org.springframework.context.annotation.Configuration;
-                import org.springframework.web.client.RestTemplate;
-
-                @Configuration
-                class WebConfig {
-                    @Bean
-                    RestTemplate restTemplate() {
-                        return new RestTemplate();
-                    }
-                }
-                """);
-
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
-
-        assertThat(findings)
-                .anyMatch(
-                        finding ->
-                                FindingRules.SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER
-                                                .ruleId()
-                                                .equals(finding.ruleId())
-                                        && finding.severity() == FindingSeverity.WARNING
-                                        && finding.primaryLocation() != null);
-    }
-
-    @Test
-    void doesNotFlagRestTemplateWithErrorHandler() throws IOException {
-        Files.createDirectories(tempDir.resolve("src/main/resources"));
-        Path sourceRoot =
-                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
-        Files.writeString(
-                sourceRoot.resolve("WebConfig.java"),
-                """
-                package com.example.demo;
-
-                import org.springframework.context.annotation.Bean;
-                import org.springframework.context.annotation.Configuration;
-                import org.springframework.web.client.RestTemplate;
-
-                @Configuration
-                class WebConfig {
-                    @Bean
-                    RestTemplate restTemplate() {
-                        RestTemplate restTemplate = new RestTemplate();
-                        restTemplate.setErrorHandler(new MyErrorHandler());
-                        return restTemplate;
-                    }
-                }
-                """);
-
-        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
-
-        assertThat(findings)
-                .noneMatch(
-                        finding ->
-                                FindingRules.SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER
                                         .ruleId()
                                         .equals(finding.ruleId()));
     }
@@ -5542,6 +5510,221 @@ interface InventoryClient {
                 .doesNotContain(FindingRules.SPRING_BIGDECIMAL_DOUBLE_CONSTRUCTOR.ruleId());
     }
 
+    @Test
+    void reportsEachRepositoryInjectedIntoAControllerOnce() throws IOException {
+        // Constructor injection into a final field declares the dependency twice, but it is one
+        // coupling and must be one finding.
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("OwnerController.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.stereotype.Controller;
+
+                @Controller
+                class OwnerController {
+                    private final OwnerRepository owners;
+                    private final PetTypeRepository types;
+
+                    OwnerController(OwnerRepository owners, PetTypeRepository types) {
+                        this.owners = owners;
+                        this.types = types;
+                    }
+                }
+
+                interface OwnerRepository {}
+
+                interface PetTypeRepository {}
+                """);
+
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
+
+        assertThat(findings)
+                .filteredOn(
+                        f ->
+                                FindingRules.SPRING_REPOSITORY_IN_CONTROLLER
+                                        .ruleId()
+                                        .equals(f.ruleId()))
+                .extracting(Finding::target)
+                .containsExactlyInAnyOrder("OwnerController#owners", "OwnerController#types");
+    }
+
+    @Test
+    void doesNotFlagSensitiveRequestParamOnPostOnlyHandlers() throws IOException {
+        // A login form posts the password as a form field in the body, not in the URL.
+        writeLoginController(
+                """
+                    @PostMapping("/login")
+                    String login(@RequestParam String username, @RequestParam String password) {
+                        return "ok";
+                    }
+
+                    @RequestMapping(value = "/token", method = {RequestMethod.POST, RequestMethod.PUT})
+                    String token(@RequestParam("client_secret") String secret) {
+                        return "ok";
+                    }
+                """);
+
+        assertThat(sensitiveParamFindings()).isEmpty();
+    }
+
+    @Test
+    void stillFlagsSensitiveValuesThatTravelInTheUrl() throws IOException {
+        writeLoginController(
+                """
+                    @GetMapping("/login")
+                    String login(@RequestParam String password) {
+                        return "ok";
+                    }
+
+                    @PostMapping("/reset/{token}")
+                    String reset(@PathVariable String token) {
+                        return "ok";
+                    }
+                """);
+
+        assertThat(sensitiveParamFindings())
+                .extracting(Finding::target)
+                .containsExactlyInAnyOrder("LoginController#login", "LoginController#reset");
+    }
+
+    private void writeLoginController(String members) throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("LoginController.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.web.bind.annotation.GetMapping;
+                import org.springframework.web.bind.annotation.PathVariable;
+                import org.springframework.web.bind.annotation.PostMapping;
+                import org.springframework.web.bind.annotation.RequestMapping;
+                import org.springframework.web.bind.annotation.RequestMethod;
+                import org.springframework.web.bind.annotation.RequestParam;
+                import org.springframework.web.bind.annotation.RestController;
+
+                @RestController
+                class LoginController {
+                %s
+                }
+                """
+                        .formatted(members));
+    }
+
+    private List<Finding> sensitiveParamFindings() {
+        return analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(List.of("org.springframework.boot:spring-boot-starter-web")))
+                .stream()
+                .filter(
+                        finding ->
+                                FindingRules.SPRING_REQUEST_PARAM_SENSITIVE_NAME
+                                        .ruleId()
+                                        .equals(finding.ruleId()))
+                .toList();
+    }
+
+    @Test
+    void flagsFeignClientWithoutFallbackOrTimeoutsAndRecommendsTheCurrentPrefix()
+            throws IOException {
+        writeBillingClient(null);
+
+        assertThat(feignFindings())
+                .singleElement()
+                .satisfies(
+                        finding ->
+                                assertThat(finding.recommendation())
+                                        .contains(
+                                                "spring.cloud.openfeign.client.config.billing"
+                                                        + ".connect-timeout"));
+    }
+
+    @Test
+    void doesNotFlagFeignClientWithTimeoutsConfiguredForIt() throws IOException {
+        writeBillingClient(
+                "application.properties",
+                "spring.cloud.openfeign.client.config.billing.connect-timeout=2000\n"
+                        + "spring.cloud.openfeign.client.config.billing.read-timeout=5000\n");
+
+        assertThat(feignFindings()).isEmpty();
+    }
+
+    @Test
+    void doesNotFlagFeignClientCoveredByDefaultTimeoutsInYaml() throws IOException {
+        writeBillingClient(
+                "application.yml",
+                """
+                spring:
+                  cloud:
+                    openfeign:
+                      client:
+                        config:
+                          default:
+                            readTimeout: 5000
+                """);
+
+        assertThat(feignFindings()).isEmpty();
+    }
+
+    @Test
+    void doesNotFlagFeignClientWhenTheCircuitBreakerIsEnabled() throws IOException {
+        writeBillingClient(
+                "application.properties", "spring.cloud.openfeign.circuitbreaker.enabled=true\n");
+
+        assertThat(feignFindings()).isEmpty();
+    }
+
+    private void writeBillingClient(String configFile, String configContent) throws IOException {
+        Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
+        if (configFile != null) {
+            Files.writeString(resources.resolve(configFile), configContent);
+        }
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("BillingClient.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.cloud.openfeign.FeignClient;
+                import org.springframework.web.bind.annotation.GetMapping;
+
+                @FeignClient(name = "billing", url = "https://billing.example.com")
+                interface BillingClient {
+                    @GetMapping("/invoices")
+                    String invoices();
+                }
+                """);
+    }
+
+    private void writeBillingClient(String configFile) throws IOException {
+        writeBillingClient(configFile, "");
+    }
+
+    private List<Finding> feignFindings() {
+        return analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of(
+                                        "org.springframework.cloud:spring-cloud-starter-openfeign")))
+                .stream()
+                .filter(
+                        finding ->
+                                FindingRules.SPRING_FEIGN_NO_FALLBACK_OR_TIMEOUT
+                                        .ruleId()
+                                        .equals(finding.ruleId()))
+                .toList();
+    }
+
     // ── SPRING_TX_EVENT_LISTENER_WRITE_LOST ───────────────────────────────────
 
     @Test
@@ -5575,8 +5758,87 @@ interface InventoryClient {
         List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
 
         assertThat(findings)
+                .filteredOn(
+                        f ->
+                                FindingRules.SPRING_TX_EVENT_LISTENER_WRITE_LOST
+                                        .ruleId()
+                                        .equals(f.ruleId()))
+                .singleElement()
+                .satisfies(f -> assertThat(f.severity()).isEqualTo(FindingSeverity.WARNING));
+    }
+
+    @Test
+    void doesNotFlagAsyncAfterCommitListenerWhenAsyncIsEnabled() throws IOException {
+        // The listener runs on an executor thread with no bound transaction, so the repository
+        // save opens and commits its own transaction.
+        writeAsyncAuditListener(true);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
                 .extracting(Finding::ruleId)
-                .contains(FindingRules.SPRING_TX_EVENT_LISTENER_WRITE_LOST.ruleId());
+                .doesNotContain(FindingRules.SPRING_TX_EVENT_LISTENER_WRITE_LOST.ruleId());
+    }
+
+    @Test
+    void flagsAsyncAfterCommitListenerWhenAsyncIsNotEnabled() throws IOException {
+        // Without @EnableAsync the @Async annotation is inert: the listener still runs inside
+        // the after-commit callback and its write joins the finished transaction.
+        writeAsyncAuditListener(false);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .filteredOn(
+                        f ->
+                                FindingRules.SPRING_TX_EVENT_LISTENER_WRITE_LOST
+                                        .ruleId()
+                                        .equals(f.ruleId()))
+                .singleElement()
+                .satisfies(f -> assertThat(f.whyBadPractice()).contains("no @EnableAsync"));
+    }
+
+    private void writeAsyncAuditListener(boolean enableAsync) throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("AsyncConfig.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.context.annotation.Configuration;
+                import org.springframework.scheduling.annotation.EnableAsync;
+
+                @Configuration
+                %s
+                public class AsyncConfig {}
+                """
+                        .formatted(enableAsync ? "@EnableAsync" : ""));
+        Files.writeString(
+                sourceRoot.resolve("AuditListener.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.scheduling.annotation.Async;
+                import org.springframework.stereotype.Component;
+                import org.springframework.transaction.event.TransactionalEventListener;
+
+                @Component
+                public class AuditListener {
+                    private final AuditRepository repository = null;
+
+                    @Async
+                    @TransactionalEventListener
+                    public void onOrderPlaced(OrderPlacedEvent event) {
+                        repository.save(event);
+                    }
+                }
+
+                interface AuditRepository {
+                    Object save(Object event);
+                }
+                """);
     }
 
     @Test

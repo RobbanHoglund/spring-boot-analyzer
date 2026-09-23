@@ -178,6 +178,77 @@ class TestingPracticeFindingAnalyzerTest {
         assertThat(byRule(findings(), "SPRING_TEST_NO_TRANSACTIONAL_ROLLBACK")).isNull();
     }
 
+    @Test
+    void doesNotFlagDataJpaTestForMissingRollback() throws IOException {
+        // @DataJpaTest is meta-annotated @Transactional and rolls back every test.
+        writeTestFile(
+                "src/test/java/com/example/OrderRepositoryTest.java",
+                """
+                package com.example;
+                import org.springframework.beans.factory.annotation.Autowired;
+                import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+                @DataJpaTest
+                class OrderRepositoryTest {
+                    @Autowired OrderRepository orderRepository;
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_TEST_NO_TRANSACTIONAL_ROLLBACK")).isNull();
+    }
+
+    @Test
+    void doesNotFlagRealServerTestForMissingRollback() throws IOException {
+        // The server writes on its own request threads, so a test @Transactional cannot roll
+        // them back — recommending it would be wrong.
+        writeRealServerIntegrationTest();
+
+        assertThat(byRule(findings(), "SPRING_TEST_NO_TRANSACTIONAL_ROLLBACK")).isNull();
+    }
+
+    @Test
+    void doesNotSuggestSliceTestForRealServerIntegrationTest() throws IOException {
+        writeRealServerIntegrationTest();
+
+        assertThat(byRule(findings(), "SPRING_TEST_SPRINGBOOTTEST_OVERUSED")).isNull();
+    }
+
+    @Test
+    void doesNotSuggestSliceTestWhenTheTestInjectsMoreThanRepositories() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/CheckoutIT.java",
+                """
+                package com.example;
+                import org.springframework.beans.factory.annotation.Autowired;
+                import org.springframework.boot.test.context.SpringBootTest;
+                @SpringBootTest
+                class CheckoutIT {
+                    @Autowired OrderRepository orderRepository;
+                    @Autowired CheckoutService checkoutService;
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_TEST_SPRINGBOOTTEST_OVERUSED")).isNull();
+    }
+
+    private void writeRealServerIntegrationTest() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/PetClinicIntegrationTests.java",
+                """
+                package com.example;
+                import org.springframework.beans.factory.annotation.Autowired;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
+                import org.springframework.boot.test.web.server.LocalServerPort;
+                import org.springframework.boot.web.client.RestTemplateBuilder;
+                @SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT)
+                class PetClinicIntegrationTests {
+                    @LocalServerPort int port;
+                    @Autowired VetRepository vets;
+                    @Autowired RestTemplateBuilder builder;
+                }
+                """);
+    }
+
     // ── SPRING_TEST_MOCKBEAN_OVERUSE ──────────────────────────────────────────
 
     @Test

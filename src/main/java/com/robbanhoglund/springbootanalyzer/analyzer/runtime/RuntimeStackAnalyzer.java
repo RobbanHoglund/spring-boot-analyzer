@@ -426,7 +426,8 @@ public class RuntimeStackAnalyzer {
         int javaMajor = parseJavaVersion(javaVersion);
         int bootMajor = parseMajorVersion(springBootVersion);
 
-        if (bootMajor == 3 && javaMajor > 0 && javaMajor < 17) {
+        // Spring Boot 3 and 4 (Spring Framework 6 and 7) share the Java 17 baseline.
+        if (bootMajor >= 3 && javaMajor > 0 && javaMajor < 17) {
             findings.add(
                     FindingFactory.builder(
                                     FindingRules.SPRING_BOOT3_REQUIRES_JAVA17,
@@ -438,11 +439,13 @@ public class RuntimeStackAnalyzer {
                                             + javaVersion
                                             + " was detected.")
                             .whyBadPractice(
-                                    "Spring Boot 3.x requires Java 17 as a baseline. Running on"
-                                            + " an older JVM will cause a hard startup failure.")
+                                    "Spring Boot 3 and later require Java 17 as a baseline. An"
+                                            + " older JVM cannot load the framework classes.")
                             .possibleImpact(
-                                    "The application will not start. Spring Boot 3 uses APIs and"
-                                        + " bytecode features only available from Java 17 onwards.")
+                                    "The build or the application start fails: Spring Boot "
+                                            + bootMajor
+                                            + " is compiled for Java 17 and uses APIs that older"
+                                            + " JVMs do not have.")
                             .recommendation(
                                     "Upgrade to Java 17 or later. Spring Boot 3.2+ supports Java"
                                             + " 21, which also unlocks virtual threads via"
@@ -467,12 +470,15 @@ public class RuntimeStackAnalyzer {
                                             + javaVersion
                                             + " was detected.")
                             .whyBadPractice(
-                                    "Virtual threads (Project Loom) are a Java 21 feature. Enabling"
-                                            + " them on an older JVM causes a startup failure or"
-                                            + " silently falls back to platform threads.")
+                                    "Virtual threads (Project Loom) are a Java 21 feature. Spring"
+                                            + " Boot treats spring.threads.virtual.enabled as"
+                                            + " active only on Java 21+, so on an older JVM the"
+                                            + " property is silently ignored.")
                             .possibleImpact(
-                                    "The application may fail to start, or virtual threads may be"
-                                        + " silently disabled, negating any throughput benefit.")
+                                    "The application runs on platform threads while the"
+                                            + " configuration suggests virtual threads, so capacity"
+                                            + " planning and thread-pool tuning rest on a wrong"
+                                            + " assumption.")
                             .recommendation(
                                     "Upgrade to Java 21 or later, or remove"
                                             + " spring.threads.virtual.enabled=true until the JVM"

@@ -17,6 +17,7 @@ import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.StringLiteralExpr;
 import com.github.javaparser.ast.stmt.ReturnStmt;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
@@ -114,7 +115,7 @@ public class SecurityPracticeFindingAnalyzer {
      * @return list of findings; never null
      */
     public List<Finding> analyze(Path repositoryRoot) {
-        return analyze(JavaSources.from(repositoryRoot));
+        return analyze(JavaSources.from(repositoryRoot), null);
     }
 
     /**
@@ -124,6 +125,19 @@ public class SecurityPracticeFindingAnalyzer {
      * @return list of findings; never null
      */
     public List<Finding> analyze(JavaSources sources) {
+        return analyze(sources, null);
+    }
+
+    /**
+     * Analyzes the shared source tree with the build context that version-dependent rules need.
+     *
+     * @param sources the source tree parsed once for this analysis
+     * @param buildInfo build metadata; may be null, in which case version-gated checks assume the
+     *     conservative (older) behaviour
+     * @return list of findings; never null
+     */
+    public List<Finding> analyze(JavaSources sources, BuildInfo buildInfo) {
+        boolean snakeYamlSafeByDefault = snakeYamlSafeByDefault(buildInfo);
         List<Finding> findings = new ArrayList<>();
         // Cross-file signals for SPRING_METHOD_SECURITY_NOT_ENABLED: whether any class enables
         // method security, and the first place a method-security annotation is actually used.
@@ -136,7 +150,7 @@ public class SecurityPracticeFindingAnalyzer {
             if (cu == null) {
                 continue;
             }
-            analyzeSourceFile(cu, file.relativePath(), findings);
+            analyzeSourceFile(cu, file.relativePath(), snakeYamlSafeByDefault, findings);
 
             for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
                 if (!methodSecurityEnabled && annotatedWithAny(cls, METHOD_SECURITY_ENABLERS)) {
@@ -164,6 +178,22 @@ public class SecurityPracticeFindingAnalyzer {
             addMethodSecurityNotEnabledFinding(usageRelativePath, usageLine, usageTarget, findings);
         }
         return findings;
+    }
+
+    /**
+     * Spring Boot 3.1 moved its managed SnakeYAML to 2.x, whose no-arg {@code new Yaml()} rejects
+     * global (class-instantiating) tags. An explicit 1.x pin in the build brings the unsafe
+     * default back; a version override through a build property is not visible here.
+     */
+    private static boolean snakeYamlSafeByDefault(BuildInfo buildInfo) {
+        if (buildInfo == null
+                || !SpringBootVersions.isAtLeast(buildInfo.springBootVersion(), 3, 1)) {
+            return false;
+        }
+        List<String> dependencies =
+                buildInfo.dependencies() == null ? List.of() : buildInfo.dependencies();
+        return dependencies.stream()
+                .noneMatch(dependency -> dependency.startsWith("org.yaml:snakeyaml:1."));
     }
 
     private boolean annotatedWithAny(MethodDeclaration method, Set<String> annotationNames) {
@@ -230,10 +260,13 @@ public class SecurityPracticeFindingAnalyzer {
     // ---------------------------------------------------------------------------
 
     private void analyzeSourceFile(
-            CompilationUnit cu, String relativePath, List<Finding> findings) {
+            CompilationUnit cu,
+            String relativePath,
+            boolean snakeYamlSafeByDefault,
+            List<Finding> findings) {
         detectWeakPasswordHash(cu, relativePath, findings);
         detectXxeVulnerableParser(cu, relativePath, findings);
-        detectInsecureDeserialization(cu, relativePath, findings);
+        detectInsecureDeserialization(cu, relativePath, snakeYamlSafeByDefault, findings);
         detectSecurityHeadersDisabled(cu, relativePath, findings);
         detectPermitAllAnyRequest(cu, relativePath, findings);
         detectH2ConsolePermitAll(cu, relativePath, findings);
@@ -957,7 +990,10 @@ public class SecurityPracticeFindingAnalyzer {
     // ---------------------------------------------------------------------------
 
     private void detectInsecureDeserialization(
-            CompilationUnit cu, String relativePath, List<Finding> findings) {
+            CompilationUnit cu,
+            String relativePath,
+            boolean snakeYamlSafeByDefault,
+            List<Finding> findings) {
         // Jackson polymorphic typing: enableDefaultTyping / activateDefaultTyping
         for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
             String name = call.getNameAsString();
@@ -999,7 +1035,7 @@ public class SecurityPracticeFindingAnalyzer {
         }
 
         // Java serialization: new ObjectInputStream(...) anywhere is risky for untrusted input.
-        // SnakeYAML: new Yaml() (no-arg) uses an unsafe Constructor.
+        // SnakeYAML 1.x: new Yaml() (no-arg) uses an unsafe Constructor. 2.x is safe by default.
         for (ObjectCreationExpr creation : cu.findAll(ObjectCreationExpr.class)) {
             String typeName = simpleName(creation.getType().getNameAsString());
             if ("ObjectInputStream".equals(typeName)) {
@@ -1036,7 +1072,9 @@ public class SecurityPracticeFindingAnalyzer {
                                         "new ObjectInputStream(...) found in " + relativePath + ".")
                                 .source(relativePath, line)
                                 .build());
-            } else if ("Yaml".equals(typeName) && creation.getArguments().isEmpty()) {
+            } else if ("Yaml".equals(typeName)
+                    && creation.getArguments().isEmpty()
+                    && !snakeYamlSafeByDefault) {
                 Integer line = creation.getBegin().map(p -> p.line).orElse(null);
                 findings.add(
                         FindingFactory.builder(
@@ -1048,24 +1086,26 @@ public class SecurityPracticeFindingAnalyzer {
                                                 + " — SnakeYAML's default Constructor can"
                                                 + " instantiate arbitrary classes.")
                                 .whyBadPractice(
-                                        "SnakeYAML's default Constructor honours the !!javaClass"
-                                            + " tag in the document and reflectively instantiates"
-                                            + " the named class. Several gadget chains on a typical"
+                                        "SnakeYAML 1.x's default Constructor honours global tags"
+                                            + " such as !!javax.script.ScriptEngineManager and"
+                                            + " reflectively instantiates the named class"
+                                            + " (CVE-2022-1471). Several gadget chains on a typical"
                                             + " Spring Boot classpath escalate this to remote code"
                                             + " execution.")
                                 .possibleImpact(
                                         "An attacker controlling the YAML input can execute"
                                                 + " arbitrary code on the server.")
                                 .recommendation(
-                                        "Use new Yaml(new SafeConstructor(new LoaderOptions())) or"
-                                            + " a Constructor configured with a restrictive type"
-                                            + " allowlist. SnakeYAML 2.x defaults to"
-                                            + " SafeConstructor for the no-arg path — verify the"
-                                            + " version.")
+                                        "Upgrade to SnakeYAML 2.x (managed by Spring Boot 3.1+),"
+                                                + " or use new Yaml(new SafeConstructor(new"
+                                                + " LoaderOptions())) or a Constructor with a"
+                                                + " restrictive type allowlist.")
                                 .limitations(
-                                        "Medium confidence — SnakeYAML 2.x changed the default to"
-                                                + " be safe; the rule cannot determine the bundled"
-                                                + " version statically.")
+                                        "Reported only when the project is not known to run Spring"
+                                            + " Boot 3.1+ (which manages SnakeYAML 2.x, safe by"
+                                            + " default) or pins SnakeYAML 1.x explicitly. A"
+                                            + " version override through a build property is not"
+                                            + " visible to the analyzer.")
                                 .evidence("new Yaml() call found in " + relativePath + ".")
                                 .source(relativePath, line)
                                 .build());
@@ -1524,6 +1564,15 @@ public class SecurityPracticeFindingAnalyzer {
     // Rule: SPRING_OPEN_REDIRECT
     // ---------------------------------------------------------------------------
 
+    /** A relative target whose first path segment is fixed: "/" followed by a non-slash. */
+    private static final java.util.regex.Pattern FIXED_RELATIVE_TARGET =
+            java.util.regex.Pattern.compile("^/[^/\\\\]");
+
+    /** An absolute target whose host is closed by a slash, e.g. "https://example.com/". */
+    private static final java.util.regex.Pattern FIXED_ABSOLUTE_TARGET =
+            java.util.regex.Pattern.compile(
+                    "^https?://[^/?#\\\\]+/", java.util.regex.Pattern.CASE_INSENSITIVE);
+
     private void detectOpenRedirect(
             CompilationUnit cu, String relativePath, List<Finding> findings) {
         for (ReturnStmt ret : cu.findAll(ReturnStmt.class)) {
@@ -1534,7 +1583,7 @@ public class SecurityPracticeFindingAnalyzer {
             boolean redirectPrefix =
                     expr.findAll(StringLiteralExpr.class).stream()
                             .anyMatch(s -> s.asString().startsWith("redirect:"));
-            if (redirectPrefix) {
+            if (redirectPrefix && !hasFixedRedirectTarget(expr, true)) {
                 addOpenRedirect(relativePath, lineOf(ret), "\"redirect:\" + value", findings);
             }
         }
@@ -1543,10 +1592,45 @@ public class SecurityPracticeFindingAnalyzer {
                 continue;
             }
             if (call.getArguments().stream()
-                    .anyMatch(SecurityPracticeFindingAnalyzer::isDynamicConcat)) {
+                    .anyMatch(
+                            argument ->
+                                    isDynamicConcat(argument)
+                                            && !hasFixedRedirectTarget(argument, false))) {
                 addOpenRedirect(relativePath, lineOf(call), "sendRedirect(...)", findings);
             }
         }
+    }
+
+    /**
+     * Whether the leftmost literal of a concatenated redirect already fixes where it can go. A
+     * value appended after "/owners/" or "https://example.com/" can only change the path or
+     * query, never the host — so that redirect cannot leave the site. A bare "/" is not enough:
+     * appending "/evil.com" would make it protocol-relative.
+     */
+    private static boolean hasFixedRedirectTarget(Expression concatenation, boolean viewName) {
+        Expression leftmost = concatenation;
+        while (true) {
+            if (leftmost.isEnclosedExpr()) {
+                leftmost = leftmost.asEnclosedExpr().getInner();
+            } else if (leftmost.isBinaryExpr()
+                    && leftmost.asBinaryExpr().getOperator() == BinaryExpr.Operator.PLUS) {
+                leftmost = leftmost.asBinaryExpr().getLeft();
+            } else {
+                break;
+            }
+        }
+        if (!(leftmost instanceof StringLiteralExpr literal)) {
+            return false;
+        }
+        String target = literal.asString();
+        if (viewName) {
+            if (!target.startsWith("redirect:")) {
+                return false;
+            }
+            target = target.substring("redirect:".length());
+        }
+        return FIXED_RELATIVE_TARGET.matcher(target).find()
+                || FIXED_ABSOLUTE_TARGET.matcher(target).find();
     }
 
     private void addOpenRedirect(

@@ -51,12 +51,14 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.HighlightRange;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.SourceLocation;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.SpringComponentType;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ApplicationProperty;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleModelAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.http.HttpSurfaceAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.http.OutboundEndpoint;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.RuntimeStackAnalysis;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -186,38 +188,6 @@ public class StaticPracticeFindingAnalyzer {
                     "jwt_secret",
                     "jwt-secret");
 
-    private static boolean hasTopLevelPlaceholderWithoutDefault(String expr) {
-        int i = 0;
-        while (i < expr.length()) {
-            if (i + 1 < expr.length() && expr.charAt(i) == '$' && expr.charAt(i + 1) == '{') {
-                int depth = 1;
-                int j = i + 2;
-                boolean hasDefault = false;
-                while (j < expr.length() && depth > 0) {
-                    if (j + 1 < expr.length()
-                            && expr.charAt(j) == '$'
-                            && expr.charAt(j + 1) == '{') {
-                        depth++;
-                        j += 2;
-                        continue;
-                    }
-                    char c = expr.charAt(j);
-                    if (c == '}') {
-                        depth--;
-                    } else if (c == ':' && depth == 1) {
-                        hasDefault = true;
-                    }
-                    j++;
-                }
-                if (depth == 0 && !hasDefault) return true;
-                i = j;
-            } else {
-                i++;
-            }
-        }
-        return false;
-    }
-
     public List<Finding> analyze(
             Path repositoryRoot,
             BuildInfo buildInfo,
@@ -239,6 +209,7 @@ public class StaticPracticeFindingAnalyzer {
                 httpSurfaceAnalysis,
                 detectedClasses,
                 legacyTransactionalVisibility,
+                configurationAnalysis,
                 findings);
         detectRepeatedFallbackParsingPattern(findings);
         return dedupe(findings);
@@ -249,6 +220,7 @@ public class StaticPracticeFindingAnalyzer {
             HttpSurfaceAnalysis httpSurfaceAnalysis,
             List<DetectedClass> detectedClasses,
             boolean legacyTransactionalVisibility,
+            ConfigurationAnalysis configurationAnalysis,
             List<Finding> findings) {
         Path sourceRoot = repositoryRoot.resolve("src/main/java");
         if (Files.notExists(sourceRoot)) {
@@ -278,34 +250,41 @@ public class StaticPracticeFindingAnalyzer {
                         .collect(Collectors.toSet());
         JavaParser javaParser = newJavaParser();
 
+        List<Path> sourceFiles = List.of();
         try (Stream<Path> files = Files.walk(sourceRoot)) {
-            for (Path sourceFile :
+            sourceFiles =
                     files.filter(Files::isRegularFile)
                             .filter(path -> path.toString().endsWith(".java"))
                             .sorted(Comparator.naturalOrder())
-                            .toList()) {
-                try {
-                    parseSourcePractices(
-                            javaParser,
-                            repositoryRoot,
-                            sourceFile,
-                            outboundByFile,
-                            controllerClasses,
-                            legacyTransactionalVisibility,
-                            findings);
-                } catch (IOException | RuntimeException | StackOverflowError failure) {
-                    LOGGER.warn(
-                            "Failed to read or parse Java source {}; skipping static practice"
-                                    + " analysis for this file",
-                            sourceFile,
-                            failure);
-                }
-            }
-        } catch (IOException exception) {
+                            .toList();
+        } catch (IOException | UncheckedIOException exception) {
             LOGGER.warn(
                     "Failed to fully scan Java sources for static practice findings;"
                             + " returning partial results",
                     exception);
+        }
+        SourcePracticeContext projectContext =
+                new SourcePracticeContext(
+                        legacyTransactionalVisibility,
+                        anySourceContains(sourceFiles, "@EnableAsync"),
+                        configurationAnalysis);
+        for (Path sourceFile : sourceFiles) {
+            try {
+                parseSourcePractices(
+                        javaParser,
+                        repositoryRoot,
+                        sourceFile,
+                        outboundByFile,
+                        controllerClasses,
+                        projectContext,
+                        findings);
+            } catch (IOException | RuntimeException | StackOverflowError failure) {
+                LOGGER.warn(
+                        "Failed to read or parse Java source {}; skipping static practice"
+                                + " analysis for this file",
+                        sourceFile,
+                        failure);
+            }
         }
         detectAsyncWithoutExecutor(repositoryRoot, findings);
         detectScheduledWithoutExecutor(repositoryRoot, findings);
@@ -317,7 +296,7 @@ public class StaticPracticeFindingAnalyzer {
             Path sourceFile,
             Map<String, List<OutboundEndpoint>> outboundByFile,
             Set<String> controllerClasses,
-            boolean legacyTransactionalVisibility,
+            SourcePracticeContext projectContext,
             List<Finding> findings)
             throws IOException {
         var parseResult = javaParser.parse(sourceFile);
@@ -340,9 +319,35 @@ public class StaticPracticeFindingAnalyzer {
                     fileContent,
                     outboundByFile.getOrDefault(relativePath, List.of()),
                     controllerClasses,
-                    legacyTransactionalVisibility,
+                    projectContext,
                     findings);
         }
+    }
+
+    /**
+     * Project-wide facts computed once per analysis and handed to the per-class detectors.
+     *
+     * @param legacyTransactionalVisibility the project resolves Spring Boot 1.x/2.x, where
+     *     transaction advice applies to public methods only
+     * @param projectEnablesAsync some {@code src/main/java} source declares {@code @EnableAsync}
+     * @param configurationAnalysis the scanned configuration files; may be null
+     */
+    private record SourcePracticeContext(
+            boolean legacyTransactionalVisibility,
+            boolean projectEnablesAsync,
+            ConfigurationAnalysis configurationAnalysis) {}
+
+    private static boolean anySourceContains(List<Path> sourceFiles, String marker) {
+        for (Path sourceFile : sourceFiles) {
+            try {
+                if (Files.readString(sourceFile, StandardCharsets.UTF_8).contains(marker)) {
+                    return true;
+                }
+            } catch (IOException | UncheckedIOException ignored) {
+                // An unreadable file is skipped here and reported by the per-file pass.
+            }
+        }
+        return false;
     }
 
     private JavaParser newJavaParser() {
@@ -358,7 +363,7 @@ public class StaticPracticeFindingAnalyzer {
             String fileContent,
             List<OutboundEndpoint> outboundEndpoints,
             Set<String> controllerClasses,
-            boolean legacyTransactionalVisibility,
+            SourcePracticeContext projectContext,
             List<Finding> findings) {
         if (isGeneratedSource(relativePath, declaration)) {
             return;
@@ -421,7 +426,12 @@ public class StaticPracticeFindingAnalyzer {
                 detectFieldInjection(relativePath, declaration, field, findings);
             }
             if (hasAnnotation(field.getAnnotations(), "Value")) {
-                detectValueWithoutDefault(relativePath, declaration, field, findings);
+                detectValueWithoutDefault(
+                        relativePath,
+                        declaration,
+                        field,
+                        projectContext.configurationAnalysis(),
+                        findings);
             }
             if ((controllerLike || serviceLike || repositoryLike)
                     && !configurationLike
@@ -568,7 +578,7 @@ public class StaticPracticeFindingAnalyzer {
                         method,
                         transactionalMethods,
                         repositoryLike,
-                        legacyTransactionalVisibility,
+                        projectContext.legacyTransactionalVisibility(),
                         signals,
                         findings);
             }
@@ -600,10 +610,6 @@ public class StaticPracticeFindingAnalyzer {
                     && !hasAnnotation(method.getAnnotations(), "Transactional")
                     && !classTransactional) {
                 detectModifyingNoTransaction(relativePath, declaration, method, findings);
-            }
-
-            if (scheduled && hasAnnotation(method.getAnnotations(), "Transactional")) {
-                detectTransactionalOnScheduled(relativePath, declaration, method, findings);
             }
 
             if (hasAnnotation(method.getAnnotations(), "Transactional") || classTransactional) {
@@ -644,8 +650,8 @@ public class StaticPracticeFindingAnalyzer {
         detectCorsCredentialsWildcard(relativePath, declaration, findings);
         detectCrossOriginAnnotation(relativePath, declaration, findings);
         detectDuplicateExceptionHandlers(relativePath, declaration, findings);
-        detectFeignClientRisks(relativePath, declaration, findings);
-        detectRestTemplateNoStatusHandler(relativePath, declaration, findings);
+        detectFeignClientRisks(
+                relativePath, declaration, projectContext.configurationAnalysis(), findings);
         detectSqlInjectionInQueries(relativePath, declaration, findings);
         detectLoggingPiiExposure(relativePath, declaration, findings);
         detectSystemOutPrintln(relativePath, declaration, findings);
@@ -659,7 +665,8 @@ public class StaticPracticeFindingAnalyzer {
         detectJpaLazyLoadingOutsideTransaction(relativePath, declaration, findings);
         detectProxyAnnotationOnFinalMethod(relativePath, declaration, findings);
         detectBigDecimalDoubleConstructor(relativePath, declaration, findings);
-        detectTransactionalEventListenerWriteLost(relativePath, declaration, findings);
+        detectTransactionalEventListenerWriteLost(
+                relativePath, declaration, projectContext.projectEnablesAsync(), findings);
     }
 
     private void detectExceptionHandlingInConstructor(
@@ -1129,7 +1136,17 @@ public class StaticPracticeFindingAnalyzer {
                             .build());
             return;
         }
-        String responseBehavior = broadExceptionHandlerResponseBehavior(method);
+        BroadHandlerResponse response = broadExceptionHandlerResponse(method);
+        if (response == BroadHandlerResponse.SERVER_ERROR) {
+            // A catch-all that returns a sanitized 500 is the recommended final fallback.
+            return;
+        }
+        String responseBehavior =
+                switch (response) {
+                    case CLIENT_ERROR -> "an HTTP 400-style client error";
+                    case SUCCESS -> "an HTTP 200-style success";
+                    default -> null;
+                };
         FindingSeverity severity =
                 responseBehavior == null
                         ? FindingRules.SPRING_BROAD_EXCEPTION_HANDLER.defaultSeverity()
@@ -1142,29 +1159,59 @@ public class StaticPracticeFindingAnalyzer {
                                 FindingRules.SPRING_BROAD_EXCEPTION_HANDLER.category(),
                                 FindingRules.SPRING_BROAD_EXCEPTION_HANDLER.runtimeDetection(),
                                 FindingConfidence.MEDIUM)
-                        .shortMessage("Spring exception handler catches a broad exception type.")
+                        .shortMessage(
+                                responseBehavior == null
+                                        ? "Catch-all exception handler "
+                                                + context.target()
+                                                + " — verify it returns a sanitized 500."
+                                        : "Catch-all exception handler "
+                                                + context.target()
+                                                + " reports unexpected failures as "
+                                                + responseBehavior
+                                                + ".")
                         .whyBadPractice(
-                                "A catch-all exception handler can make unrelated failures look the"
-                                        + " same and can accidentally hide programming errors.")
+                                responseBehavior == null
+                                        ? "Spring still routes each exception to the most specific"
+                                                + " matching handler in the same advice, so a"
+                                                + " catch-all only receives failures nothing else"
+                                                + " handles — typically bugs and infrastructure"
+                                                + " errors. Its response could not be determined"
+                                                + " from the handler body."
+                                        : "Spring still routes each exception to the most specific"
+                                                + " matching handler in the same advice, so this"
+                                                + " catch-all receives the failures nothing else"
+                                                + " handles — typically bugs and infrastructure"
+                                                + " errors — and reports them as "
+                                                + responseBehavior
+                                                + " instead of a server error.")
                         .possibleImpact(
-                                "Operational failures, validation failures, and unexpected bugs may"
-                                        + " be mapped to the same HTTP response or log level.")
+                                responseBehavior == null
+                                        ? "If the fallback does not return a 5xx status, clients"
+                                                + " and monitoring cannot tell server-side"
+                                                + " failures from client mistakes."
+                                        : "Clients retry or give up on the wrong basis, and"
+                                                + " error-rate monitoring, alerting and SLOs never"
+                                                + " see these server-side failures.")
                         .recommendation(
-                                "Use narrower exception handlers for expected application errors"
-                                        + " and keep a final catch-all handler for sanitized 500"
-                                        + " responses.")
+                                "Keep narrower handlers for expected application errors, and let"
+                                        + " the final catch-all log the exception and return a"
+                                        + " sanitized 500 (for example a ProblemDetail with"
+                                        + " HttpStatus.INTERNAL_SERVER_ERROR).")
                         .evidence(
                                 "@ExceptionHandler on "
                                         + context.target()
                                         + " catches Exception, RuntimeException, or Throwable."
                                         + (responseBehavior == null
                                                 ? ""
-                                                : " Response behavior appears to map failures to "
+                                                : " The handler body maps failures to "
                                                         + responseBehavior
                                                         + "."))
                         .limitations(
-                                "Static analysis cannot prove whether this is the intended global"
-                                        + " fallback handler.")
+                                "The response status is inferred from the handler body text. A"
+                                        + " broad handler in a higher-precedence"
+                                        + " @ControllerAdvice can also shadow specific handlers"
+                                        + " in other advice beans; that ordering is not"
+                                        + " analyzed.")
                         .source(
                                 context.relativePath(),
                                 method.getBegin().map(position -> position.line).orElse(null))
@@ -2052,90 +2099,149 @@ public class StaticPracticeFindingAnalyzer {
                         .build());
     }
 
+    /**
+     * Flags a {@code @Value("${name}")} without a default whose property is configured only in
+     * profile-specific documents. Starting with any other profile — including the default one —
+     * then fails bean creation. A property configured in the default profile is present in every
+     * environment, and one configured nowhere is reported by {@code CONFIG_CODE_REFERENCE_MISSING}
+     * — so neither is repeated here.
+     */
     private void detectValueWithoutDefault(
             String relativePath,
             ClassOrInterfaceDeclaration declaration,
             FieldDeclaration field,
+            ConfigurationAnalysis configurationAnalysis,
             List<Finding> findings) {
-        field.getAnnotationByName("Value")
-                .ifPresent(
-                        annotation -> {
-                            String expr =
-                                    annotation.isSingleMemberAnnotationExpr()
-                                            ? annotation
-                                                    .asSingleMemberAnnotationExpr()
-                                                    .getMemberValue()
-                                                    .toString()
-                                            : annotation.isNormalAnnotationExpr()
-                                                    ? annotation
-                                                            .asNormalAnnotationExpr()
-                                                            .getPairs()
-                                                            .stream()
-                                                            .filter(
-                                                                    p ->
-                                                                            "value"
-                                                                                    .equals(
-                                                                                            p
-                                                                                                    .getNameAsString()))
-                                                            .map(p -> p.getValue().toString())
-                                                            .findFirst()
-                                                            .orElse("")
-                                                    : "";
-                            if (expr.contains("${") && hasTopLevelPlaceholderWithoutDefault(expr)) {
-                                String fieldName =
-                                        field.getVariables().isEmpty()
-                                                ? "?"
-                                                : field.getVariables().get(0).getNameAsString();
-                                String target = declaration.getNameAsString() + "." + fieldName;
-                                Integer line =
-                                        field.getBegin()
-                                                .map(position -> position.line)
-                                                .orElse(null);
-                                findings.add(
-                                        FindingFactory.builder(
-                                                        FindingRules.SPRING_VALUE_NO_DEFAULT,
-                                                        FindingConfidence.MEDIUM)
-                                                .shortMessage(
-                                                        "@Value(\""
-                                                                + expr.replace("\"", "")
-                                                                + "\") on "
-                                                                + target
-                                                                + " has no default value.")
-                                                .whyBadPractice(
-                                                        "@Value expressions without a default cause"
-                                                            + " an immediate startup failure with a"
-                                                            + " BeanCreationException if the"
-                                                            + " property is not present in the"
-                                                            + " environment, regardless of whether"
-                                                            + " the bean is actually used.")
-                                                .possibleImpact(
-                                                        "A missing property in any environment"
-                                                            + " causes a hard startup failure. This"
-                                                            + " is unforgiving in environments"
-                                                            + " where not all properties are always"
-                                                            + " provided.")
-                                                .recommendation(
-                                                        "Add a default with the colon syntax:"
-                                                            + " @Value(\"${property.name:defaultValue}\")."
-                                                            + " Use an empty string or null default"
-                                                            + " only if the absent case is handled"
-                                                            + " explicitly in the code.")
-                                                .evidence(
-                                                        "@Value without default found on "
-                                                                + fieldName
-                                                                + " in "
-                                                                + relativePath
-                                                                + ".")
-                                                .limitations(
-                                                        "Static analysis cannot determine whether"
-                                                            + " the property is guaranteed to be"
-                                                            + " present in all target"
-                                                            + " environments.")
-                                                .source(relativePath, line)
-                                                .target(target)
-                                                .build());
-                            }
-                        });
+        if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
+            return;
+        }
+        AnnotationExpr annotation = field.getAnnotationByName("Value").orElse(null);
+        if (annotation == null) {
+            return;
+        }
+        String expr =
+                annotation.isSingleMemberAnnotationExpr()
+                        ? annotation.asSingleMemberAnnotationExpr().getMemberValue().toString()
+                        : annotation.isNormalAnnotationExpr()
+                                ? annotation.asNormalAnnotationExpr().getPairs().stream()
+                                        .filter(p -> "value".equals(p.getNameAsString()))
+                                        .map(p -> p.getValue().toString())
+                                        .findFirst()
+                                        .orElse("")
+                                : "";
+        for (String propertyName : topLevelPlaceholdersWithoutDefault(expr)) {
+            Set<String> profiles = configuredProfiles(configurationAnalysis, propertyName);
+            if (profiles.isEmpty() || profiles.contains("default")) {
+                continue;
+            }
+            String fieldName =
+                    field.getVariables().isEmpty()
+                            ? "?"
+                            : field.getVariables().get(0).getNameAsString();
+            String target = declaration.getNameAsString() + "." + fieldName;
+            Integer line = field.getBegin().map(position -> position.line).orElse(null);
+            String profileList = String.join(", ", profiles);
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_VALUE_NO_DEFAULT, FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    "@Value(\"${"
+                                            + propertyName
+                                            + "}\") on "
+                                            + target
+                                            + " has no default, and "
+                                            + propertyName
+                                            + " is configured only for profile(s) "
+                                            + profileList
+                                            + ".")
+                            .whyBadPractice(
+                                    "A @Value placeholder without a default fails bean creation"
+                                            + " when the property is absent. "
+                                            + propertyName
+                                            + " is set only in profile-specific configuration ("
+                                            + profileList
+                                            + "), so starting with any other profile — including"
+                                            + " the default one — fails.")
+                            .possibleImpact(
+                                    "Startup fails in every environment that does not activate one"
+                                            + " of those profiles, such as a local run or a test"
+                                            + " context.")
+                            .recommendation(
+                                    "Declare "
+                                            + propertyName
+                                            + " in the default configuration so every profile"
+                                            + " starts — as a ${ENV_VAR} reference for"
+                                            + " credentials, keeping the fail-fast behaviour —"
+                                            + " or give the @Value a default when a safe"
+                                            + " non-sensitive fallback exists.")
+                            .evidence(
+                                    propertyName
+                                            + " is referenced by @Value on "
+                                            + fieldName
+                                            + " in "
+                                            + relativePath
+                                            + " and configured only for profile(s) "
+                                            + profileList
+                                            + ".")
+                            .limitations(
+                                    "Values supplied only by environment variables or an external"
+                                            + " config server are not visible. A property that is"
+                                            + " configured nowhere is reported by"
+                                            + " CONFIG_CODE_REFERENCE_MISSING instead.")
+                            .source(relativePath, line)
+                            .target(target)
+                            .build());
+        }
+    }
+
+    /** Profiles whose configuration documents set the property (relaxed name match). */
+    private static Set<String> configuredProfiles(
+            ConfigurationAnalysis configurationAnalysis, String propertyName) {
+        String wanted = relaxed(propertyName);
+        Set<String> profiles = new java.util.TreeSet<>();
+        for (ApplicationProperty property : configurationAnalysis.properties()) {
+            // Code-referenced entries carry no profile; only configured values count.
+            if (property.profile() != null && relaxed(property.name()).equals(wanted)) {
+                profiles.add(property.profile());
+            }
+        }
+        return profiles;
+    }
+
+    /** Names of the top-level ${...} placeholders in a @Value expression that have no default. */
+    private static List<String> topLevelPlaceholdersWithoutDefault(String expr) {
+        List<String> names = new ArrayList<>();
+        int i = 0;
+        while (i < expr.length()) {
+            if (i + 1 < expr.length() && expr.charAt(i) == '$' && expr.charAt(i + 1) == '{') {
+                int depth = 1;
+                int j = i + 2;
+                boolean hasDefault = false;
+                while (j < expr.length() && depth > 0) {
+                    if (j + 1 < expr.length()
+                            && expr.charAt(j) == '$'
+                            && expr.charAt(j + 1) == '{') {
+                        depth++;
+                        j += 2;
+                        continue;
+                    }
+                    char c = expr.charAt(j);
+                    if (c == '}') {
+                        depth--;
+                    } else if (c == ':' && depth == 1) {
+                        hasDefault = true;
+                    }
+                    j++;
+                }
+                if (depth == 0 && !hasDefault) {
+                    names.add(expr.substring(i + 2, j - 1).trim());
+                }
+                i = j;
+            } else {
+                i++;
+            }
+        }
+        return names;
     }
 
     private void detectModifyingNoTransaction(
@@ -2173,50 +2279,6 @@ public class StaticPracticeFindingAnalyzer {
                                 "Static analysis cannot track whether the calling service supplies"
                                     + " a transaction boundary, but the @Modifying method itself"
                                     + " must be within a transaction context.")
-                        .source(relativePath, line)
-                        .target(target)
-                        .build());
-    }
-
-    private void detectTransactionalOnScheduled(
-            String relativePath,
-            ClassOrInterfaceDeclaration declaration,
-            MethodDeclaration method,
-            List<Finding> findings) {
-        Integer line = method.getBegin().map(position -> position.line).orElse(null);
-        String target = declaration.getNameAsString() + "#" + method.getNameAsString();
-        findings.add(
-                FindingFactory.builder(
-                                FindingRules.SPRING_TRANSACTIONAL_ON_SCHEDULED,
-                                FindingConfidence.HIGH)
-                        .shortMessage(
-                                "@Transactional and @Scheduled are both present on " + target + ".")
-                        .whyBadPractice(
-                                "@Scheduled methods run in a dedicated scheduler thread that has no"
-                                    + " existing transaction. @Transactional on the same method may"
-                                    + " create a transaction, but it cannot be propagated or rolled"
-                                    + " back by an outer caller because there is none.")
-                        .possibleImpact(
-                                "Transaction behaviour becomes implicit and hard to reason about."
-                                    + " Failures in the scheduled method may not roll back as"
-                                    + " expected, and long transactions in the scheduler thread can"
-                                    + " hold database connections for the full scheduled interval.")
-                        .recommendation(
-                                "Extract the transactional work into a separate service method"
-                                        + " annotated with @Transactional, and call it from the"
-                                        + " @Scheduled method. This makes the transaction boundary"
-                                        + " explicit and keeps the scheduler method a thin"
-                                        + " orchestration layer.")
-                        .evidence(
-                                "Both @Transactional and @Scheduled found on method "
-                                        + method.getNameAsString()
-                                        + " in "
-                                        + relativePath
-                                        + ".")
-                        .limitations(
-                                "Static analysis cannot determine whether the transaction actually"
-                                        + " causes problems in the specific scheduler thread pool"
-                                        + " configuration used at runtime.")
                         .source(relativePath, line)
                         .target(target)
                         .build());
@@ -2298,11 +2360,52 @@ public class StaticPracticeFindingAnalyzer {
                         });
     }
 
+    private static final Set<String> BODY_MAPPING_ANNOTATIONS =
+            Set.of("PostMapping", "PutMapping", "PatchMapping");
+
+    private static final Set<String> BODY_HTTP_METHODS = Set.of("POST", "PUT", "PATCH");
+
+    private static final java.util.regex.Pattern HTTP_METHOD_NAME =
+            java.util.regex.Pattern.compile("\\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE)\\b");
+
+    /**
+     * Whether the handler accepts only POST, PUT or PATCH. There a {@code @RequestParam} normally
+     * arrives as a form field in the request body, not in the URL, so the URL-logging concern
+     * does not apply to it. Path variables are part of the URL for every method.
+     */
+    private boolean mapsOnlyToBodyMethods(MethodDeclaration method) {
+        for (AnnotationExpr annotation : method.getAnnotations()) {
+            String name = simpleName(annotation.getNameAsString());
+            if (BODY_MAPPING_ANNOTATIONS.contains(name)) {
+                return true;
+            }
+            if ("RequestMapping".equals(name) && annotation.isNormalAnnotationExpr()) {
+                for (var pair : annotation.asNormalAnnotationExpr().getPairs()) {
+                    if (!"method".equals(pair.getNameAsString())) {
+                        continue;
+                    }
+                    java.util.regex.Matcher verbs =
+                            HTTP_METHOD_NAME.matcher(pair.getValue().toString());
+                    boolean anyVerb = false;
+                    while (verbs.find()) {
+                        anyVerb = true;
+                        if (!BODY_HTTP_METHODS.contains(verbs.group(1))) {
+                            return false;
+                        }
+                    }
+                    return anyVerb;
+                }
+            }
+        }
+        return false;
+    }
+
     private void detectSensitiveRequestParams(
             String relativePath,
             ClassOrInterfaceDeclaration declaration,
             MethodDeclaration method,
             List<Finding> findings) {
+        boolean bodyMethodsOnly = mapsOnlyToBodyMethods(method);
         for (Parameter parameter : method.getParameters()) {
             String sensitiveAnnotation = null;
             String paramValue = null;
@@ -2310,6 +2413,10 @@ public class StaticPracticeFindingAnalyzer {
                 String annotationName = simpleName(annotation.getNameAsString());
                 if (!annotationName.equals("RequestParam")
                         && !annotationName.equals("PathVariable")) {
+                    continue;
+                }
+                if (annotationName.equals("RequestParam") && bodyMethodsOnly) {
+                    // A form field in a POST/PUT/PATCH body, not a query-string value.
                     continue;
                 }
                 String nameValue =
@@ -2354,10 +2461,10 @@ public class StaticPracticeFindingAnalyzer {
                                                 + target
                                                 + ".")
                                 .whyBadPractice(
-                                        "Passwords, tokens, and secrets passed as URL parameters or"
-                                            + " path variables appear in server access logs,"
-                                            + " browser history, proxy logs, and referrer headers"
-                                            + " in plaintext.")
+                                        "Passwords, tokens, and secrets in the query string or the"
+                                            + " path are part of the URL, which appears in server"
+                                            + " access logs, browser history, proxy logs, and"
+                                            + " Referer headers in plaintext.")
                                 .possibleImpact(
                                         "Credentials are exposed in any log aggregation system that"
                                                 + " captures request URLs, making them visible to"
@@ -2378,9 +2485,11 @@ public class StaticPracticeFindingAnalyzer {
                                                 + relativePath
                                                 + ".")
                                 .limitations(
-                                        "Static analysis cannot determine whether the URL is only"
-                                            + " ever called over HTTPS, but even encrypted URLs are"
-                                            + " logged in plaintext on the server side.")
+                                        "@RequestParam on handlers mapped only to POST, PUT or"
+                                            + " PATCH is not reported, because such values normally"
+                                            + " arrive as form fields in the request body. HTTPS"
+                                            + " does not help here: the server still logs the URL"
+                                            + " in plaintext.")
                                 .source(relativePath, line)
                                 .target(target)
                                 .build());
@@ -3327,7 +3436,11 @@ public class StaticPracticeFindingAnalyzer {
     }
 
     private void detectTransactionalEventListenerWriteLost(
-            String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            boolean projectEnablesAsync,
+            List<Finding> findings) {
+        boolean classAsync = hasAnnotation(declaration.getAnnotations(), "Async");
         for (MethodDeclaration method : declaration.getMethods()) {
             AnnotationExpr listener =
                     method.getAnnotationByName("TransactionalEventListener").orElse(null);
@@ -3335,6 +3448,14 @@ public class StaticPracticeFindingAnalyzer {
                     || !isAfterCommitPhase(listener)
                     || !methodHasPersistenceWriteCall(method)
                     || runsInRequiresNewTransaction(method, declaration)) {
+                continue;
+            }
+            // An @Async listener runs on an executor thread with no transaction bound, so a
+            // transactional write such as a Spring Data save opens and commits its own
+            // transaction. Without @EnableAsync the annotation is inert and the listener still
+            // runs inside the after-commit callback, so that case is reported.
+            boolean asyncListener = classAsync || hasAnnotation(method.getAnnotations(), "Async");
+            if (asyncListener && projectEnablesAsync) {
                 continue;
             }
             Integer line = method.getBegin().map(position -> position.line).orElse(null);
@@ -3349,16 +3470,24 @@ public class StaticPracticeFindingAnalyzer {
                                             + " writes to the database with no active transaction.")
                             .whyBadPractice(
                                     "A @TransactionalEventListener runs after the original"
-                                        + " transaction has committed (the default AFTER_COMMIT"
-                                        + " phase), so there is no active transaction. Persistence"
-                                        + " writes are not flushed unless the listener opens its"
-                                        + " own transaction.")
+                                            + " transaction has committed (the default AFTER_COMMIT"
+                                            + " phase). Its writes still join that finished"
+                                            + " transaction, so they are not flushed unless the"
+                                            + " listener opens its own transaction."
+                                            + (asyncListener
+                                                    ? " The listener is annotated @Async, but no"
+                                                            + " @EnableAsync was found, so it still"
+                                                            + " runs synchronously inside the"
+                                                            + " after-commit callback."
+                                                    : ""))
                             .possibleImpact(
                                     "The listener appears to run but its writes are silently lost —"
                                             + " a classic outbox/audit data-loss bug.")
                             .recommendation(
                                     "Annotate the listener with @Transactional(propagation ="
                                         + " Propagation.REQUIRES_NEW) so its writes run in a new"
+                                        + " transaction, or run it @Async (with @EnableAsync) so it"
+                                        + " executes on its own thread outside the committed"
                                         + " transaction.")
                             .evidence(
                                     "After-commit @TransactionalEventListener "
@@ -3368,8 +3497,10 @@ public class StaticPracticeFindingAnalyzer {
                                             + relativePath
                                             + ".")
                             .limitations(
-                                    "Write calls are matched by name; a REQUIRES_NEW transaction"
-                                            + " opened in a called collaborator is not detected.")
+                                    "Write calls are matched by name, so a like-named call on a"
+                                            + " non-persistence collaborator, or a REQUIRES_NEW"
+                                            + " transaction opened inside a called bean, is not"
+                                            + " distinguished — which is why this is a WARNING.")
                             .source(relativePath, line)
                             .target(target)
                             .build());
@@ -4058,29 +4189,48 @@ public class StaticPracticeFindingAnalyzer {
     }
 
     private boolean handlesBroadException(MethodDeclaration method) {
-        return method.getAnnotationByName("ExceptionHandler")
-                .map(AnnotationExpr::toString)
-                .map(
-                        annotation ->
-                                annotation.contains("Exception.class")
-                                        || annotation.contains("RuntimeException.class")
-                                        || annotation.contains("Throwable.class"))
-                .orElse(false);
+        // Match handled types by exact simple name: a substring test on the annotation text
+        // would treat IllegalArgumentException.class as "Exception.class".
+        return hasAnnotation(method.getAnnotations(), "ExceptionHandler")
+                && exceptionTypesHandledBy(method).stream()
+                        .anyMatch(BROAD_EXCEPTION_TYPES::contains);
     }
 
-    private String broadExceptionHandlerResponseBehavior(MethodDeclaration method) {
+    private static final java.util.regex.Pattern SERVER_ERROR_RESPONSE =
+            java.util.regex.Pattern.compile(
+                    "internalservererror\\(|status\\(\\s*500\\s*\\)|internal_server_error");
+    private static final java.util.regex.Pattern CLIENT_ERROR_RESPONSE =
+            java.util.regex.Pattern.compile(
+                    "badrequest\\(|status\\(\\s*400\\s*\\)|httpstatus\\.bad_request");
+    private static final java.util.regex.Pattern SUCCESS_RESPONSE =
+            java.util.regex.Pattern.compile("\\bok\\(|status\\(\\s*200\\s*\\)|httpstatus\\.ok\\b");
+
+    /** What a catch-all exception handler visibly returns. */
+    private enum BroadHandlerResponse {
+        /** A 5xx response — the recommended sanitized fallback. */
+        SERVER_ERROR,
+        /** Unexpected failures are reported to clients as a 400-style error. */
+        CLIENT_ERROR,
+        /** Unexpected failures are reported to clients as a 200-style success. */
+        SUCCESS,
+        /** The status cannot be determined from the handler body. */
+        UNKNOWN
+    }
+
+    private BroadHandlerResponse broadExceptionHandlerResponse(MethodDeclaration method) {
         String normalized = method.toString().toLowerCase(Locale.ROOT);
-        if (normalized.contains("badrequest(")
-                || normalized.contains("status(400)")
-                || normalized.contains("httpstatus.bad_request")) {
-            return "HTTP 400-style response";
+        // A handler that still returns 500 on its fallback path (possibly after mapping some
+        // expected types to 4xx) is the recommended shape, so a 5xx signal wins.
+        if (SERVER_ERROR_RESPONSE.matcher(normalized).find()) {
+            return BroadHandlerResponse.SERVER_ERROR;
         }
-        if (normalized.contains("ok(")
-                || normalized.contains("status(200)")
-                || normalized.contains("httpstatus.ok")) {
-            return "HTTP 200-style response";
+        if (CLIENT_ERROR_RESPONSE.matcher(normalized).find()) {
+            return BroadHandlerResponse.CLIENT_ERROR;
         }
-        return null;
+        if (SUCCESS_RESPONSE.matcher(normalized).find()) {
+            return BroadHandlerResponse.SUCCESS;
+        }
+        return BroadHandlerResponse.UNKNOWN;
     }
 
     private SourceLocation methodLocation(
@@ -4600,137 +4750,136 @@ public class StaticPracticeFindingAnalyzer {
         return "";
     }
 
+    /**
+     * Flags a {@code @FeignClient} that has neither a fallback nor configured timeouts. Feign's
+     * defaults (10 s connect / 60 s read) keep caller threads blocked for up to a minute per call
+     * when the downstream service degrades; either protection alone is an informed choice.
+     */
     private void detectFeignClientRisks(
-            String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
-        declaration
-                .getAnnotationByName("FeignClient")
-                .ifPresent(
-                        annotation -> {
-                            boolean hasFallback =
-                                    annotation.isNormalAnnotationExpr()
-                                            && annotation
-                                                    .asNormalAnnotationExpr()
-                                                    .getPairs()
-                                                    .stream()
-                                                    .anyMatch(
-                                                            pair ->
-                                                                    "fallback"
-                                                                                    .equals(
-                                                                                            pair
-                                                                                                    .getNameAsString())
-                                                                            || "fallbackFactory"
-                                                                                    .equals(
-                                                                                            pair
-                                                                                                    .getNameAsString()));
-                            if (!hasFallback) {
-                                Integer line = declaration.getBegin().map(p -> p.line).orElse(null);
-                                String name = declaration.getNameAsString();
-                                findings.add(
-                                        FindingFactory.builder(
-                                                        FindingRules
-                                                                .SPRING_FEIGN_NO_FALLBACK_OR_TIMEOUT,
-                                                        FindingConfidence.MEDIUM)
-                                                .shortMessage(
-                                                        "@FeignClient "
-                                                                + name
-                                                                + " has no fallback or"
-                                                                + " fallbackFactory.")
-                                                .whyBadPractice(
-                                                        "Without a fallback, any failure in the"
-                                                            + " remote service propagates directly"
-                                                            + " to the caller as an exception."
-                                                            + " Feign's defaults are 10 s connect /"
-                                                            + " 60 s read timeout — long enough for"
-                                                            + " blocked threads to pile up under"
-                                                            + " load when a downstream service"
-                                                            + " degrades.")
-                                                .possibleImpact(
-                                                        "Thread pool exhaustion under sustained"
-                                                            + " failure or latency in the remote"
-                                                            + " service. Cascading failures across"
-                                                            + " the call stack.")
-                                                .recommendation(
-                                                        "Add a fallback class via"
-                                                            + " @FeignClient(fallback ="
-                                                            + " MyFallback.class), or configure a"
-                                                            + " circuit-breaker via Resilience4j."
-                                                            + " Configure workload-appropriate"
-                                                            + " timeouts via"
-                                                            + " feign.client.config.<name>.connectTimeout"
-                                                            + " and readTimeout instead of relying"
-                                                            + " on the 10 s/60 s defaults.")
-                                                .evidence(
-                                                        "@FeignClient on "
-                                                                + name
-                                                                + " in "
-                                                                + relativePath
-                                                                + " has no fallback or"
-                                                                + " fallbackFactory attribute.")
-                                                .limitations(
-                                                        "Static analysis cannot determine whether a"
-                                                            + " global Resilience4j circuit-breaker"
-                                                            + " or timeout is configured"
-                                                            + " externally.")
-                                                .source(relativePath, line)
-                                                .target(name)
-                                                .build());
-                            }
-                        });
-    }
-
-    private void detectRestTemplateNoStatusHandler(
-            String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
-        for (MethodDeclaration method : declaration.getMethods()) {
-            if (!hasAnnotation(method.getAnnotations(), "Bean")) {
-                continue;
-            }
-            if (!"RestTemplate".equals(simpleName(method.getTypeAsString()))) {
-                continue;
-            }
-            boolean hasErrorHandler =
-                    method.findAll(MethodCallExpr.class).stream()
-                            .anyMatch(call -> "setErrorHandler".equals(call.getNameAsString()));
-            if (!hasErrorHandler) {
-                Integer line = method.getBegin().map(p -> p.line).orElse(null);
-                String target = declaration.getNameAsString() + "#" + method.getNameAsString();
-                findings.add(
-                        FindingFactory.builder(
-                                        FindingRules.SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER,
-                                        FindingConfidence.MEDIUM)
-                                .shortMessage(
-                                        "RestTemplate @Bean "
-                                                + target
-                                                + " has no custom error handler.")
-                                .whyBadPractice(
-                                        "By default, RestTemplate throws HttpClientErrorException"
-                                            + " or HttpServerErrorException on 4xx/5xx responses."
-                                            + " Without a custom ResponseErrorHandler, callers must"
-                                            + " catch these specific Spring exceptions or let them"
-                                            + " bubble up unexpectedly.")
-                                .possibleImpact(
-                                        "Non-2xx responses cause uncaught exceptions. Error details"
-                                            + " from downstream services are lost or inconsistently"
-                                            + " handled across different call sites.")
-                                .recommendation(
-                                        "Set a custom ResponseErrorHandler via"
-                                            + " restTemplate.setErrorHandler(...) that converts"
-                                            + " error responses to application-specific exceptions"
-                                            + " with meaningful messages.")
-                                .evidence(
-                                        "@Bean RestTemplate method "
-                                                + method.getNameAsString()
-                                                + " in "
-                                                + relativePath
-                                                + " has no setErrorHandler call.")
-                                .limitations(
-                                        "Static analysis cannot determine whether error handling is"
-                                            + " configured on the RestTemplate instance after the"
-                                            + " @Bean method returns.")
-                                .source(relativePath, line)
-                                .target(target)
-                                .build());
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            ConfigurationAnalysis configurationAnalysis,
+            List<Finding> findings) {
+        AnnotationExpr annotation = declaration.getAnnotationByName("FeignClient").orElse(null);
+        if (annotation == null) {
+            return;
+        }
+        Map<String, String> attributes = new LinkedHashMap<>();
+        if (annotation.isSingleMemberAnnotationExpr()) {
+            attributes.put(
+                    "value",
+                    literalValue(annotation.asSingleMemberAnnotationExpr().getMemberValue()));
+        } else if (annotation.isNormalAnnotationExpr()) {
+            for (MemberValuePair pair : annotation.asNormalAnnotationExpr().getPairs()) {
+                attributes.put(pair.getNameAsString(), literalValue(pair.getValue()));
             }
         }
+        if (attributes.containsKey("fallback") || attributes.containsKey("fallbackFactory")) {
+            return;
+        }
+        // The per-client configuration key is the contextId when set, otherwise the name.
+        String clientKey =
+                defaultString(
+                        attributes.get("contextId"),
+                        attributes.get("name"),
+                        attributes.get("value"));
+        if (feignProtectionConfigured(configurationAnalysis, clientKey)) {
+            return;
+        }
+        Integer line = declaration.getBegin().map(p -> p.line).orElse(null);
+        String name = declaration.getNameAsString();
+        String configKey = clientKey.isBlank() ? "<name>" : clientKey;
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_FEIGN_NO_FALLBACK_OR_TIMEOUT,
+                                FindingConfidence.MEDIUM)
+                        .shortMessage(
+                                "@FeignClient "
+                                        + name
+                                        + " has neither a fallback nor configured timeouts.")
+                        .whyBadPractice(
+                                "With no fallback and Feign's default timeouts (10 s connect / 60 s"
+                                    + " read), a slow or failing downstream service keeps caller"
+                                    + " threads blocked for up to a minute per call and surfaces"
+                                    + " every failure as an exception.")
+                        .possibleImpact(
+                                "Thread pool exhaustion under sustained failure or latency in the"
+                                        + " remote service, and cascading failures across the call"
+                                        + " stack.")
+                        .recommendation(
+                                "Configure workload-appropriate timeouts via"
+                                        + " spring.cloud.openfeign.client.config."
+                                        + configKey
+                                        + ".connect-timeout and read-timeout (feign.client.config.*"
+                                        + " before Spring Cloud OpenFeign 4), and add a fallback,"
+                                        + " fallbackFactory or circuit breaker"
+                                        + " (spring.cloud.openfeign.circuitbreaker.enabled) where"
+                                        + " degraded behaviour is acceptable.")
+                        .evidence(
+                                "@FeignClient on "
+                                        + name
+                                        + " in "
+                                        + relativePath
+                                        + " declares no fallback or fallbackFactory, and no timeout"
+                                        + " or circuit breaker is configured for it.")
+                        .limitations(
+                                "Timeouts and circuit breakers are recognised in the scanned"
+                                        + " configuration files under both the"
+                                        + " spring.cloud.openfeign.* and the legacy feign.*"
+                                        + " prefixes. A Request.Options bean or settings from an"
+                                        + " external config server are not seen.")
+                        .source(relativePath, line)
+                        .target(name)
+                        .build());
+    }
+
+    private static final List<String> FEIGN_CLIENT_CONFIG_PREFIXES =
+            List.of("spring.cloud.openfeign.client.config.", "feign.client.config.");
+
+    private static final Set<String> FEIGN_CIRCUIT_BREAKER_SWITCHES =
+            Set.of("spring.cloud.openfeign.circuitbreaker.enabled", "feign.circuitbreaker.enabled");
+
+    /**
+     * Whether a timeout is configured for this client (or for all clients through the "default"
+     * key), or a circuit breaker — which brings its own time limiter — is switched on.
+     */
+    private static boolean feignProtectionConfigured(
+            ConfigurationAnalysis configurationAnalysis, String clientKey) {
+        if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
+            return false;
+        }
+        Set<String> keys = Set.of(relaxed(clientKey), "default");
+        for (ApplicationProperty property : configurationAnalysis.properties()) {
+            String name = relaxed(property.name());
+            if (FEIGN_CIRCUIT_BREAKER_SWITCHES.contains(property.name())
+                    && "true".equalsIgnoreCase(String.valueOf(property.value()).trim())) {
+                return true;
+            }
+            for (String prefix : FEIGN_CLIENT_CONFIG_PREFIXES) {
+                if (!name.startsWith(prefix)) {
+                    continue;
+                }
+                String rest = name.substring(prefix.length());
+                int dot = rest.indexOf('.');
+                if (dot > 0
+                        && keys.contains(rest.substring(0, dot))
+                        && rest.substring(dot + 1).endsWith("timeout")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Relaxed-binding form of a property name: lower case, dashes removed. */
+    private static String relaxed(String value) {
+        return value == null ? "" : value.toLowerCase(Locale.ROOT).replace("-", "");
+    }
+
+    private static String literalValue(Expression expression) {
+        return expression.isStringLiteralExpr()
+                ? expression.asStringLiteralExpr().asString()
+                : expression.toString();
     }
 
     private void detectSqlInjectionInQueries(
@@ -5307,10 +5456,13 @@ public class StaticPracticeFindingAnalyzer {
 
     private void detectRepositoryInController(
             String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
+        // One finding per injected repository type: constructor injection into a final field
+        // declares the same dependency twice (field + parameter), which is still one coupling.
+        Set<String> reportedTypes = new HashSet<>();
         // Check fields
         for (FieldDeclaration field : declaration.getFields()) {
             String typeName = shortTypeName(field.getElementType().asString());
-            if (!isRepositoryType(typeName)) {
+            if (!isRepositoryType(typeName) || !reportedTypes.add(typeName)) {
                 continue;
             }
             Integer line = field.getBegin().map(p -> p.line).orElse(null);
@@ -5322,11 +5474,11 @@ public class StaticPracticeFindingAnalyzer {
         for (ConstructorDeclaration ctor : declaration.getConstructors()) {
             for (Parameter param : ctor.getParameters()) {
                 String typeName = shortTypeName(param.getTypeAsString());
-                if (!isRepositoryType(typeName)) {
+                if (!isRepositoryType(typeName) || !reportedTypes.add(typeName)) {
                     continue;
                 }
                 Integer line = param.getBegin().map(p -> p.line).orElse(null);
-                String target = declaration.getNameAsString() + "(" + typeName + ")";
+                String target = declaration.getNameAsString() + "#" + param.getNameAsString();
                 findings.add(
                         buildRepositoryInControllerFinding(relativePath, target, typeName, line));
             }

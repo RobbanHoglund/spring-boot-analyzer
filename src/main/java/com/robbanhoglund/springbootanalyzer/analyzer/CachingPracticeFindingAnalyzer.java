@@ -4,13 +4,19 @@ import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
+import com.github.javaparser.ast.expr.ConditionalExpr;
+import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.MemberValuePair;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.ThisExpr;
+import com.github.javaparser.ast.stmt.ReturnStmt;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ApplicationProperty;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -81,7 +87,7 @@ public class CachingPracticeFindingAnalyzer {
      * @return list of findings; never null
      */
     public List<Finding> analyze(Path repositoryRoot) {
-        return analyze(JavaSources.from(repositoryRoot));
+        return analyze(JavaSources.from(repositoryRoot), null, null);
     }
 
     /**
@@ -91,6 +97,21 @@ public class CachingPracticeFindingAnalyzer {
      * @return list of findings; never null
      */
     public List<Finding> analyze(JavaSources sources) {
+        return analyze(sources, null, null);
+    }
+
+    /**
+     * Analyzes the shared source tree with the build context the cache-provider rule needs.
+     *
+     * @param sources the source tree parsed once for this analysis
+     * @param buildInfo build metadata whose dependencies reveal the auto-configured cache
+     *     provider; may be null
+     * @param configurationAnalysis parsed configuration (properties and YAML flattened to
+     *     property names); may be null, in which case the raw resource text is scanned
+     * @return list of findings; never null
+     */
+    public List<Finding> analyze(
+            JavaSources sources, BuildInfo buildInfo, ConfigurationAnalysis configurationAnalysis) {
         List<Finding> findings = new ArrayList<>();
         boolean cacheableFound = false;
         for (JavaSources.JavaFile file : sources.files()) {
@@ -102,7 +123,7 @@ public class CachingPracticeFindingAnalyzer {
             }
         }
         if (cacheableFound) {
-            detectCacheableNoTtlProvider(sources, findings);
+            detectCacheableNoTtlProvider(sources, buildInfo, configurationAnalysis, findings);
         }
         return findings;
     }
@@ -194,6 +215,72 @@ public class CachingPracticeFindingAnalyzer {
     // Rule: SPRING_CACHEABLE_MUTABLE_RETURN_TYPE
     // ---------------------------------------------------------------------------
 
+    /** Factory calls whose result is an unmodifiable collection. */
+    private static final Set<String> UNMODIFIABLE_FACTORY_METHODS =
+            Set.of(
+                    "of",
+                    "copyOf",
+                    "ofEntries",
+                    "toList",
+                    "unmodifiableList",
+                    "unmodifiableSet",
+                    "unmodifiableMap",
+                    "unmodifiableCollection",
+                    "unmodifiableSortedSet",
+                    "unmodifiableSortedMap",
+                    "unmodifiableNavigableSet",
+                    "unmodifiableNavigableMap",
+                    "emptyList",
+                    "emptySet",
+                    "emptyMap",
+                    "singletonList",
+                    "singleton",
+                    "singletonMap");
+
+    private static final Set<String> UNMODIFIABLE_COLLECTORS =
+            Set.of("toUnmodifiableList", "toUnmodifiableSet", "toUnmodifiableMap");
+
+    /**
+     * True when the method has a body and every return statement yields an unmodifiable
+     * collection, i.e. the fix this rule recommends is already in place.
+     */
+    private static boolean returnsOnlyUnmodifiable(MethodDeclaration method) {
+        if (method.getBody().isEmpty()) {
+            return false;
+        }
+        List<ReturnStmt> returns = method.getBody().get().findAll(ReturnStmt.class);
+        return !returns.isEmpty()
+                && returns.stream()
+                        .allMatch(
+                                statement ->
+                                        statement
+                                                .getExpression()
+                                                .map(CachingPracticeFindingAnalyzer::isUnmodifiable)
+                                                .orElse(false));
+    }
+
+    private static boolean isUnmodifiable(Expression expression) {
+        if (expression instanceof ConditionalExpr conditional) {
+            return isUnmodifiable(conditional.getThenExpr())
+                    && isUnmodifiable(conditional.getElseExpr());
+        }
+        if (expression.isEnclosedExpr()) {
+            return isUnmodifiable(expression.asEnclosedExpr().getInner());
+        }
+        if (!(expression instanceof MethodCallExpr call)) {
+            return false;
+        }
+        String name = call.getNameAsString();
+        if (UNMODIFIABLE_FACTORY_METHODS.contains(name)) {
+            return true;
+        }
+        // stream.collect(Collectors.toUnmodifiableList()) and friends
+        return "collect".equals(name)
+                && call.getArguments().size() == 1
+                && call.getArgument(0) instanceof MethodCallExpr collector
+                && UNMODIFIABLE_COLLECTORS.contains(collector.getNameAsString());
+    }
+
     private void detectCacheableMutableReturnType(
             ClassOrInterfaceDeclaration cls,
             MethodDeclaration method,
@@ -203,7 +290,7 @@ public class CachingPracticeFindingAnalyzer {
             return;
         }
         String rawType = rawTypeName(method.getType().asString());
-        if (!MUTABLE_COLLECTION_TYPES.contains(rawType)) {
+        if (!MUTABLE_COLLECTION_TYPES.contains(rawType) || returnsOnlyUnmodifiable(method)) {
             return;
         }
         Integer line = method.getBegin().map(p -> p.line).orElse(null);
@@ -241,10 +328,12 @@ public class CachingPracticeFindingAnalyzer {
                                         + relativePath
                                         + ".")
                         .limitations(
-                                "The declared return type may be mutable but the implementation"
-                                        + " may return an immutable instance (e.g. List.of()). The"
-                                        + " risk is still real if a future change returns a mutable"
-                                        + " list.")
+                                "Methods whose every return statement builds an unmodifiable"
+                                        + " collection (List.of, copyOf, Collections.unmodifiable*,"
+                                        + " Stream.toList, ...) are not reported. Abstract and"
+                                        + " interface methods cannot be inspected. Caches that"
+                                        + " store copies (serializing providers such as Redis) are"
+                                        + " not affected.")
                         .source(relativePath, line)
                         .target(target)
                         .build());
@@ -731,102 +820,237 @@ public class CachingPracticeFindingAnalyzer {
                     "spring.jcache",
                     "CaffeineCacheManager",
                     "RedisCacheManager",
+                    "RedisCacheConfiguration",
                     "JCacheCacheManager",
+                    "JCacheManagerCustomizer",
                     "HazelcastCacheManager",
                     "caffeine",
                     "com.github.ben-manes.caffeine");
 
-    private void detectCacheableNoTtlProvider(JavaSources sources, List<Finding> findings) {
-        // Scan config files for TTL-capable provider indicators
-        boolean providerConfigured = false;
-        Path resourceRoot = sources.repositoryRoot().resolve("src/main/resources");
-        if (Files.exists(resourceRoot)) {
-            try (Stream<java.nio.file.Path> files = Files.walk(resourceRoot)) {
-                for (java.nio.file.Path file :
-                        files.filter(Files::isRegularFile)
-                                .filter(
-                                        p -> {
-                                            String name = p.getFileName().toString();
-                                            return name.endsWith(".properties")
-                                                    || name.endsWith(".yml")
-                                                    || name.endsWith(".yaml");
-                                        })
-                                .toList()) {
-                    try {
-                        String content =
-                                java.nio.file.Files.readString(
-                                        file, java.nio.charset.StandardCharsets.UTF_8);
-                        for (String indicator : TTL_PROVIDER_INDICATORS) {
-                            if (content.contains(indicator)) {
-                                providerConfigured = true;
-                                break;
-                            }
-                        }
-                    } catch (IOException ignored) {
-                        // skip unreadable files
-                    }
-                    if (providerConfigured) {
-                        break;
-                    }
-                }
-            } catch (IOException ignored) {
-                // best-effort
-            }
+    /**
+     * Dependency coordinates that make Spring Boot auto-configure a cache provider with
+     * expiry/eviction support instead of the simple ConcurrentHashMap one.
+     */
+    private static final List<String> TTL_PROVIDER_DEPENDENCY_MARKERS =
+            List.of(
+                    "caffeine",
+                    "javax.cache:cache-api",
+                    "jakarta.cache",
+                    "org.ehcache",
+                    "hazelcast",
+                    "infinispan",
+                    "cache2k",
+                    "spring-boot-starter-data-redis",
+                    "spring-data-redis",
+                    "redisson",
+                    "spring-boot-starter-data-couchbase");
+
+    private void detectCacheableNoTtlProvider(
+            JavaSources sources,
+            BuildInfo buildInfo,
+            ConfigurationAnalysis configurationAnalysis,
+            List<Finding> findings) {
+        String configuredCacheType = configuredCacheType(sources, configurationAnalysis);
+        if ("none".equals(configuredCacheType)) {
+            // Caching is switched off entirely; there is nothing to expire.
+            return;
         }
-        // Also scan Java source for CacheManager bean declarations
-        if (!providerConfigured) {
-            for (JavaSources.JavaFile file : sources.files()) {
-                for (String indicator : TTL_PROVIDER_INDICATORS) {
-                    if (file.content().contains(indicator)) {
-                        providerConfigured = true;
-                        break;
-                    }
-                }
-                if (providerConfigured) {
-                    break;
-                }
-            }
+        boolean simpleForced = "simple".equals(configuredCacheType);
+        if (!simpleForced
+                && (providerOnClasspath(buildInfo)
+                        || providerConfigured(configurationAnalysis)
+                        || providerConfiguredInSources(sources))) {
+            return;
         }
-        if (!providerConfigured) {
-            findings.add(
-                    FindingFactory.builder(
-                                    FindingRules.SPRING_CACHEABLE_NO_TTL_PROVIDER,
-                                    FindingConfidence.LOW)
-                            .shortMessage(
-                                    "@Cacheable is used but no TTL-capable cache provider"
-                                        + " (Caffeine, Redis, JCache) appears to be configured.")
-                            .whyBadPractice(
-                                    "Without a configured cache provider, Spring Boot falls back to"
-                                        + " a simple ConcurrentHashMap-backed cache. This"
-                                        + " implementation has no time-to-live (TTL) or"
-                                        + " time-to-idle (TTI) policy, so cached entries never"
-                                        + " expire automatically. Memory usage grows without bound"
-                                        + " as the cache fills up, and stale data is served"
+        CacheableUsage usage = firstCacheableUsage(sources);
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_CACHEABLE_NO_TTL_PROVIDER,
+                                simpleForced ? FindingConfidence.HIGH : FindingConfidence.LOW)
+                        .shortMessage(
+                                simpleForced
+                                        ? "@Cacheable is used with spring.cache.type=simple, a"
+                                                + " cache without expiry or size limits."
+                                        : "@Cacheable is used but no TTL-capable cache provider"
+                                                + " (Caffeine, Redis, JCache, ...) is on the"
+                                                + " classpath or configured.")
+                        .whyBadPractice(
+                                "Without a cache provider, Spring Boot falls back to a simple"
+                                        + " ConcurrentHashMap-backed cache. It has no time-to-live"
+                                        + " (TTL), time-to-idle or size limit, so cached entries"
+                                        + " never expire. Memory usage grows without bound as the"
+                                        + " cache fills up, and stale data is served"
                                         + " indefinitely.")
-                            .possibleImpact(
-                                    "Unbounded heap growth leading to OutOfMemoryError under"
-                                            + " sustained load. Stale data served to users with no"
-                                            + " automatic refresh until the application restarts.")
-                            .recommendation(
-                                    "Add a TTL-capable cache provider. For local in-process"
-                                        + " caching, add the Caffeine dependency and set"
-                                        + " spring.cache.type=caffeine and"
-                                        + " spring.cache.caffeine.spec=maximumSize=500,expireAfterWrite=10m."
-                                        + " For distributed caching, use Redis with"
-                                        + " spring.cache.type=redis and configure TTL via"
-                                        + " spring.cache.redis.time-to-live.")
-                            .evidence(
-                                    "@Cacheable annotation found in project sources but no"
-                                            + " Caffeine, Redis, or JCache provider configuration"
-                                            + " detected in src/main/resources or src/main/java.")
-                            .limitations(
-                                    "Cache provider configuration might be in an external config"
-                                            + " server, environment variables, or a non-standard"
-                                            + " location not visible to static analysis.")
-                            .source(null, null)
-                            .target(null)
-                            .build());
+                        .possibleImpact(
+                                "Unbounded heap growth leading to OutOfMemoryError under"
+                                        + " sustained load. Stale data served to users with no"
+                                        + " automatic refresh until the application restarts.")
+                        .recommendation(
+                                "Add a TTL-capable cache provider. For local in-process caching,"
+                                    + " add the Caffeine dependency and set"
+                                    + " spring.cache.caffeine.spec=maximumSize=500,expireAfterWrite=10m."
+                                    + " For distributed caching, use Redis and configure TTL via"
+                                    + " spring.cache.redis.time-to-live.")
+                        .evidence(
+                                simpleForced
+                                        ? "spring.cache.type=simple is configured in"
+                                                + " src/main/resources."
+                                        : "@Cacheable is used in project sources, but no cache"
+                                                + " provider dependency and no provider"
+                                                + " configuration were found.")
+                        .limitations(
+                                "Cache provider configuration might be in an external config"
+                                        + " server, environment variables, or a non-standard"
+                                        + " location not visible to static analysis.")
+                        .source(
+                                usage == null ? null : usage.relativePath(),
+                                usage == null ? null : usage.line())
+                        .target(usage == null ? null : usage.target())
+                        .build());
+    }
+
+    /** The first {@code @Cacheable} method, used to anchor the project-wide finding. */
+    private record CacheableUsage(String relativePath, Integer line, String target) {}
+
+    private CacheableUsage firstCacheableUsage(JavaSources sources) {
+        for (JavaSources.JavaFile file : sources.files()) {
+            if (file.compilationUnit() == null) {
+                continue;
+            }
+            for (ClassOrInterfaceDeclaration cls :
+                    file.compilationUnit().findAll(ClassOrInterfaceDeclaration.class)) {
+                for (MethodDeclaration method : cls.getMethods()) {
+                    if (hasCacheAnnotation(method, Set.of("Cacheable"))) {
+                        return new CacheableUsage(
+                                file.relativePath(),
+                                method.getBegin().map(p -> p.line).orElse(null),
+                                cls.getNameAsString() + "#" + method.getNameAsString());
+                    }
+                }
+            }
         }
+        return null;
+    }
+
+    private static boolean providerOnClasspath(BuildInfo buildInfo) {
+        if (buildInfo == null || buildInfo.dependencies() == null) {
+            return false;
+        }
+        return buildInfo.dependencies().stream()
+                .map(dependency -> dependency.toLowerCase(java.util.Locale.ROOT))
+                .anyMatch(
+                        dependency ->
+                                TTL_PROVIDER_DEPENDENCY_MARKERS.stream()
+                                        .anyMatch(dependency::contains));
+    }
+
+    private boolean providerConfiguredInSources(JavaSources sources) {
+        for (String content : resourceContents(sources)) {
+            if (TTL_PROVIDER_INDICATORS.stream().anyMatch(content::contains)) {
+                return true;
+            }
+        }
+        for (JavaSources.JavaFile file : sources.files()) {
+            if (TTL_PROVIDER_INDICATORS.stream().anyMatch(file.content()::contains)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Cache-provider property prefixes; any of them means a provider is being configured. */
+    private static final List<String> PROVIDER_PROPERTY_PREFIXES =
+            List.of(
+                    "spring.cache.caffeine.",
+                    "spring.cache.redis.",
+                    "spring.cache.jcache.",
+                    "spring.cache.infinispan.",
+                    "spring.cache.couchbase.",
+                    "spring.cache.cache2k.",
+                    "spring.jcache.");
+
+    private static final Set<String> TTL_CAPABLE_CACHE_TYPES =
+            Set.of(
+                    "caffeine",
+                    "redis",
+                    "jcache",
+                    "hazelcast",
+                    "infinispan",
+                    "couchbase",
+                    "cache2k");
+
+    private static boolean providerConfigured(ConfigurationAnalysis configurationAnalysis) {
+        if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
+            return false;
+        }
+        for (ApplicationProperty property : configurationAnalysis.properties()) {
+            String name = property.name() == null ? "" : property.name();
+            if (PROVIDER_PROPERTY_PREFIXES.stream().anyMatch(name::startsWith)) {
+                return true;
+            }
+            if ("spring.cache.type".equals(name)
+                    && property.value() != null
+                    && TTL_CAPABLE_CACHE_TYPES.contains(
+                            property.value().trim().toLowerCase(java.util.Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The value of {@code spring.cache.type} when set to simple or none, otherwise null. */
+    private String configuredCacheType(
+            JavaSources sources, ConfigurationAnalysis configurationAnalysis) {
+        if (configurationAnalysis != null && configurationAnalysis.properties() != null) {
+            for (ApplicationProperty property : configurationAnalysis.properties()) {
+                if ("spring.cache.type".equals(property.name()) && property.value() != null) {
+                    String value = property.value().trim().toLowerCase(java.util.Locale.ROOT);
+                    if ("simple".equals(value) || "none".equals(value)) {
+                        return value;
+                    }
+                }
+            }
+        }
+        java.util.regex.Pattern cacheType =
+                java.util.regex.Pattern.compile(
+                        "spring\\.cache\\.type\\s*[:=]\\s*['\"]?(simple|none)\\b",
+                        java.util.regex.Pattern.CASE_INSENSITIVE);
+        for (String content : resourceContents(sources)) {
+            java.util.regex.Matcher matcher = cacheType.matcher(content);
+            if (matcher.find()) {
+                return matcher.group(1).toLowerCase(java.util.Locale.ROOT);
+            }
+        }
+        return null;
+    }
+
+    private List<String> resourceContents(JavaSources sources) {
+        Path resourceRoot = sources.repositoryRoot().resolve("src/main/resources");
+        if (!Files.exists(resourceRoot)) {
+            return List.of();
+        }
+        List<String> contents = new ArrayList<>();
+        try (Stream<Path> files = Files.walk(resourceRoot)) {
+            for (Path file :
+                    files.filter(Files::isRegularFile)
+                            .filter(
+                                    path -> {
+                                        String name = path.getFileName().toString();
+                                        return name.endsWith(".properties")
+                                                || name.endsWith(".yml")
+                                                || name.endsWith(".yaml");
+                                    })
+                            .toList()) {
+                try {
+                    contents.add(Files.readString(file, java.nio.charset.StandardCharsets.UTF_8));
+                } catch (IOException | java.io.UncheckedIOException ignored) {
+                    // skip unreadable files
+                }
+            }
+        } catch (IOException | java.io.UncheckedIOException ignored) {
+            // best-effort
+        }
+        return contents;
     }
 
     // ---------------------------------------------------------------------------

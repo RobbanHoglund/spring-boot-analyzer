@@ -42,8 +42,13 @@ public class ObservabilityGapFindingAnalyzer {
     private static final Set<String> OBSERVABILITY_ANNOTATIONS = Set.of("Observed", "Timed");
     private static final Set<String> EVENT_LISTENER_ANNOTATIONS =
             Set.of("EventListener", "TransactionalEventListener");
+
+    /**
+     * Return types Spring's {@code AsyncExecutionAspectSupport} can hand back from an {@code
+     * @Async} call besides {@code void}. Reactor's {@code Mono}/{@code Flux} are not among them.
+     */
     private static final Set<String> ASYNC_ALLOWED_RETURN_TYPES =
-            Set.of("Future", "CompletableFuture", "ListenableFuture", "Mono", "Flux");
+            Set.of("Future", "CompletableFuture", "ListenableFuture");
 
     /**
      * Analyzes all Java source files under {@code src/main/java}.
@@ -66,12 +71,23 @@ public class ObservabilityGapFindingAnalyzer {
     public List<Finding> analyze(JavaSources sources, BuildInfo buildInfo) {
         List<Finding> findings = new ArrayList<>();
         boolean observabilityStackPresent = hasObservabilityStack(buildInfo);
+        // Without @EnableAsync the @Async annotation is inert and the method returns its value
+        // synchronously, so the return-type rule only applies once async is enabled.
+        boolean asyncEnabled =
+                sources.files().stream()
+                        .anyMatch(
+                                file ->
+                                        file.content() != null
+                                                && file.content().contains("@EnableAsync"));
+        String bootVersion = buildInfo == null ? null : buildInfo.springBootVersion();
         for (JavaSources.JavaFile file : sources.files()) {
             if (file.compilationUnit() != null) {
                 analyzeSourceFile(
                         file.compilationUnit(),
                         file.relativePath(),
                         observabilityStackPresent,
+                        asyncEnabled,
+                        bootVersion,
                         findings);
             }
         }
@@ -105,6 +121,8 @@ public class ObservabilityGapFindingAnalyzer {
             CompilationUnit cu,
             String relativePath,
             boolean observabilityStackPresent,
+            boolean asyncEnabled,
+            String bootVersion,
             List<Finding> findings) {
         detectWebClientManualConstruction(cu, relativePath, findings);
 
@@ -115,7 +133,9 @@ public class ObservabilityGapFindingAnalyzer {
                     detectEventListenerNoObservability(cls, method, relativePath, findings);
                 }
                 detectObservedOnPrivateMethod(cls, method, relativePath, findings);
-                detectAsyncNonFutureReturn(cls, method, relativePath, findings);
+                if (asyncEnabled) {
+                    detectAsyncNonFutureReturn(cls, method, relativePath, bootVersion, findings);
+                }
             }
         }
     }
@@ -365,6 +385,7 @@ public class ObservabilityGapFindingAnalyzer {
             ClassOrInterfaceDeclaration cls,
             MethodDeclaration method,
             String relativePath,
+            String bootVersion,
             List<Finding> findings) {
         if (!hasAnnotation(method, "Async")) {
             return;
@@ -382,6 +403,20 @@ public class ObservabilityGapFindingAnalyzer {
         }
         Integer line = method.getBegin().map(p -> p.line).orElse(null);
         String target = cls.getNameAsString() + "#" + method.getNameAsString();
+        // Spring Framework 6 (Spring Boot 3) rejects the call; Framework 5 silently returns null.
+        boolean legacyFramework = SpringBootVersions.isBefore(bootVersion, 3, 0);
+        boolean modernFramework = SpringBootVersions.isAtLeast(bootVersion, 3, 0);
+        String behaviour =
+                modernFramework
+                        ? "Spring Framework 6+ rejects it: every call throws"
+                                + " IllegalArgumentException (\"Invalid return type for async"
+                                + " method (only Future and void supported)\")."
+                        : legacyFramework
+                                ? "Spring Framework 5 submits the work and returns null to the"
+                                        + " caller, discarding the computed value."
+                                : "On Spring Framework 6+ (Spring Boot 3+) every call throws"
+                                        + " IllegalArgumentException; on Framework 5 (Spring Boot"
+                                        + " 2) the caller silently receives null.";
         findings.add(
                 FindingFactory.builder(
                                 FindingRules.SPRING_ASYNC_NON_FUTURE_RETURN, FindingConfidence.HIGH)
@@ -390,26 +425,27 @@ public class ObservabilityGapFindingAnalyzer {
                                         + target
                                         + " returns "
                                         + rawType
-                                        + " — the return value is discarded by the async proxy.")
+                                        + ", which Spring's async proxy does not support.")
                         .whyBadPractice(
-                                "Spring's async proxy intercepts the method call, dispatches it to"
-                                    + " a thread pool, and immediately returns to the caller. The"
-                                    + " actual return value from the method body is discarded. Only"
-                                    + " void, Future, CompletableFuture, ListenableFuture, Mono,"
-                                    + " and Flux are supported return types for @Async methods.")
+                                "Spring's async interceptor hands the call to an executor and can"
+                                        + " only return void or a Future (CompletableFuture,"
+                                        + " ListenableFuture) to the caller. Reactor types such as"
+                                        + " Mono and Flux are not supported. "
+                                        + behaviour)
                         .possibleImpact(
-                                "The caller always receives null (or an immediately-resolved empty"
-                                    + " value) instead of the computed result. This is a silent"
-                                    + " data loss bug that is hard to diagnose because the method"
-                                    + " body executes correctly — the result just never reaches the"
-                                    + " caller.")
+                                modernFramework
+                                        ? "Every invocation fails at runtime, so the feature behind"
+                                                + " this method is broken."
+                                        : "Callers either fail on every invocation or silently"
+                                                + " receive null instead of the computed result.")
                         .recommendation(
-                                "Change the return type to CompletableFuture<"
+                                "Return CompletableFuture<"
                                         + rawType
-                                        + "> and wrap the return value: return"
-                                        + " CompletableFuture.completedFuture(result)."
-                                        + " Alternatively, change the return type to void if the"
-                                        + " caller does not use the return value.")
+                                        + "> and complete it with"
+                                        + " CompletableFuture.completedFuture(result), or return"
+                                        + " void if the caller does not need a result. For"
+                                        + " reactive code, drop @Async and return the publisher"
+                                        + " directly.")
                         .evidence(
                                 "Method "
                                         + target

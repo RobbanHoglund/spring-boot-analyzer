@@ -2,12 +2,10 @@ package com.robbanhoglund.springbootanalyzer.analyzer.configuration;
 
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
-import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingCategory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingOccurrence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
-import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.HighlightRange;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.SourceLocation;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ApplicationProperty;
@@ -616,13 +614,7 @@ public class ConfigurationAnalyzer {
                             .toList();
             FindingFactory.Builder builder =
                     FindingFactory.builder(
-                                    "SPRING_PROFILE_SPECIFIC_CONFIG",
-                                    "Profile-specific configuration files were found",
-                                    FindingSeverity.INFO,
-                                    FindingCategory.PROFILE_DRIFT,
-                                    com.robbanhoglund.springbootanalyzer.analyzer.model
-                                            .FindingRuntimeDetection
-                                            .ACTIVE_PROFILE_RUNTIME_MAY_DETECT,
+                                    FindingRules.SPRING_PROFILE_SPECIFIC_CONFIG,
                                     FindingConfidence.MEDIUM)
                             .shortMessage(
                                     "Profile-specific configuration files were found. Static"
@@ -993,31 +985,55 @@ public class ConfigurationAnalyzer {
                 && !"spring.security.user.password".equals(name)
                 && ((secretFallback.literalDefault() && !secretFallback.safeSentinel())
                         || hasDirectSensitiveLiteral(rawValue))) {
+            // ${VAR:fallback} is a placeholder, but its fallback is itself a committed literal.
+            boolean literalFallback = !hasDirectSensitiveLiteral(rawValue);
             findings.add(
                     FindingFactory.builder(
                                     FindingRules.SPRING_SECRET_LITERAL, FindingConfidence.HIGH)
                             .shortMessage(
-                                    "Sensitive configuration property appears to use a literal"
-                                            + " value in a config file: "
-                                            + name)
+                                    literalFallback
+                                            ? "Sensitive configuration property falls back to a"
+                                                    + " literal value when its placeholder is"
+                                                    + " unset: "
+                                                    + name
+                                            : "Sensitive configuration property appears to use a"
+                                                    + " literal value in a config file: "
+                                                    + name)
                             .whyBadPractice(
-                                    "Secrets stored directly in static configuration are hard to"
-                                        + " rotate, easy to copy, and may leak through repository"
-                                        + " access, logs, screenshots, CI artifacts, or backups.")
+                                    (literalFallback
+                                                    ? "The placeholder's fallback is a literal"
+                                                            + " credential committed with the"
+                                                            + " configuration; every environment"
+                                                            + " that does not set the variable"
+                                                            + " silently starts with it. "
+                                                    : "")
+                                            + "Secrets stored in static configuration are hard"
+                                            + " to rotate, easy to copy, and may leak through"
+                                            + " repository access, logs, screenshots, CI"
+                                            + " artifacts, or backups.")
                             .possibleImpact(
                                     "A committed password, token, or client secret may grant"
                                         + " unintended access to production systems or third-party"
                                         + " services, even after the value is removed later.")
                             .recommendation(
-                                    "Use environment variables, a secret manager, or deployment"
-                                            + " platform secret references such as ${DB_PASSWORD}."
-                                            + " Rotate any real value that may already have been"
-                                            + " committed.")
+                                    literalFallback
+                                            ? "Drop the fallback so startup fails when the"
+                                                    + " variable is missing (e.g. ${DB_PASSWORD}),"
+                                                    + " or keep local-only fallbacks in a profile"
+                                                    + " that never runs in production. Rotate the"
+                                                    + " value if it was ever real."
+                                            : "Use environment variables, a secret manager, or"
+                                                    + " deployment platform secret references such"
+                                                    + " as ${DB_PASSWORD}. Rotate any real value"
+                                                    + " that may already have been committed.")
                             .evidence(
                                     name
                                             + " was found in "
                                             + property.sourceFile()
-                                            + " with a non-placeholder value.")
+                                            + (literalFallback
+                                                    ? " with a placeholder whose fallback is a"
+                                                            + " literal value."
+                                                    : " with a non-placeholder value."))
                             .limitations(
                                     "Static analysis cannot prove whether the value is real,"
                                             + " already rotated, or only used in a private"

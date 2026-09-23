@@ -161,6 +161,12 @@ public class RepositoryAnalysisService {
         // pruned run is indistinguishable from a clean one in the UI and in exported reports.
         int disabledRuleFindingCount =
                 suppressionResult.findings().size() - retainedFindings.size();
+        // Only IDs the catalog still defines count as disabled rules. A config file saved before
+        // a rule was retired keeps the stale ID, which would otherwise inflate the count shown
+        // next to Settings (where only catalog rules appear).
+        Set<String> knownRuleIds = userRuleConfigService.knownRuleIds();
+        List<String> reportedDisabledRuleIds =
+                disabledRuleIds.stream().filter(knownRuleIds::contains).sorted().toList();
         List<Finding> findings =
                 retainedFindings.stream()
                         .map(finding -> enrichFinding(finding, result.repositoryUrl(), commitSha))
@@ -184,7 +190,7 @@ public class RepositoryAnalysisService {
                 suppressionResult.suppressedRuleIds(),
                 suppressionResult.suppressedFindingCount(),
                 suppressionResult.unknownSuppressedRuleIds(),
-                disabledRuleIds.stream().sorted().toList(),
+                reportedDisabledRuleIds,
                 disabledRuleFindingCount);
     }
 

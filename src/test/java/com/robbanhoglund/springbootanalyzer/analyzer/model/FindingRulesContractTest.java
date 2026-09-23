@@ -11,14 +11,22 @@ import org.junit.jupiter.api.Test;
 class FindingRulesContractTest {
 
     @Test
-    void catalogContains201UniqueStableRuleIds() {
+    void catalogContains199UniqueStableRuleIds() {
         List<FindingRule> rules = catalogRules();
 
-        assertThat(rules).hasSize(201);
+        assertThat(rules).hasSize(199);
         assertThat(rules).extracting(FindingRule::ruleId).doesNotHaveDuplicates();
         assertThat(rules)
                 .extracting(FindingRule::ruleId)
                 .contains("CONFIG_UNKNOWN_PROPERTY", "CONFIG_CODE_REFERENCE_MISSING");
+        // Retired because their premise was wrong: @Scheduled invokes the method through the
+        // transactional proxy, and RestTemplate's default error handler already throws with the
+        // full status, headers and body.
+        assertThat(rules)
+                .extracting(FindingRule::ruleId)
+                .doesNotContain(
+                        "SPRING_TRANSACTIONAL_ON_SCHEDULED",
+                        "SPRING_RESTTEMPLATE_NO_HTTP_STATUS_HANDLER");
     }
 
     @Test

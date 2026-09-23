@@ -6,6 +6,7 @@ import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.ThisExpr;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
@@ -38,6 +39,9 @@ import org.springframework.stereotype.Component;
  *   <li>{@link FindingRules#SPRING_SCHEDULED_CRON_INVALID_EXPRESSION} — a {@code @Scheduled} cron
  *       literal does not have the six fields Spring requires (or uses an unknown macro), so task
  *       registration fails at startup.
+ *   <li>{@link FindingRules#SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING} — a {@code @Scheduled}
+ *       annotation has no usable trigger, several triggers, or {@code initialDelay} on a cron
+ *       trigger, so task registration fails at startup.
  * </ul>
  *
  * <p>{@code @Async} on a private method is detected separately by {@link
@@ -53,7 +57,7 @@ public class SchedulingPracticeFindingAnalyzer {
      * @return list of findings; never null
      */
     public List<Finding> analyze(Path repositoryRoot) {
-        return analyze(JavaSources.from(repositoryRoot));
+        return analyze(JavaSources.from(repositoryRoot), null);
     }
 
     /**
@@ -63,6 +67,18 @@ public class SchedulingPracticeFindingAnalyzer {
      * @return list of findings; never null
      */
     public List<Finding> analyze(JavaSources sources) {
+        return analyze(sources, null);
+    }
+
+    /**
+     * Analyzes the shared source tree with the build context that version-dependent rules need.
+     *
+     * @param sources the source tree parsed once for this analysis
+     * @param buildInfo build metadata; may be null, in which case version-gated checks stay silent
+     * @return list of findings; never null
+     */
+    public List<Finding> analyze(JavaSources sources, BuildInfo buildInfo) {
+        String bootVersion = buildInfo == null ? null : buildInfo.springBootVersion();
         List<Finding> findings = new ArrayList<>();
 
         // Cross-file enablement signals for the "@Scheduled/@Async/@Retryable used but not
@@ -131,7 +147,7 @@ public class SchedulingPracticeFindingAnalyzer {
                         detectScheduledInvalidCronExpression(
                                 cls, method, file.relativePath(), findings);
                         detectScheduledTriggerMissingOrConflicting(
-                                cls, method, file.relativePath(), findings);
+                                cls, method, file.relativePath(), bootVersion, findings);
                     }
                     if (asyncUsageTarget == null
                             && !method.isPrivate()
@@ -466,74 +482,133 @@ public class SchedulingPracticeFindingAnalyzer {
     private static final Set<String> SCHEDULED_TRIGGER_ATTRIBUTES =
             Set.of("cron", "fixedDelay", "fixedDelayString", "fixedRate", "fixedRateString");
 
+    private static final Set<String> SCHEDULED_INITIAL_DELAY_ATTRIBUTES =
+            Set.of("initialDelay", "initialDelayString");
+
     /**
-     * Flags {@code @Scheduled} annotations that declare no trigger attribute, or more than one.
-     * Spring requires exactly one of {@code cron}/{@code fixedDelay}/{@code fixedRate} (or their
-     * {@code String} variants) and throws {@code IllegalStateException} while registering the
-     * task, failing application startup. {@code initialDelay} is a modifier, not a trigger.
+     * Flags {@code @Scheduled} annotations that Spring rejects while registering the task, which
+     * fails application startup:
+     *
+     * <ul>
+     *   <li>more than one of {@code cron}/{@code fixedDelay}/{@code fixedRate} (or their {@code
+     *       String} variants);
+     *   <li>no trigger and no {@code initialDelay};
+     *   <li>only {@code initialDelay} on Spring Framework before 6.1 (Spring Boot before 3.2) —
+     *       6.1 turned that shape into a supported one-time task, so it is reported only when the
+     *       project is known to run an older line;
+     *   <li>a literal {@code cron} combined with {@code initialDelay}, which every Spring version
+     *       rejects for cron triggers.
+     * </ul>
      */
     private void detectScheduledTriggerMissingOrConflicting(
             ClassOrInterfaceDeclaration cls,
             MethodDeclaration method,
             String relativePath,
+            String bootVersion,
             List<Finding> findings) {
         AnnotationExpr annotation = method.getAnnotationByName("Scheduled").orElse(null);
-        if (annotation == null) {
-            return;
-        }
-        List<String> triggers = new ArrayList<>();
-        if (annotation.isNormalAnnotationExpr()) {
-            for (com.github.javaparser.ast.expr.MemberValuePair pair :
-                    annotation.asNormalAnnotationExpr().getPairs()) {
-                if (SCHEDULED_TRIGGER_ATTRIBUTES.contains(pair.getNameAsString())) {
-                    triggers.add(pair.getNameAsString());
-                }
-            }
-        } else if (annotation.isSingleMemberAnnotationExpr()) {
+        if (annotation == null || annotation.isSingleMemberAnnotationExpr()) {
             // @Scheduled has no value() attribute, so a single-member form cannot compile;
             // nothing to judge.
             return;
         }
-        if (triggers.size() == 1) {
+        List<String> triggers = new ArrayList<>();
+        boolean hasInitialDelay = false;
+        boolean literalCron = false;
+        if (annotation.isNormalAnnotationExpr()) {
+            for (com.github.javaparser.ast.expr.MemberValuePair pair :
+                    annotation.asNormalAnnotationExpr().getPairs()) {
+                String name = pair.getNameAsString();
+                if (SCHEDULED_TRIGGER_ATTRIBUTES.contains(name)) {
+                    triggers.add(name);
+                }
+                if (SCHEDULED_INITIAL_DELAY_ATTRIBUTES.contains(name)) {
+                    hasInitialDelay = true;
+                }
+                if ("cron".equals(name) && pair.getValue().isStringLiteralExpr()) {
+                    // A placeholder may resolve to an empty cron at runtime, which Spring skips;
+                    // only a literal is certain to be treated as a cron trigger.
+                    String cron = pair.getValue().asStringLiteralExpr().asString().trim();
+                    literalCron = !cron.isEmpty() && !cron.contains("${");
+                }
+            }
+        }
+
+        String problem;
+        String whyBadPractice;
+        String recommendation;
+        if (triggers.size() > 1) {
+            problem =
+                    "declares "
+                            + triggers.size()
+                            + " trigger attributes ("
+                            + String.join(", ", triggers)
+                            + ")";
+            whyBadPractice =
+                    "Spring's ScheduledAnnotationBeanPostProcessor accepts exactly one of cron,"
+                        + " fixedDelay(String) or fixedRate(String). With several the schedule is"
+                        + " ambiguous, and Spring throws IllegalStateException while wiring the"
+                        + " bean.";
+            recommendation =
+                    "Keep only the intended trigger attribute and remove the others (initialDelay"
+                            + " may be combined with a fixedDelay/fixedRate trigger).";
+        } else if (triggers.isEmpty() && !hasInitialDelay) {
+            problem = "declares no trigger attribute";
+            whyBadPractice =
+                    "Spring's ScheduledAnnotationBeanPostProcessor needs a cron, fixedDelay(String)"
+                        + " or fixedRate(String) trigger — or, from Spring Framework 6.1, an"
+                        + " initialDelay for a one-time task. With none it has nothing to register"
+                        + " and throws IllegalStateException while wiring the bean.";
+            recommendation =
+                    "Add exactly one trigger attribute, e.g. @Scheduled(fixedDelay = 60000) or"
+                            + " @Scheduled(cron = \"0 0 * * * *\").";
+        } else if (triggers.isEmpty()) {
+            // Spring Framework 6.1 (Spring Boot 3.2) schedules an initialDelay-only @Scheduled
+            // method as a one-time task; only older lines reject it.
+            if (!SpringBootVersions.isBefore(bootVersion, 3, 2)) {
+                return;
+            }
+            problem =
+                    "declares only initialDelay, which Spring Boot "
+                            + bootVersion
+                            + " (Spring Framework before 6.1) does not accept";
+            whyBadPractice =
+                    "Before Spring Framework 6.1, initialDelay only modifies a fixedDelay or"
+                        + " fixedRate trigger. On its own it leaves no schedule to register, so"
+                        + " ScheduledAnnotationBeanPostProcessor throws IllegalStateException while"
+                        + " wiring the bean. Spring Framework 6.1 (Spring Boot 3.2) added exactly"
+                        + " this shape as a one-time task.";
+            recommendation =
+                    "Add a fixedDelay or fixedRate trigger, or upgrade to Spring Boot 3.2+ where"
+                            + " @Scheduled(initialDelay = ...) alone runs the method once after"
+                            + " the delay.";
+        } else if ("cron".equals(triggers.get(0)) && hasInitialDelay && literalCron) {
+            problem = "combines a cron trigger with initialDelay";
+            whyBadPractice =
+                    "Cron triggers compute their own firing times, so Spring rejects initialDelay"
+                            + " on them: ScheduledAnnotationBeanPostProcessor fails with"
+                            + " \"'initialDelay' not supported for cron triggers\" while wiring the"
+                            + " bean, in every Spring version.";
+            recommendation =
+                    "Remove initialDelay from the cron-triggered method. If the first run must be"
+                        + " delayed, use fixedDelay/fixedRate with initialDelay, or adjust the cron"
+                        + " expression itself.";
+        } else {
             return;
         }
+
         Integer line = method.getBegin().map(p -> p.line).orElse(null);
         String target = cls.getNameAsString() + "#" + method.getNameAsString();
-        String problem =
-                triggers.isEmpty()
-                        ? "declares no trigger attribute"
-                        : "declares "
-                                + triggers.size()
-                                + " trigger attributes ("
-                                + String.join(", ", triggers)
-                                + ")";
         findings.add(
                 FindingFactory.builder(
                                 FindingRules.SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING,
                                 FindingConfidence.HIGH)
-                        .shortMessage(
-                                "@Scheduled on "
-                                        + target
-                                        + " "
-                                        + problem
-                                        + " — exactly one is required.")
-                        .whyBadPractice(
-                                "Spring's ScheduledAnnotationBeanPostProcessor requires exactly one"
-                                    + " of cron, fixedDelay(String) or fixedRate(String) to build a"
-                                    + " trigger. With none it has no schedule to register; with"
-                                    + " several the intent is ambiguous. Either way it throws"
-                                    + " IllegalStateException while wiring the bean.")
+                        .shortMessage("@Scheduled on " + target + " " + problem + ".")
+                        .whyBadPractice(whyBadPractice)
                         .possibleImpact(
                                 "The application context fails to start — the whole application is"
                                         + " down, not just the one job.")
-                        .recommendation(
-                                triggers.isEmpty()
-                                        ? "Add exactly one trigger attribute, e.g."
-                                                + " @Scheduled(fixedDelay = 60000) or"
-                                                + " @Scheduled(cron = \"0 0 * * * *\")."
-                                        : "Keep only the intended trigger attribute and remove the"
-                                                + " others (initialDelay may be combined with a"
-                                                + " fixedDelay/fixedRate trigger).")
+                        .recommendation(recommendation)
                         .evidence(
                                 "@Scheduled on "
                                         + target

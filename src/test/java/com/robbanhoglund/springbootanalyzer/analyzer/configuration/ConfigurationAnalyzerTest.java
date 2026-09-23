@@ -363,6 +363,24 @@ public class TradingService {
                         "security.password-policy",
                         "service.password")
                 .contains("github.pat");
+        // A literal fallback is described as such, not as a missing placeholder.
+        assertThat(result.findings())
+                .filteredOn(finding -> "SPRING_SECRET_LITERAL".equals(finding.ruleId()))
+                .filteredOn(finding -> "openai.fallback-api-key".equals(finding.target()))
+                .singleElement()
+                .satisfies(
+                        finding -> {
+                            assertThat(finding.message()).contains("falls back to a literal value");
+                            assertThat(finding.evidence()).contains("fallback is a literal value");
+                        });
+        assertThat(result.findings())
+                .filteredOn(finding -> "SPRING_SECRET_LITERAL".equals(finding.ruleId()))
+                .filteredOn(finding -> "openai.api-key".equals(finding.target()))
+                .singleElement()
+                .satisfies(
+                        finding ->
+                                assertThat(finding.evidence())
+                                        .contains("with a non-placeholder value"));
         assertThat(analysis.properties())
                 .anyMatch(
                         property ->

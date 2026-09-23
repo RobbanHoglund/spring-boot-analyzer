@@ -2,7 +2,10 @@ package com.robbanhoglund.springbootanalyzer.analyzer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildTool;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -32,6 +35,19 @@ class SecurityPracticeFindingAnalyzerTest {
 
     private List<Finding> findings() {
         return analyzer.analyze(repoRoot);
+    }
+
+    private List<Finding> findingsOnBoot(String springBootVersion, List<String> dependencies) {
+        return analyzer.analyze(
+                JavaSources.from(repoRoot),
+                new BuildInfo(
+                        BuildTool.GRADLE,
+                        true,
+                        "21",
+                        dependencies,
+                        springBootVersion,
+                        "build.gradle plugin",
+                        "HIGH"));
     }
 
     private static Finding byRule(List<Finding> findings, String ruleId) {
@@ -397,6 +413,92 @@ class SecurityPracticeFindingAnalyzerTest {
         Finding f = byRule(findings(), "SPRING_INSECURE_DESERIALIZATION");
         assertThat(f).isNotNull();
         assertThat(f.message()).contains("Yaml");
+    }
+
+    @Test
+    void doesNotFlagSnakeYamlNoArgConstructorOnBoot31OrLater() throws IOException {
+        // Spring Boot 3.1+ manages SnakeYAML 2.x, whose no-arg Yaml() rejects global tags.
+        writeNoArgYamlReader();
+
+        List<Finding> findings = findingsOnBoot("3.5.13", List.of("org.yaml:snakeyaml"));
+
+        assertThat(byRule(findings, "SPRING_INSECURE_DESERIALIZATION")).isNull();
+    }
+
+    @Test
+    void flagsSnakeYamlNoArgConstructorWhenSnakeYaml1IsPinned() throws IOException {
+        writeNoArgYamlReader();
+
+        List<Finding> findings = findingsOnBoot("3.5.13", List.of("org.yaml:snakeyaml:1.33"));
+
+        Finding f = byRule(findings, "SPRING_INSECURE_DESERIALIZATION");
+        assertThat(f).isNotNull();
+        assertThat(f.whyBadPractice()).contains("SnakeYAML 1.x");
+    }
+
+    @Test
+    void flagsSnakeYamlNoArgConstructorOnBoot30() throws IOException {
+        // Spring Boot 3.0 still manages SnakeYAML 1.33.
+        writeNoArgYamlReader();
+
+        List<Finding> findings = findingsOnBoot("3.0.13", List.of());
+
+        assertThat(byRule(findings, "SPRING_INSECURE_DESERIALIZATION")).isNotNull();
+    }
+
+    @Test
+    void doesNotFlagRedirectWhoseLiteralPrefixFixesTheTarget() throws IOException {
+        // Appending an id to "/owners/" can only change the path, never the host.
+        writeSourceFile(
+                "src/main/java/com/example/OwnerController.java",
+                """
+                package com.example;
+                import jakarta.servlet.http.HttpServletResponse;
+                public class OwnerController {
+                    public String created(Long id) {
+                        return "redirect:/owners/" + id;
+                    }
+                    public String external(String code) {
+                        return "redirect:https://partner.example.com/claim?code=" + code;
+                    }
+                    public void legacy(HttpServletResponse response, long id) throws Exception {
+                        response.sendRedirect("/orders/" + id + "/receipt");
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_OPEN_REDIRECT")).isNull();
+    }
+
+    @Test
+    void flagsRedirectWhosePrefixDoesNotFixTheHost() throws IOException {
+        // "/" + "/evil.com" becomes a protocol-relative URL to another host.
+        writeSourceFile(
+                "src/main/java/com/example/LoginController.java",
+                """
+                package com.example;
+                public class LoginController {
+                    public String afterLogin(String next) {
+                        return "redirect:/" + next;
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_OPEN_REDIRECT")).isNotNull();
+    }
+
+    private void writeNoArgYamlReader() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/YamlReader.java",
+                """
+                package com.example;
+                import org.yaml.snakeyaml.Yaml;
+                public class YamlReader {
+                    public Object read(String input) {
+                        return new Yaml().load(input);
+                    }
+                }
+                """);
     }
 
     @Test
@@ -1190,7 +1292,8 @@ class SecurityPracticeFindingAnalyzerTest {
                 import jakarta.servlet.http.HttpServletResponse;
                 public class RedirectController {
                     public void go(HttpServletResponse resp, String target) throws Exception {
-                        resp.sendRedirect("/next?to=" + target);
+                        // The caller controls the whole target, host included.
+                        resp.sendRedirect(target + "?from=login");
                     }
                 }
                 """);

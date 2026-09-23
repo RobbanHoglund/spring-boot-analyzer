@@ -18,6 +18,7 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleModelAna
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleResolvedDependencyModel;
 import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -135,7 +136,7 @@ public class ConfigurationFindingAnalyzer {
         detectOpenInViewNotDisabled(configurationAnalysis, buildInfo, findings);
         detectActuatorExposure(configurationAnalysis, findings);
         detectConnectionPoolMisconfiguration(configurationAnalysis, findings);
-        detectDevToolsInProduction(buildInfo, findings);
+        detectDevToolsInProduction(repositoryRoot, buildInfo, findings);
         detectAsyncSecurityContextLost(javaSources, buildInfo, findings);
         detectMultipartUnlimitedSize(configurationAnalysis, findings);
         detectJdbcUrlEmbeddedCredentials(configurationAnalysis, findings);
@@ -2354,6 +2355,10 @@ public class ConfigurationFindingAnalyzer {
         }
     }
 
+    /** The Hibernate major each Spring Boot major manages through its BOM. */
+    private static final Map<Integer, Integer> REQUIRED_HIBERNATE_MAJOR_BY_BOOT_MAJOR =
+            Map.of(3, 6, 4, 7);
+
     private void detectHibernateVersionMismatch(
             BuildInfo buildInfo, GradleModelAnalysis gradleModelAnalysis, List<Finding> findings) {
         if (gradleModelAnalysis == null || gradleModelAnalysis.resolvedDependencies() == null) {
@@ -2365,19 +2370,27 @@ public class ConfigurationFindingAnalyzer {
         if (bootVersion == null) {
             bootVersion = buildInfo.springBootVersion();
         }
-        if (bootVersion == null || !bootVersion.startsWith("3.")) {
+        // Spring Boot 3 manages Hibernate 6 and Spring Boot 4 manages Hibernate 7; an explicitly
+        // pinned older major breaks the JPA integration. Unknown future lines are not guessed.
+        Integer requiredHibernateMajor =
+                REQUIRED_HIBERNATE_MAJOR_BY_BOOT_MAJOR.get(SpringBootVersions.major(bootVersion));
+        if (requiredHibernateMajor == null) {
             return;
         }
-        // Spring Boot 3.x requires Hibernate 6.x. Detect explicitly pinned pre-6.x versions.
         String hibernateVersion =
                 resolvedVersion("org.hibernate", "hibernate-core", gradleModelAnalysis);
+        if (hibernateVersion == null) {
+            hibernateVersion =
+                    resolvedVersion("org.hibernate.orm", "hibernate-core", gradleModelAnalysis);
+        }
         if (hibernateVersion == null) {
             return;
         }
         int hibernateMajor = parseMajorVersion(hibernateVersion);
-        if (hibernateMajor >= 6 || hibernateMajor < 0) {
+        if (hibernateMajor >= requiredHibernateMajor || hibernateMajor < 0) {
             return;
         }
+        int bootMajor = SpringBootVersions.major(bootVersion);
         findings.add(
                 FindingFactory.builder(
                                 FindingRules.SPRING_HIBERNATE_VERSION_MISMATCH,
@@ -2387,12 +2400,20 @@ public class ConfigurationFindingAnalyzer {
                                         + hibernateVersion
                                         + " is not compatible with Spring Boot "
                                         + bootVersion
-                                        + " — Spring Boot 3.x requires Hibernate 6.x")
+                                        + " — Spring Boot "
+                                        + bootMajor
+                                        + ".x requires Hibernate "
+                                        + requiredHibernateMajor
+                                        + ".x")
                         .whyBadPractice(
-                                "Spring Boot 3.x upgraded the JPA integration to Hibernate 6.x and"
-                                    + " relies on its API and namespace changes. Pinning Hibernate"
-                                    + " to an earlier major version overrides the Spring Boot BOM"
-                                    + " and breaks this contract.")
+                                "Spring Boot "
+                                        + bootMajor
+                                        + ".x builds its JPA integration on Hibernate "
+                                        + requiredHibernateMajor
+                                        + ".x and relies on its API and namespace changes."
+                                        + " Pinning Hibernate to an earlier major version"
+                                        + " overrides the Spring Boot BOM and breaks this"
+                                        + " contract.")
                         .possibleImpact(
                                 "The application will fail to start with"
                                         + " ClassNotFoundException, NoSuchMethodError, or"
@@ -2400,14 +2421,18 @@ public class ConfigurationFindingAnalyzer {
                                         + " Spring Data JPA APIs are mismatched.")
                         .recommendation(
                                 "Remove the explicit Hibernate version override from your build"
-                                    + " script and let the Spring Boot BOM manage the version, or"
-                                    + " upgrade to Hibernate 6.x explicitly.")
+                                        + " script and let the Spring Boot BOM manage the"
+                                        + " version, or upgrade to Hibernate "
+                                        + requiredHibernateMajor
+                                        + ".x explicitly.")
                         .evidence(
-                                "Resolved org.hibernate:hibernate-core="
+                                "Resolved hibernate-core "
                                         + hibernateVersion
                                         + " with Spring Boot "
                                         + bootVersion
-                                        + ". Hibernate 6.x is required.")
+                                        + ". Hibernate "
+                                        + requiredHibernateMajor
+                                        + ".x is required.")
                         .limitations(
                                 "Detected via Gradle resolved dependency graph. This finding only"
                                         + " appears in extended (Gradle model) analysis mode.")
@@ -2475,8 +2500,25 @@ public class ConfigurationFindingAnalyzer {
     // Rule: SPRING_DEVTOOLS_IN_PRODUCTION
     // ---------------------------------------------------------------------------
 
-    private void detectDevToolsInProduction(BuildInfo buildInfo, List<Finding> findings) {
-        if (buildInfo == null || buildInfo.dependencies() == null) {
+    /** Gradle configurations whose dependencies are packaged into the bootJar/bootWar. */
+    private static final Set<String> PACKAGED_GRADLE_CONFIGURATIONS =
+            Set.of("implementation", "runtimeOnly", "api", "compile", "runtime");
+
+    private static final Pattern GRADLE_CONFIGURATION_PREFIX =
+            Pattern.compile("^\\s*([A-Za-z]+)\\b");
+
+    /** Where a build file puts DevTools into the packaged artifact. */
+    private record DevToolsDeclaration(String buildFile, int line, String how) {}
+
+    /**
+     * Reports DevTools only where the build actually packages it. Spring Boot excludes DevTools
+     * from repackaged archives when Gradle declares it {@code developmentOnly}, and the Maven
+     * repackage goal excludes it by default unless {@code excludeDevtools} is set to false — so
+     * the dependency list alone, which carries no configuration or scope, cannot tell.
+     */
+    private void detectDevToolsInProduction(
+            Path repositoryRoot, BuildInfo buildInfo, List<Finding> findings) {
+        if (repositoryRoot == null || buildInfo == null || buildInfo.dependencies() == null) {
             return;
         }
         boolean hasDevTools =
@@ -2485,40 +2527,96 @@ public class ConfigurationFindingAnalyzer {
         if (!hasDevTools) {
             return;
         }
+        DevToolsDeclaration declaration = packagedDevToolsDeclaration(repositoryRoot);
+        if (declaration == null) {
+            return;
+        }
         findings.add(
                 FindingFactory.builder(
-                                FindingRules.SPRING_DEVTOOLS_IN_PRODUCTION,
-                                FindingConfidence.MEDIUM)
+                                FindingRules.SPRING_DEVTOOLS_IN_PRODUCTION, FindingConfidence.HIGH)
                         .shortMessage(
-                                "spring-boot-devtools is declared as a runtime dependency —"
-                                        + " it should not be present in production builds.")
+                                "spring-boot-devtools is packaged into the production artifact ("
+                                        + declaration.how()
+                                        + " in "
+                                        + declaration.buildFile()
+                                        + ").")
                         .whyBadPractice(
-                                "DevTools activates live-reload servers, remote restart endpoints,"
-                                    + " and file-system watchers that have no purpose in"
-                                    + " production. The remote-restart endpoint allows an"
-                                    + " authenticated attacker to reload arbitrary application"
-                                    + " state. File-system watchers waste CPU cycles monitoring a"
-                                    + " read-only container image and add latency to the startup"
-                                    + " sequence.")
+                                "Spring Boot keeps DevTools out of repackaged archives only when"
+                                    + " Gradle declares it developmentOnly, or through the Maven"
+                                    + " repackage goal's default excludeDevtools=true. Declared"
+                                    + " this way, it ships inside the production jar. DevTools"
+                                    + " switches itself off when the application is launched as a"
+                                    + " fully packaged app, so the direct risk is limited, but the"
+                                    + " artifact carries a development tool with restart and"
+                                    + " remote-update endpoints.")
                         .possibleImpact(
-                                "Exposure of remote-restart and live-reload endpoints if network"
-                                    + " controls are absent. Unnecessary CPU and memory overhead in"
-                                    + " production pods. Potential class-loading conflicts because"
-                                    + " DevTools uses a custom classloader hierarchy.")
+                                "A larger artifact and attack surface. If DevTools does not"
+                                    + " recognise the launch as packaged, or"
+                                    + " spring.devtools.remote.secret is set, live reload, restart"
+                                    + " and the remote-update endpoint become active in"
+                                    + " production.")
                         .recommendation(
-                                "In Gradle, declare DevTools in the devOnly configuration so it is"
-                                    + " excluded from the production bootJar:"
-                                    + " devOnly(\"org.springframework.boot:spring-boot-devtools\")."
-                                    + " In Maven, set <optional>true</optional> on the dependency."
-                                    + " Verify the final JAR with jar tf build/libs/*.jar | grep"
-                                    + " devtools.")
+                                "In Gradle, declare it as"
+                                    + " developmentOnly(\"org.springframework.boot:spring-boot-devtools\")."
+                                    + " In Maven, remove the excludeDevtools=false override and"
+                                    + " mark the dependency <optional>true</optional>. Verify with"
+                                    + " jar tf <artifact>.jar | grep devtools.")
+                        .evidence(
+                                declaration.buildFile()
+                                        + " line "
+                                        + declaration.line()
+                                        + ": spring-boot-devtools "
+                                        + declaration.how()
+                                        + ".")
                         .limitations(
-                                "Medium confidence — the build tool may already exclude DevTools"
-                                        + " from the final artifact via devOnly or optional scope,"
-                                        + " which static dependency-list analysis cannot always"
-                                        + " distinguish.")
-                        .location("Build file")
+                                "Only the root build.gradle, build.gradle.kts and pom.xml are"
+                                        + " inspected; DevTools added in a subproject or"
+                                        + " through a convention plugin is not seen.")
+                        .source(declaration.buildFile(), declaration.line())
+                        .target("spring-boot-devtools")
                         .build());
+    }
+
+    private DevToolsDeclaration packagedDevToolsDeclaration(Path repositoryRoot) {
+        for (String gradleFile : List.of("build.gradle", "build.gradle.kts")) {
+            List<String> lines = readLines(repositoryRoot.resolve(gradleFile));
+            for (int index = 0; index < lines.size(); index++) {
+                String line = lines.get(index);
+                String trimmed = line.trim();
+                if (!line.contains("devtools") || trimmed.startsWith("//")) {
+                    continue;
+                }
+                Matcher matcher = GRADLE_CONFIGURATION_PREFIX.matcher(line);
+                if (matcher.find() && PACKAGED_GRADLE_CONFIGURATIONS.contains(matcher.group(1))) {
+                    return new DevToolsDeclaration(
+                            gradleFile, index + 1, "declared as " + matcher.group(1));
+                }
+            }
+        }
+        List<String> pomLines = readLines(repositoryRoot.resolve("pom.xml"));
+        String pom = String.join("\n", pomLines);
+        if (pom.contains("<artifactId>spring-boot-devtools</artifactId>")
+                && pom.replaceAll("\\s+", "")
+                        .contains("<excludeDevtools>false</excludeDevtools>")) {
+            for (int index = 0; index < pomLines.size(); index++) {
+                if (pomLines.get(index).contains("<artifactId>spring-boot-devtools</artifactId>")) {
+                    return new DevToolsDeclaration(
+                            "pom.xml", index + 1, "included by excludeDevtools=false");
+                }
+            }
+        }
+        return null;
+    }
+
+    private static List<String> readLines(Path file) {
+        if (!Files.isRegularFile(file)) {
+            return List.of();
+        }
+        try {
+            return Files.readAllLines(file, StandardCharsets.UTF_8);
+        } catch (IOException | java.io.UncheckedIOException exception) {
+            return List.of();
+        }
     }
 
     // ---------------------------------------------------------------------------

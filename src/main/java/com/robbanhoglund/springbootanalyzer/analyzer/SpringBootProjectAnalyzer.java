@@ -239,7 +239,11 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
         collectStage(
                 "caching-practice",
                 findings,
-                () -> cachingPracticeFindingAnalyzer.analyze(javaSources));
+                () ->
+                        cachingPracticeFindingAnalyzer.analyze(
+                                javaSources,
+                                buildInfo,
+                                configurationResult.configurationAnalysis()));
         collectStage(
                 "observability-gaps",
                 findings,
@@ -251,7 +255,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
         collectStage(
                 "security-practice",
                 findings,
-                () -> securityPracticeFindingAnalyzer.analyze(javaSources));
+                () -> securityPracticeFindingAnalyzer.analyze(javaSources, buildInfo));
         collectStage(
                 "scalability-practice",
                 findings,
@@ -261,7 +265,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
         collectStage(
                 "scheduling-practice",
                 findings,
-                () -> schedulingPracticeFindingAnalyzer.analyze(javaSources));
+                () -> schedulingPracticeFindingAnalyzer.analyze(javaSources, buildInfo));
         collectStage(
                 "migration-practice",
                 findings,

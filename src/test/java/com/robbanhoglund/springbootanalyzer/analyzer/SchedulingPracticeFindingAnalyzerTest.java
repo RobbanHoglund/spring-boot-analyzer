@@ -2,7 +2,10 @@ package com.robbanhoglund.springbootanalyzer.analyzer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildTool;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -32,6 +35,37 @@ class SchedulingPracticeFindingAnalyzerTest {
 
     private List<Finding> findings() {
         return analyzer.analyze(repoRoot);
+    }
+
+    private List<Finding> findingsOnBoot(String springBootVersion) {
+        return analyzer.analyze(
+                JavaSources.from(repoRoot),
+                new BuildInfo(
+                        BuildTool.GRADLE,
+                        true,
+                        "21",
+                        List.of(),
+                        springBootVersion,
+                        "build.gradle plugin",
+                        "HIGH"));
+    }
+
+    private void writeJobs(String scheduledAnnotation) throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Jobs.java",
+                """
+                package com.example;
+                import org.springframework.scheduling.annotation.EnableScheduling;
+                import org.springframework.scheduling.annotation.Scheduled;
+                import org.springframework.stereotype.Component;
+                @Component
+                @EnableScheduling
+                public class Jobs {
+                    %s
+                    public void run() {}
+                }
+                """
+                        .formatted(scheduledAnnotation));
     }
 
     private static Finding byRule(List<Finding> findings, String ruleId) {
@@ -226,25 +260,69 @@ class SchedulingPracticeFindingAnalyzerTest {
     // ── SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING ───────────────────────
 
     @Test
-    void flagsScheduledWithNoTriggerAttribute() throws IOException {
-        writeSourceFile(
-                "src/main/java/com/example/Jobs.java",
-                """
-                package com.example;
-                import org.springframework.scheduling.annotation.EnableScheduling;
-                import org.springframework.scheduling.annotation.Scheduled;
-                import org.springframework.stereotype.Component;
-                @Component
-                @EnableScheduling
-                public class Jobs {
-                    @Scheduled(initialDelay = 1000)
-                    public void run() {}
-                }
-                """);
+    void flagsScheduledWithNoAttributesAtAll() throws IOException {
+        writeJobs("@Scheduled");
 
         Finding f = byRule(findings(), "SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING");
         assertThat(f).isNotNull();
         assertThat(f.message()).contains("no trigger attribute");
+    }
+
+    @Test
+    void flagsInitialDelayOnlyWhenTheProjectRunsSpringBootBefore32() throws IOException {
+        writeJobs("@Scheduled(initialDelay = 1000)");
+
+        Finding f =
+                byRule(findingsOnBoot("3.1.12"), "SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("only initialDelay").contains("3.1.12");
+    }
+
+    @Test
+    void doesNotFlagInitialDelayOnlyOneTimeTaskOnSpringBoot32OrLater() throws IOException {
+        // Spring Framework 6.1 (Boot 3.2) schedules this shape as a one-time task.
+        writeJobs("@Scheduled(initialDelay = 5000)");
+
+        assertThat(
+                        byRule(
+                                findingsOnBoot("3.2.0"),
+                                "SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING"))
+                .isNull();
+        assertThat(
+                        byRule(
+                                findingsOnBoot("4.1.0"),
+                                "SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING"))
+                .isNull();
+    }
+
+    @Test
+    void doesNotFlagInitialDelayOnlyWhenTheBootVersionIsUnknown() throws IOException {
+        writeJobs("@Scheduled(initialDelayString = \"PT5S\")");
+
+        assertThat(byRule(findings(), "SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING")).isNull();
+    }
+
+    @Test
+    void flagsCronTriggerCombinedWithInitialDelay() throws IOException {
+        writeJobs("@Scheduled(cron = \"0 0 * * * *\", zone = \"UTC\", initialDelay = 1000)");
+
+        Finding f =
+                byRule(findingsOnBoot("3.5.13"), "SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("cron trigger with initialDelay");
+        assertThat(f.whyBadPractice()).contains("'initialDelay' not supported for cron triggers");
+    }
+
+    @Test
+    void doesNotFlagPlaceholderCronCombinedWithInitialDelay() throws IOException {
+        // The placeholder may resolve to an empty cron, which Spring skips.
+        writeJobs("@Scheduled(cron = \"${jobs.cron:}\", initialDelay = 1000)");
+
+        assertThat(
+                        byRule(
+                                findingsOnBoot("3.5.13"),
+                                "SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING"))
+                .isNull();
     }
 
     @Test

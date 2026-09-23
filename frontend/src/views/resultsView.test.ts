@@ -777,6 +777,78 @@ describe('renderResultsView findings UI', () => {
     expect(document.querySelector('.finding-location-meta')?.textContent).toContain('Exact line not resolved statically');
   });
 
+  it('keeps the catalog title of a rule-based finding so Settings search finds the same name', () => {
+    // The message matches a pattern that used to rename the finding to "Orphan configuration prefix".
+    const finding = baseFinding({
+      ruleId: 'SPRING_CONFIGURATION_PROPERTIES_PREFIX_UNUSED',
+      title: '@ConfigurationProperties prefix has no configured properties',
+      category: 'CONFIGURATION',
+      message: '@ConfigurationProperties prefix was found but no matching configured properties were detected: app.mail',
+      shortMessage: '@ConfigurationProperties prefix was found but no matching configured properties were detected: app.mail',
+      target: 'app.mail'
+    });
+
+    const view = renderResultsView(baseResult([finding]), defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    expect(document.querySelector('.finding-summary-title')?.textContent)
+      .toBe('@ConfigurationProperties prefix has no configured properties');
+    expect(document.body.textContent).not.toContain('Orphan configuration prefix');
+  });
+
+  it('labels a finding without a source file as project-wide instead of a placeholder', () => {
+    const finding = baseFinding({
+      ruleId: 'SPRING_SECURITY_STARTER_MISSING',
+      title: 'Web application has no Spring Security dependency',
+      category: 'SECURITY',
+      location: 'Build configuration',
+      sourceFile: undefined,
+      line: null,
+      target: undefined,
+      primaryLocation: undefined,
+      highlightRanges: []
+    });
+
+    const view = renderResultsView(baseResult([finding]), defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    expect(document.querySelector('.finding-location-path')?.textContent).toBe('Build configuration');
+    expect(document.querySelector('.finding-location-meta')?.textContent)
+      .toBe('Project-wide finding — no single source file');
+    expect(document.body.textContent).not.toContain('Source reference');
+  });
+
+  it('explains confidence, runtime detection and the rule ID in badge tooltips', () => {
+    const finding = baseFinding({ confidence: 'MEDIUM', runtimeDetection: 'NOT_NORMALLY_DETECTED' });
+
+    const view = renderResultsView(baseResult([finding]), defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    const confidence = document.querySelector('.finding-summary-meta-row .badge-confidence');
+    const runtime = document.querySelector('.finding-summary-meta-row .badge-runtime');
+    const ruleId = document.querySelector('.finding-detail-rule-id');
+    expect(confidence?.getAttribute('title')).toContain('a context the analyzer cannot see could make it safe');
+    expect(runtime?.getAttribute('title')).toContain('would not normally surface');
+    expect(ruleId?.getAttribute('title')).toContain('Settings → Rule management');
+    expect(ruleId?.getAttribute('title')).toContain('.analyzer-suppress.yml');
+  });
+
+  it('recommends a sanitized 500 fallback for a catch-all exception handler', () => {
+    const finding = baseFinding({
+      ruleId: 'SPRING_BROAD_EXCEPTION_HANDLER',
+      title: 'Catch-all exception handler may hide server errors',
+      recommendation: 'Keep narrower handlers and let the final catch-all return a sanitized 500.'
+    });
+
+    const view = renderResultsView(baseResult([finding]), defaultState(), defaultActions());
+    document.body.appendChild(view);
+
+    const details = document.querySelector('.finding-detail-card');
+    expect(details?.textContent).toContain('@RestControllerAdvice');
+    expect(details?.textContent).toContain('INTERNAL_SERVER_ERROR');
+    expect(details?.textContent).not.toContain('importOrders');
+  });
+
   it('replaces vague analyzer titles with a specific UI title and structured location meta', () => {
     const vagueFinding = baseFinding({
       title: undefined,

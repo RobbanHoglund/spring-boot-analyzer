@@ -64,6 +64,23 @@ class JavaVersionRuleTest {
     }
 
     @Test
+    void flagsBoot4WithJava11() {
+        // Spring Boot 4 keeps the Java 17 baseline of Spring Boot 3.
+        var result =
+                analyzer.analyze(
+                        tempDir,
+                        buildInfo("4.1.0", "11"),
+                        gradleModel("4.1.0", "11"),
+                        emptyConfig(),
+                        List.of(),
+                        List.of());
+
+        Finding f = byRule(result.findings(), "SPRING_BOOT3_REQUIRES_JAVA17");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("4.1.0");
+    }
+
+    @Test
     void doesNotFlagBoot3WithJava17() {
         var result =
                 analyzer.analyze(

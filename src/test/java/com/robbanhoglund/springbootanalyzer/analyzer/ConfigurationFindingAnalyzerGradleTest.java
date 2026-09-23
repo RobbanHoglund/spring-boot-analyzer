@@ -110,6 +110,120 @@ class ConfigurationFindingAnalyzerGradleTest {
         return findings.stream().filter(f -> ruleId.equals(f.ruleId())).findFirst().orElse(null);
     }
 
+    // ── SPRING_DEVTOOLS_IN_PRODUCTION ─────────────────────────────────────────
+
+    private static BuildInfo buildWithDevTools(BuildTool tool) {
+        return new BuildInfo(
+                tool,
+                true,
+                "17",
+                List.of("org.springframework.boot:spring-boot-devtools"),
+                "3.5.1",
+                "build file",
+                "HIGH");
+    }
+
+    @Test
+    void flagsDevToolsDeclaredInAPackagedGradleConfiguration() throws IOException {
+        Files.writeString(
+                repoRoot.resolve("build.gradle"),
+                """
+                plugins {
+                    id 'org.springframework.boot' version '3.5.1'
+                }
+                dependencies {
+                    implementation 'org.springframework.boot:spring-boot-starter-web'
+                    implementation 'org.springframework.boot:spring-boot-devtools'
+                }
+                """);
+
+        Finding f =
+                byRule(
+                        findings(buildWithDevTools(BuildTool.GRADLE), null),
+                        "SPRING_DEVTOOLS_IN_PRODUCTION");
+        assertThat(f).isNotNull();
+        assertThat(f.sourceFile()).isEqualTo("build.gradle");
+        assertThat(f.line()).isEqualTo(6);
+        assertThat(f.message()).contains("declared as implementation");
+    }
+
+    @Test
+    void doesNotFlagDevToolsDeclaredDevelopmentOnly() throws IOException {
+        // developmentOnly dependencies are excluded from the bootJar.
+        Files.writeString(
+                repoRoot.resolve("build.gradle"),
+                """
+                dependencies {
+                    developmentOnly 'org.springframework.boot:spring-boot-devtools'
+                }
+                """);
+
+        assertThat(
+                        byRule(
+                                findings(buildWithDevTools(BuildTool.GRADLE), null),
+                                "SPRING_DEVTOOLS_IN_PRODUCTION"))
+                .isNull();
+    }
+
+    @Test
+    void doesNotFlagMavenDevToolsExcludedByTheRepackageDefault() throws IOException {
+        // The Maven repackage goal excludes DevTools unless excludeDevtools is false.
+        Files.writeString(
+                repoRoot.resolve("pom.xml"),
+                """
+                <project>
+                  <dependencies>
+                    <dependency>
+                      <groupId>org.springframework.boot</groupId>
+                      <artifactId>spring-boot-devtools</artifactId>
+                      <optional>true</optional>
+                    </dependency>
+                  </dependencies>
+                </project>
+                """);
+
+        assertThat(
+                        byRule(
+                                findings(buildWithDevTools(BuildTool.MAVEN), null),
+                                "SPRING_DEVTOOLS_IN_PRODUCTION"))
+                .isNull();
+    }
+
+    @Test
+    void flagsMavenDevToolsWhenTheRepackageExclusionIsDisabled() throws IOException {
+        Files.writeString(
+                repoRoot.resolve("pom.xml"),
+                """
+                <project>
+                  <dependencies>
+                    <dependency>
+                      <groupId>org.springframework.boot</groupId>
+                      <artifactId>spring-boot-devtools</artifactId>
+                    </dependency>
+                  </dependencies>
+                  <build>
+                    <plugins>
+                      <plugin>
+                        <groupId>org.springframework.boot</groupId>
+                        <artifactId>spring-boot-maven-plugin</artifactId>
+                        <configuration>
+                          <excludeDevtools>false</excludeDevtools>
+                        </configuration>
+                      </plugin>
+                    </plugins>
+                  </build>
+                </project>
+                """);
+
+        Finding f =
+                byRule(
+                        findings(buildWithDevTools(BuildTool.MAVEN), null),
+                        "SPRING_DEVTOOLS_IN_PRODUCTION");
+        assertThat(f).isNotNull();
+        assertThat(f.sourceFile()).isEqualTo("pom.xml");
+        assertThat(f.line()).isEqualTo(5);
+    }
+
     // ── SPRING_HIBERNATE_VERSION_MISMATCH ─────────────────────────────────────
 
     @Test
@@ -125,6 +239,32 @@ class ConfigurationFindingAnalyzerGradleTest {
         assertThat(f.message()).contains("5.6.15.Final");
         assertThat(f.message()).contains("3.5.1");
         assertThat(f.target()).isEqualTo("org.hibernate:hibernate-core");
+    }
+
+    @Test
+    void flagsHibernate6WithSpringBoot4() {
+        // Spring Boot 4 manages Hibernate 7 (org.hibernate.orm since Hibernate 6).
+        GradleModelAnalysis gradle =
+                gradleModelWith(
+                        List.of(
+                                dep("org.springframework.boot", "spring-boot", "4.1.0"),
+                                dep("org.hibernate.orm", "hibernate-core", "6.6.18.Final")));
+
+        Finding f = byRule(findings(buildInfoBoot3, gradle), "SPRING_HIBERNATE_VERSION_MISMATCH");
+        assertThat(f).isNotNull();
+        assertThat(f.message()).contains("Spring Boot 4.x requires Hibernate 7.x");
+    }
+
+    @Test
+    void doesNotFlagHibernate7WithSpringBoot4() {
+        GradleModelAnalysis gradle =
+                gradleModelWith(
+                        List.of(
+                                dep("org.springframework.boot", "spring-boot", "4.1.0"),
+                                dep("org.hibernate.orm", "hibernate-core", "7.1.4.Final")));
+
+        assertThat(byRule(findings(buildInfoBoot3, gradle), "SPRING_HIBERNATE_VERSION_MISMATCH"))
+                .isNull();
     }
 
     @Test
