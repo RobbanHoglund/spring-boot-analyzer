@@ -8,9 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
-- New **Spring Boot 3 Migration** category with six rules: `SPRING_SECURITY_WEBSECURITYCONFIGURERADAPTER`, `SPRING_SECURITY_ANTMATCHERS_REMOVED`, `SPRING_SECURITY_ENABLE_GLOBAL_METHOD_SECURITY`, `SPRING_JAKARTA_NAMESPACE_ON_BOOT3` (gated on a detected Spring Boot 3+ version), `SPRING_PROFILES_PROPERTY_DEPRECATED`, and `SPRING_ACTUATOR_HTTPTRACE_RENAMED`
+- New **Spring Boot Migration** category (shown as "Spring Boot migration") with six rules: `SPRING_SECURITY_WEBSECURITYCONFIGURERADAPTER`, `SPRING_SECURITY_ANTMATCHERS_REMOVED`, `SPRING_SECURITY_ENABLE_GLOBAL_METHOD_SECURITY`, `SPRING_JAKARTA_NAMESPACE_ON_BOOT3` (gated on a detected Spring Boot 3+ version), `SPRING_PROFILES_PROPERTY_DEPRECATED`, and `SPRING_ACTUATOR_HTTPTRACE_RENAMED`
 - Four additional security rules: `SPRING_JDBC_URL_EMBEDDED_CREDENTIALS`, `SPRING_DEFAULT_USER_PASSWORD_LITERAL`, `SPRING_LOGGING_AUTH_HEADER`, and `SPRING_BCRYPT_LOW_STRENGTH`
 - Three additional reliability rules: `SPRING_RESTTEMPLATE_NEW_PER_REQUEST`, `SPRING_JPA_QUERY_NO_PAGINATION`, and `SPRING_REQUIRES_NEW_IN_LOOP`
+- 26 rules for mistakes that stop the application from starting, fail every call, or silently switch a feature off (225 rules in total):
+  - Security: `SPRING_SECURITY_FILTER_CHAIN_NO_AUTHORIZATION`, `SPRING_SECURITY_AUTHORIZATION_RULE_INVALID` (`hasRole("ROLE_X")`, matchers after `anyRequest()`), `SPRING_SECURITY_FILTER_CHAIN_UNREACHABLE`
+  - Container and startup: `SPRING_ENABLE_ANNOTATION_ON_NON_BEAN_CLASS`, `SPRING_BEAN_METHOD_INVALID`, `SPRING_SCOPED_BEAN_WITHOUT_PROXY`, `SPRING_BFPP_BEAN_METHOD_NOT_STATIC`, `SPRING_CONFIGURATION_PROPERTIES_INVALID_PREFIX`, `SPRING_CONFIGURATION_PROPERTIES_BEAN_CONSTRUCTOR_BINDING`, `SPRING_EVENT_LISTENER_INVALID_SIGNATURE`
+  - Web handlers: `SPRING_OPTIONAL_PRIMITIVE_REQUEST_PARAMETER`, `SPRING_MULTIPLE_REQUEST_BODY`, `SPRING_AMBIGUOUS_HANDLER_MAPPING`
+  - Caching: `SPRING_CACHEABLE_WITHOUT_ENABLE_CACHING`, `SPRING_CACHE_ANNOTATION_CONFLICTING_ATTRIBUTES`, `SPRING_CACHEABLE_CONDITION_USES_RESULT`
+  - Transactions and persistence: `SPRING_TX_EVENT_LISTENER_NO_TRANSACTION`, `SPRING_TRANSACTIONAL_SYNCHRONIZED`, `SPRING_QUERY_DML_WITHOUT_MODIFYING`, `SPRING_JPA_ENUM_ORDINAL`, `SPRING_FLYWAY_MIGRATION_NAME_IGNORED`
+  - Executors: `SPRING_TASK_EXECUTOR_MAX_POOL_IGNORED`
+  - Spring Boot upgrades: `SPRING_PARAMETER_NAMES_NOT_RETAINED` (Boot 3.2+ without `-parameters`), `SPRING_REMOVED_CONFIGURATION_PROPERTY` (version-aware), and for Spring Boot 4 `SPRING_JACKSON2_OBJECTMAPPER_IGNORED_FOR_HTTP` and `SPRING_BOOT4_TEST_CLIENT_NOT_AUTOCONFIGURED`
+- Spring Boot 4 configuration metadata: projects on Boot 4 are checked against bundled Spring Boot 4.0 metadata (generated from the published 4.0.6 artifacts, Apache License 2.0), so Boot 4 keys are recognized and renamed keys are reported. Keys the metadata lists at deprecation level `error` are reported as already ignored, with the successor in the evidence
 
 ### Removed
 
@@ -23,6 +32,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `SPRING_TX_EVENT_LISTENER_WRITE_LOST` is now WARNING (write calls are matched by name) and exempts `@Async` listeners when `@EnableAsync` is present
 - False positives removed: `@Scheduled(initialDelay = …)` on Spring Boot 3.2+, SnakeYAML `new Yaml()` on Spring Boot 3.1+, every `@ExceptionHandler` whose type name ends in `Exception`, `@DataJpaTest` and real-server tests in the testing rules, POST form parameters, redirects with a fixed host, packaged-only DevTools checks, classpath-selected cache providers, unmodifiable cached collections, and Feign clients with configured timeouts
 - `SPRING_SCHEDULED_TRIGGER_MISSING_OR_CONFLICTING` also reports a cron trigger combined with `initialDelay`; `SPRING_VALUE_NO_DEFAULT` now reports only properties that some profiles lack; `SPRING_HIBERNATE_VERSION_MISMATCH` and `SPRING_BOOT3_REQUIRES_JAVA17` cover Spring Boot 4
+- `SPRING_PROFILES_PROPERTY_DEPRECATED` is ERROR on Spring Boot 3+ (startup fails), WARNING on Boot 2.4–2.7 (still applied, deprecated) and INFO under legacy processing; `SPRING_PROFILES_ACTIVE_IN_PROFILE_SPECIFIC_FILE` also covers `spring.profiles.default` and list forms
+- `SPRING_REQUEST_BODY_NO_VALID`, `SPRING_MODEL_ATTRIBUTE_NO_VALID` and `SPRING_CONFIGURATION_PROPERTIES_NOT_VALIDATED` are WARNING and only report types that actually declare constraints
+- `SPRING_PERMIT_ALL_ANY_REQUEST` skips chains scoped with `securityMatcher(...)` and is WARNING for a catch-all fallback or a conditional branch; `SPRING_RETRYABLE_WITHOUT_ENABLE_RETRY` also covers Spring Framework 7's `@Retryable`/`@ConcurrencyLimit` (`@EnableResilientMethods`); `SPRING_DUPLICATE_EXCEPTION_HANDLER` also catches handlers that duplicate an inherited `ResponseEntityExceptionHandler` mapping
+- `SPRING_COMPONENT_OUTSIDE_MAIN_PACKAGE` follows `scanBasePackages`, `@ComponentScan`, `@Import` and auto-configuration entries, and reports one finding per package
+- `CONFIG_CODE_REFERENCE_MISSING` only reports references that fail without configuration (`@Value` without default, `@Scheduled` placeholders, `getRequiredProperty`), and lists every reference to the key
+- False positives removed after testing against real projects: CSRF on resource-server, stateless and actuator chains and CSRF configured in a lambda whose comment says "disabled"; SSRF when the host is a literal, constant or configured base URL; plain HTTP to private-network hosts and `http://localhost:${server.port}`; JDBC and `TransactionTemplate` `execute(...)` treated as HTTP; presence checks and cursor tokens in logging rules; the XSRF cookie; boolean off-switches in conditional beans; `ApplicationContext` used only for lifecycle work; self-invocation that simply joins the caller's transaction; `readOnly` methods calling `Map.merge`; tests that clean the database themselves; test datasources supplied by Testcontainers; excluding `UserDetailsServiceAutoConfiguration`; catch-all handlers returning 503; H2 in test resources; `@Value` references with defaults
 - The results view keeps each rule's catalog title (matching Settings), labels findings without a source file as project-wide, explains confidence, runtime detection and rule IDs in badge tooltips, and no longer counts retired rule IDs as disabled
 
 ## [0.1.0] — 2026-05-11

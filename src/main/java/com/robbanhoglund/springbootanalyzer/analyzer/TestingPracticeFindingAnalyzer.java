@@ -5,6 +5,7 @@ import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
+import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.MemberValuePair;
 import com.github.javaparser.ast.expr.MethodCallExpr;
@@ -416,6 +417,55 @@ public class TestingPracticeFindingAnalyzer {
     // Rule: SPRING_TEST_NO_TRANSACTIONAL_ROLLBACK
     // ---------------------------------------------------------------------------
 
+    private static final Set<String> LIFECYCLE_ANNOTATIONS =
+            Set.of("BeforeEach", "AfterEach", "BeforeAll", "AfterAll", "Before", "After");
+
+    private static final java.util.regex.Pattern CLEANUP_STATEMENT =
+            java.util.regex.Pattern.compile(
+                    "(?i)\\b(delete\\s+from|truncate|drop\\s+(schema|table))\\b");
+
+    private static final Set<String> CLEANUP_METHODS =
+            Set.of(
+                    "deleteAll",
+                    "deleteAllInBatch",
+                    "deleteAllById",
+                    "deleteFromTables",
+                    "deleteFromTableWhere",
+                    "dropTables",
+                    "clean");
+
+    /**
+     * Whether the test resets the database itself: a JUnit lifecycle method that deletes,
+     * truncates or drops, or an @Sql script. Such a test must not be @Transactional when it
+     * verifies commit behaviour, and does not leak rows between tests.
+     */
+    private boolean cleansDatabaseItself(ClassOrInterfaceDeclaration cls) {
+        if (hasAnnotation(cls, "Sql") || hasAnnotation(cls, "SqlGroup")) {
+            return true;
+        }
+        for (MethodDeclaration method : cls.getMethods()) {
+            boolean lifecycle =
+                    method.getAnnotations().stream()
+                            .anyMatch(
+                                    a ->
+                                            LIFECYCLE_ANNOTATIONS.contains(
+                                                    simpleName(a.getNameAsString())));
+            if (hasAnnotation(method, "Sql") || hasAnnotation(method, "SqlGroup")) {
+                return true;
+            }
+            if (!lifecycle || method.getBody().isEmpty()) {
+                continue;
+            }
+            boolean deletes =
+                    method.findAll(MethodCallExpr.class).stream()
+                            .anyMatch(call -> CLEANUP_METHODS.contains(call.getNameAsString()));
+            if (deletes || CLEANUP_STATEMENT.matcher(method.getBody().get().toString()).find()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void detectNoTransactionalRollback(
             ClassOrInterfaceDeclaration cls, String relativePath, List<Finding> findings) {
         // @DataJpaTest (like the JDBC/jOOQ slices) is already @Transactional and rolls back each
@@ -441,7 +491,7 @@ public class TestingPracticeFindingAnalyzer {
         if (!hasRepositoryField) {
             return;
         }
-        if (hasAnnotation(cls, "Transactional")) {
+        if (hasAnnotation(cls, "Transactional") || cleansDatabaseItself(cls)) {
             return;
         }
 
@@ -704,6 +754,11 @@ public class TestingPracticeFindingAnalyzer {
 
     private static boolean hasAnnotation(FieldDeclaration field, String name) {
         return field.getAnnotations().stream()
+                .anyMatch(a -> simpleName(a.getNameAsString()).equals(name));
+    }
+
+    private static boolean hasAnnotation(MethodDeclaration method, String name) {
+        return method.getAnnotations().stream()
                 .anyMatch(a -> simpleName(a.getNameAsString()).equals(name));
     }
 

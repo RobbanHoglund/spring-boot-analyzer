@@ -1,6 +1,7 @@
 package com.robbanhoglund.springbootanalyzer.analyzer;
 
 import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
@@ -8,6 +9,7 @@ import com.github.javaparser.ast.expr.ArrayCreationExpr;
 import com.github.javaparser.ast.expr.ArrayInitializerExpr;
 import com.github.javaparser.ast.expr.BinaryExpr;
 import com.github.javaparser.ast.expr.BooleanLiteralExpr;
+import com.github.javaparser.ast.expr.ConditionalExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.IntegerLiteralExpr;
@@ -16,18 +18,25 @@ import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.StringLiteralExpr;
+import com.github.javaparser.ast.stmt.BlockStmt;
+import com.github.javaparser.ast.stmt.IfStmt;
 import com.github.javaparser.ast.stmt.ReturnStmt;
+import com.github.javaparser.ast.stmt.Statement;
+import com.github.javaparser.ast.stmt.SwitchEntry;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRule;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 import org.springframework.stereotype.Component;
 
 /**
@@ -62,7 +71,14 @@ import org.springframework.stereotype.Component;
  *   <li>{@link FindingRules#SPRING_ZIP_SLIP} — an archive entry name used to build a file path
  *       inside extraction code without containment validation.
  *   <li>{@link FindingRules#SPRING_PERMIT_ALL_ANY_REQUEST} — {@code anyRequest().permitAll()}
- *       or {@code requestMatchers("/**").permitAll()} in a {@code SecurityFilterChain}.
+ *       or {@code requestMatchers("/**").permitAll()} in a {@code SecurityFilterChain} that is not
+ *       restricted by {@code securityMatcher(...)}.
+ *   <li>{@link FindingRules#SPRING_SECURITY_FILTER_CHAIN_NO_AUTHORIZATION} — a
+ *       {@code SecurityFilterChain} bean that declares no authorization rules at all.
+ *   <li>{@link FindingRules#SPRING_SECURITY_AUTHORIZATION_RULE_INVALID} — {@code hasRole("ROLE_…")}
+ *       in the authorization DSL, or a matcher registered after {@code anyRequest()}.
+ *   <li>{@link FindingRules#SPRING_SECURITY_FILTER_CHAIN_UNREACHABLE} — two filter chains match
+ *       every request, or the catch-all chain is ordered before a scoped one.
  *   <li>{@link FindingRules#SPRING_H2_CONSOLE_PERMITALL} — H2 console path
  *       ({@code /h2-console**}) granted {@code permitAll()} in a security configuration.
  *   <li>{@link FindingRules#SPRING_COMMAND_INJECTION} — {@code Runtime.exec}/{@code ProcessBuilder}
@@ -139,6 +155,15 @@ public class SecurityPracticeFindingAnalyzer {
     public List<Finding> analyze(JavaSources sources, BuildInfo buildInfo) {
         boolean snakeYamlSafeByDefault = snakeYamlSafeByDefault(buildInfo);
         List<Finding> findings = new ArrayList<>();
+        // A Customizer<HttpSecurity> bean or a GrantedAuthorityDefaults bean changes every chain,
+        // so the per-chain authorization checks cannot judge a chain in isolation.
+        boolean httpSecurityCustomizers =
+                sources.files().stream()
+                        .anyMatch(file -> file.content().contains("Customizer<HttpSecurity>"));
+        boolean customRolePrefix =
+                sources.files().stream()
+                        .anyMatch(file -> file.content().contains("GrantedAuthorityDefaults"));
+        List<FilterChainBean> filterChains = new ArrayList<>();
         // Cross-file signals for SPRING_METHOD_SECURITY_NOT_ENABLED: whether any class enables
         // method security, and the first place a method-security annotation is actually used.
         boolean methodSecurityEnabled = false;
@@ -151,6 +176,11 @@ public class SecurityPracticeFindingAnalyzer {
                 continue;
             }
             analyzeSourceFile(cu, file.relativePath(), snakeYamlSafeByDefault, findings);
+            if (!httpSecurityCustomizers) {
+                detectFilterChainWithoutAuthorization(cu, file.relativePath(), findings);
+            }
+            detectInvalidAuthorizationRules(cu, file.relativePath(), customRolePrefix, findings);
+            collectFilterChains(cu, file.relativePath(), filterChains);
 
             for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
                 if (!methodSecurityEnabled && annotatedWithAny(cls, METHOD_SECURITY_ENABLERS)) {
@@ -177,6 +207,7 @@ public class SecurityPracticeFindingAnalyzer {
         if (usageTarget != null && !methodSecurityEnabled) {
             addMethodSecurityNotEnabledFinding(usageRelativePath, usageLine, usageTarget, findings);
         }
+        detectUnreachableFilterChains(filterChains, buildInfo, findings);
         return findings;
     }
 
@@ -1206,6 +1237,182 @@ public class SecurityPracticeFindingAnalyzer {
     }
 
     // ---------------------------------------------------------------------------
+    // Security filter chain helpers
+    // ---------------------------------------------------------------------------
+
+    /** HttpSecurity calls that restrict a filter chain to the requests their matcher selects. */
+    private static final Set<String> CHAIN_SCOPING_METHODS =
+            Set.of(
+                    "securityMatcher",
+                    "securityMatchers",
+                    "antMatcher",
+                    "mvcMatcher",
+                    "regexMatcher",
+                    "requestMatcher");
+
+    private static final Set<String> AUTHORIZE_METHODS =
+            Set.of("authorizeHttpRequests", "authorizeRequests", "authorizeExchange");
+
+    /** Access rules that demand more than "anyone"; they make a catch-all permitAll a fallback. */
+    private static final Set<String> RESTRICTING_ACCESS_METHODS =
+            Set.of(
+                    "authenticated",
+                    "fullyAuthenticated",
+                    "hasRole",
+                    "hasAnyRole",
+                    "hasAllRoles",
+                    "hasAuthority",
+                    "hasAnyAuthority",
+                    "hasAllAuthorities",
+                    "access",
+                    "denyAll",
+                    "rememberMe",
+                    "hasIpAddress",
+                    "anonymous");
+
+    private static final Set<String> CATCH_ALL_MATCHERS = Set.of("anyRequest", "anyExchange");
+
+    private static final Set<String> REQUEST_MATCHER_METHODS =
+            Set.of(
+                    "requestMatchers",
+                    "antMatchers",
+                    "mvcMatchers",
+                    "regexMatchers",
+                    "dispatcherTypeMatchers",
+                    "anyRequest",
+                    "pathMatchers",
+                    "anyExchange",
+                    "matchers");
+
+    private static final Set<String> FILTER_CHAIN_TYPES =
+            Set.of("SecurityFilterChain", "SecurityWebFilterChain");
+
+    private static final Set<String> HTTP_SECURITY_TYPES =
+            Set.of("HttpSecurity", "ServerHttpSecurity");
+
+    /** Whether the chain built in {@code method} only handles the requests its matcher selects. */
+    private static boolean isScopedChain(MethodDeclaration method) {
+        return method != null
+                && method.findAll(MethodCallExpr.class).stream()
+                        .anyMatch(call -> CHAIN_SCOPING_METHODS.contains(call.getNameAsString()));
+    }
+
+    private static boolean insideConditionalBranch(Node node, MethodDeclaration method) {
+        Optional<Node> parent = node.getParentNode();
+        while (parent.isPresent() && parent.get() != method) {
+            Node current = parent.get();
+            if (current instanceof IfStmt
+                    || current instanceof ConditionalExpr
+                    || current instanceof SwitchEntry) {
+                return true;
+            }
+            parent = current.getParentNode();
+        }
+        return false;
+    }
+
+    /** The lambda passed to authorizeHttpRequests(...) or authorizeExchange(...) around a node. */
+    private static LambdaExpr enclosingAuthorizeLambda(Node node) {
+        Optional<Node> parent = node.getParentNode();
+        while (parent.isPresent()) {
+            Node current = parent.get();
+            if (current instanceof LambdaExpr lambda
+                    && lambda.getParentNode().orElse(null) instanceof MethodCallExpr owner
+                    && AUTHORIZE_METHODS.contains(owner.getNameAsString())) {
+                return lambda;
+            }
+            if (current instanceof MethodDeclaration) {
+                return null;
+            }
+            parent = current.getParentNode();
+        }
+        return null;
+    }
+
+    private static boolean isReactiveAuthorization(MethodCallExpr call) {
+        LambdaExpr lambda = enclosingAuthorizeLambda(call);
+        if (lambda != null
+                && lambda.getParentNode().orElse(null) instanceof MethodCallExpr owner
+                && "authorizeExchange".equals(owner.getNameAsString())) {
+            return true;
+        }
+        Expression receiver = call.getScope().orElse(null);
+        while (receiver instanceof MethodCallExpr step) {
+            String name = step.getNameAsString();
+            if ("pathMatchers".equals(name)
+                    || "anyExchange".equals(name)
+                    || "authorizeExchange".equals(name)) {
+                return true;
+            }
+            receiver = step.getScope().orElse(null);
+        }
+        return false;
+    }
+
+    /**
+     * Whether the same authorization block also requires authentication or denies access
+     * somewhere — which turns a catch-all permitAll() into the fail-open default for unmatched
+     * paths rather than the only rule of the chain.
+     */
+    private static boolean hasRestrictingRule(MethodCallExpr catchAllCall) {
+        LambdaExpr lambda = enclosingAuthorizeLambda(catchAllCall);
+        if (lambda != null) {
+            return lambda.findAll(MethodCallExpr.class).stream()
+                    .anyMatch(call -> RESTRICTING_ACCESS_METHODS.contains(call.getNameAsString()));
+        }
+        // Chained DSL: http.authorizeRequests().antMatchers(..).authenticated().anyRequest()
+        // .permitAll() keeps the earlier rules in the receiver chain.
+        Expression receiver = catchAllCall.getScope().orElse(null);
+        while (receiver instanceof MethodCallExpr step) {
+            String name = step.getNameAsString();
+            if (RESTRICTING_ACCESS_METHODS.contains(name)) {
+                return true;
+            }
+            if (AUTHORIZE_METHODS.contains(name)) {
+                return false;
+            }
+            receiver = step.getScope().orElse(null);
+        }
+        return false;
+    }
+
+    /** Whether a catch-all matcher already appears earlier in the receiver chain of a call. */
+    private static boolean catchAllEarlierInChain(MethodCallExpr call) {
+        Expression receiver = call.getScope().orElse(null);
+        while (receiver instanceof MethodCallExpr step) {
+            String name = step.getNameAsString();
+            if (CATCH_ALL_MATCHERS.contains(name)) {
+                return true;
+            }
+            if (AUTHORIZE_METHODS.contains(name)) {
+                return false;
+            }
+            receiver = step.getScope().orElse(null);
+        }
+        return false;
+    }
+
+    private static String chainTarget(MethodDeclaration method) {
+        if (method == null) {
+            return null;
+        }
+        String owner =
+                method.findAncestor(ClassOrInterfaceDeclaration.class)
+                        .map(ClassOrInterfaceDeclaration::getNameAsString)
+                        .orElse("");
+        return owner.isEmpty() ? method.getNameAsString() : owner + "#" + method.getNameAsString();
+    }
+
+    private static boolean isFilterChainBean(MethodDeclaration method) {
+        return method.getBody().isPresent()
+                && FILTER_CHAIN_TYPES.contains(simpleName(method.getType().asString()))
+                && method.getAnnotations().stream()
+                        .anyMatch(
+                                annotation ->
+                                        "Bean".equals(simpleName(annotation.getNameAsString())));
+    }
+
+    // ---------------------------------------------------------------------------
     // Rule: SPRING_PERMIT_ALL_ANY_REQUEST
     // ---------------------------------------------------------------------------
 
@@ -1215,14 +1422,15 @@ public class SecurityPracticeFindingAnalyzer {
             if (!"permitAll".equals(call.getNameAsString())) {
                 continue;
             }
-            var scope = call.getScope();
-            if (scope.isEmpty() || !(scope.get() instanceof MethodCallExpr scopeCall)) {
+            if (!(call.getScope().orElse(null) instanceof MethodCallExpr scopeCall)) {
                 continue;
             }
             String scopeName = scopeCall.getNameAsString();
-            boolean matchesAnyRequest = "anyRequest".equals(scopeName);
+            boolean matchesAnyRequest = CATCH_ALL_MATCHERS.contains(scopeName);
             boolean matchesWildcardMatcher =
-                    ("requestMatchers".equals(scopeName) || "antMatchers".equals(scopeName))
+                    ("requestMatchers".equals(scopeName)
+                                    || "antMatchers".equals(scopeName)
+                                    || "pathMatchers".equals(scopeName))
                             && scopeCall.getArguments().stream()
                                     .filter(a -> a instanceof StringLiteralExpr)
                                     .map(a -> ((StringLiteralExpr) a).asString())
@@ -1230,43 +1438,579 @@ public class SecurityPracticeFindingAnalyzer {
             if (!matchesAnyRequest && !matchesWildcardMatcher) {
                 continue;
             }
-            Integer line = call.getBegin().map(p -> p.line).orElse(null);
+            MethodDeclaration method = call.findAncestor(MethodDeclaration.class).orElse(null);
+            // A chain restricted with securityMatcher(...) only handles the requests it selects —
+            // typically actuator or static resources — so permitAll() there is not app-wide.
+            if (isScopedChain(method)) {
+                continue;
+            }
+            boolean fallback = hasRestrictingRule(scopeCall);
+            boolean conditional = method != null && insideConditionalBranch(call, method);
+            String target = chainTarget(method);
+            String where = target != null ? target : relativePath;
             String shape =
                     matchesAnyRequest
-                            ? "anyRequest().permitAll()"
+                            ? scopeName + "().permitAll()"
                             : scopeName + "(\"/**\").permitAll()";
+            FindingFactory.Builder builder =
+                    FindingFactory.builder(
+                            FindingRules.SPRING_PERMIT_ALL_ANY_REQUEST, FindingConfidence.HIGH);
+            if (fallback) {
+                builder.severity(FindingSeverity.WARNING)
+                        .shortMessage(
+                                shape
+                                        + " ends the rules in "
+                                        + where
+                                        + ", so every path that no earlier rule matches is"
+                                        + " public.")
+                        .whyBadPractice(
+                                "The catch-all is the chain's fail-open default. The earlier"
+                                        + " matchers still apply, but any path they do not cover —"
+                                        + " including endpoints added later — needs no"
+                                        + " authentication.")
+                        .possibleImpact(
+                                "A new controller outside the listed patterns is reachable without"
+                                        + " authentication until someone adds a rule for it.")
+                        .recommendation(
+                                "End the rules with .anyRequest().authenticated() or .denyAll(),"
+                                        + " and list the public paths explicitly with"
+                                        + " permitAll().");
+            } else if (conditional) {
+                builder.severity(FindingSeverity.WARNING)
+                        .shortMessage(
+                                shape
+                                        + " on a conditional branch of "
+                                        + where
+                                        + " makes every endpoint public whenever that branch"
+                                        + " runs.")
+                        .whyBadPractice(
+                                "The branch turns authorization off for the whole chain — typically"
+                                        + " a 'security enabled' switch. It is only as safe as the"
+                                        + " configuration that selects it.")
+                        .possibleImpact(
+                                "A configuration mistake in one environment exposes every endpoint"
+                                        + " without authentication.")
+                        .recommendation(
+                                "Keep the switch off by default and make sure production"
+                                        + " configuration cannot select it, or fail startup"
+                                        + " instead of running unauthenticated.");
+            } else {
+                builder.shortMessage(
+                                shape
+                                        + " is the only authorization rule in "
+                                        + where
+                                        + " — every endpoint is reachable without"
+                                        + " authentication.")
+                        .whyBadPractice(
+                                "permitAll() on the catch-all matcher, with no other rule in the"
+                                        + " chain, removes authentication from every request the"
+                                        + " chain handles.")
+                        .possibleImpact(
+                                "Every endpoint — including any controller a developer adds later"
+                                        + " — is reachable without authentication.")
+                        .recommendation(
+                                "Replace the catch-all permitAll() with"
+                                        + " .anyRequest().authenticated() (or .denyAll() if the app"
+                                        + " is purely public content), and grant permitAll only to"
+                                        + " specific paths.");
+            }
+            builder.evidence(
+                            shape
+                                    + " found in "
+                                    + where
+                                    + (fallback ? " after other authorization rules." : "."))
+                    .limitations(
+                            "Chains restricted with securityMatcher(...) are not reported. Some"
+                                    + " applications intentionally publish public content;"
+                                    + " review what the chain protects.")
+                    .source(relativePath, lineOf(scopeCall.getName()));
+            if (target != null) {
+                builder.target(target);
+            }
+            findings.add(builder.build());
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_SECURITY_FILTER_CHAIN_NO_AUTHORIZATION
+    // ---------------------------------------------------------------------------
+
+    private void detectFilterChainWithoutAuthorization(
+            CompilationUnit cu, String relativePath, List<Finding> findings) {
+        for (MethodDeclaration method : cu.findAll(MethodDeclaration.class)) {
+            if (!isFilterChainBean(method) || isScopedChain(method)) {
+                continue;
+            }
+            Set<String> httpParameters =
+                    method.getParameters().stream()
+                            .filter(
+                                    parameter ->
+                                            HTTP_SECURITY_TYPES.contains(
+                                                    simpleName(parameter.getType().asString())))
+                            .map(parameter -> parameter.getNameAsString())
+                            .collect(Collectors.toSet());
+            if (httpParameters.isEmpty()) {
+                continue;
+            }
+            List<MethodCallExpr> calls = method.findAll(MethodCallExpr.class);
+            boolean builds =
+                    calls.stream().anyMatch(call -> "build".equals(call.getNameAsString()));
+            boolean authorizes =
+                    calls.stream()
+                            .anyMatch(call -> AUTHORIZE_METHODS.contains(call.getNameAsString()));
+            // Handing the HttpSecurity to a helper or a custom configurer may add the rules there.
+            boolean delegates =
+                    calls.stream()
+                            .anyMatch(
+                                    call ->
+                                            "with".equals(call.getNameAsString())
+                                                    || "apply".equals(call.getNameAsString())
+                                                    || call.getArguments().stream()
+                                                            .anyMatch(
+                                                                    argument ->
+                                                                            argument
+                                                                                            instanceof
+                                                                                            NameExpr
+                                                                                                    name
+                                                                                    && httpParameters
+                                                                                            .contains(
+                                                                                                    name
+                                                                                                            .getNameAsString())));
+            if (!builds || authorizes || delegates) {
+                continue;
+            }
+            String target = chainTarget(method);
             findings.add(
                     FindingFactory.builder(
-                                    FindingRules.SPRING_PERMIT_ALL_ANY_REQUEST,
+                                    FindingRules.SPRING_SECURITY_FILTER_CHAIN_NO_AUTHORIZATION,
                                     FindingConfidence.HIGH)
                             .shortMessage(
-                                    shape
-                                            + " grants unauthenticated access to every endpoint in "
-                                            + relativePath
-                                            + ".")
+                                    target
+                                            + " builds a SecurityFilterChain without any"
+                                            + " authorization rules — every request it handles is"
+                                            + " permitted.")
                             .whyBadPractice(
-                                    "permitAll() on the catch-all matcher removes authentication"
-                                        + " from the entire application. Because the rule sits at"
-                                        + " the end of the chain, any more specific matchers above"
-                                        + " it still apply — but anything that does not match a"
-                                        + " preceding rule is now public.")
+                                    "HttpSecurity adds no AuthorizationFilter by default: only"
+                                        + " authorizeHttpRequests(...) (or authorizeExchange(...)"
+                                        + " in WebFlux) does. A chain that configures login, CSRF"
+                                        + " or headers but no authorization authenticates callers"
+                                        + " yet lets anonymous requests through. Declaring the bean"
+                                        + " also switches off Spring Boot's default chain, which"
+                                        + " would have required authentication.")
                             .possibleImpact(
-                                    "Every endpoint that is not explicitly secured by an earlier"
-                                            + " matcher is reachable without authentication,"
-                                            + " including any controller a developer later adds.")
+                                    "Every endpoint behind this chain is reachable without"
+                                            + " authentication.")
                             .recommendation(
-                                    "Replace the catch-all permitAll() with"
-                                        + " .anyRequest().authenticated() (or .denyAll() if the app"
-                                        + " is purely public-content), and grant permitAll only to"
-                                        + " specific whitelisted paths.")
+                                    "Add .authorizeHttpRequests(auth -> auth ..."
+                                        + " .anyRequest().authenticated()) and permit only the"
+                                        + " paths that must be public. If the chain is meant for a"
+                                        + " subset of requests, restrict it with"
+                                        + " securityMatcher(...).")
+                            .evidence(
+                                    target
+                                            + " returns http.build() without calling"
+                                            + " authorizeHttpRequests(...),"
+                                            + " authorizeRequests() or authorizeExchange(...).")
                             .limitations(
-                                    "High confidence for the exact patterns checked. Some apps"
-                                        + " intentionally publish read-only public APIs; review the"
-                                        + " controllers behind the chain.")
-                            .evidence(shape + " found in " + relativePath + ".")
-                            .source(relativePath, line)
+                                    "Chains restricted with securityMatcher(...) and chains that"
+                                        + " pass HttpSecurity to a helper or custom configurer are"
+                                        + " not reported.")
+                            .source(relativePath, lineOf(method.getName()))
+                            .target(target)
                             .build());
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_SECURITY_AUTHORIZATION_RULE_INVALID
+    // ---------------------------------------------------------------------------
+
+    private void detectInvalidAuthorizationRules(
+            CompilationUnit cu,
+            String relativePath,
+            boolean customRolePrefix,
+            List<Finding> findings) {
+        Set<MethodDeclaration> reportedOrdering = new java.util.HashSet<>();
+        for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
+            String name = call.getNameAsString();
+            if (!customRolePrefix
+                    && ("hasRole".equals(name) || "hasAnyRole".equals(name))
+                    && isAuthorizationDslCall(call)) {
+                String prefixed =
+                        call.getArguments().stream()
+                                .filter(argument -> argument instanceof StringLiteralExpr)
+                                .map(argument -> ((StringLiteralExpr) argument).asString())
+                                .filter(role -> role.startsWith("ROLE_"))
+                                .findFirst()
+                                .orElse(null);
+                if (prefixed != null) {
+                    addRolePrefixFinding(call, prefixed, relativePath, findings);
+                }
+            }
+            if (REQUEST_MATCHER_METHODS.contains(name) && catchAllEarlierInChain(call)) {
+                MethodDeclaration method = call.findAncestor(MethodDeclaration.class).orElse(null);
+                if (method == null || reportedOrdering.add(method)) {
+                    addMatcherAfterCatchAllFinding(call, method, relativePath, findings);
+                }
+            }
+        }
+        // Block-lambda DSL: auth -> { auth.anyRequest().authenticated(); auth.requestMatchers(..) }
+        for (LambdaExpr lambda : cu.findAll(LambdaExpr.class)) {
+            if (!(lambda.getParentNode().orElse(null) instanceof MethodCallExpr owner)
+                    || !AUTHORIZE_METHODS.contains(owner.getNameAsString())
+                    || !(lambda.getBody() instanceof BlockStmt block)) {
+                continue;
+            }
+            boolean catchAllSeen = false;
+            for (Statement statement : block.getStatements()) {
+                List<MethodCallExpr> calls = statement.findAll(MethodCallExpr.class);
+                MethodCallExpr lateMatcher =
+                        calls.stream()
+                                .filter(c -> REQUEST_MATCHER_METHODS.contains(c.getNameAsString()))
+                                .findFirst()
+                                .orElse(null);
+                if (catchAllSeen && lateMatcher != null) {
+                    MethodDeclaration method =
+                            lambda.findAncestor(MethodDeclaration.class).orElse(null);
+                    if (method == null || reportedOrdering.add(method)) {
+                        addMatcherAfterCatchAllFinding(lateMatcher, method, relativePath, findings);
+                    }
+                    break;
+                }
+                if (calls.stream()
+                        .anyMatch(c -> CATCH_ALL_MATCHERS.contains(c.getNameAsString()))) {
+                    catchAllSeen = true;
+                }
+            }
+        }
+    }
+
+    /** hasRole(...) on a matcher of the authorization DSL, or on AuthorityAuthorizationManager. */
+    private static boolean isAuthorizationDslCall(MethodCallExpr call) {
+        Expression receiver = call.getScope().orElse(null);
+        if (receiver instanceof MethodCallExpr step) {
+            return REQUEST_MATCHER_METHODS.contains(step.getNameAsString());
+        }
+        return receiver != null && receiver.toString().endsWith("AuthorityAuthorizationManager");
+    }
+
+    private void addRolePrefixFinding(
+            MethodCallExpr call, String role, String relativePath, List<Finding> findings) {
+        boolean reactive = isReactiveAuthorization(call);
+        MethodDeclaration method = call.findAncestor(MethodDeclaration.class).orElse(null);
+        String where = method != null ? chainTarget(method) : relativePath;
+        String shape = call.getNameAsString() + "(\"" + role + "\")";
+        String bareRole = role.substring("ROLE_".length());
+        FindingFactory.Builder builder =
+                FindingFactory.builder(
+                        FindingRules.SPRING_SECURITY_AUTHORIZATION_RULE_INVALID,
+                        FindingConfidence.HIGH);
+        if (reactive) {
+            builder.shortMessage(
+                            shape
+                                    + " in "
+                                    + where
+                                    + " never matches — the reactive DSL checks for ROLE_"
+                                    + role
+                                    + ".")
+                    .whyBadPractice(
+                            "In WebFlux, hasRole()/hasAnyRole() prepend ROLE_ without checking the"
+                                    + " argument, so this rule requires an authority no user has.")
+                    .possibleImpact(
+                            "Every request to the matched paths is denied (403), including for the"
+                                    + " users the rule was written for.");
+        } else {
+            builder.shortMessage(
+                            shape
+                                    + " in "
+                                    + where
+                                    + " fails at startup — hasRole() adds the ROLE_ prefix"
+                                    + " itself.")
+                    .whyBadPractice(
+                            "The HTTP authorization DSL prepends ROLE_ and rejects a role that"
+                                + " already starts with it: AuthorityAuthorizationManager throws"
+                                + " IllegalArgumentException (\"... should not start with ROLE_"
+                                + " since ROLE_ is automatically prepended when using hasRole\")"
+                                + " while the filter chain is built.")
+                    .possibleImpact("The application context fails to start.");
+        }
+        builder.recommendation(
+                        "Use "
+                                + call.getNameAsString()
+                                + "(\""
+                                + bareRole
+                                + "\"), or hasAuthority(\""
+                                + role
+                                + "\") when the full authority name is intended.")
+                .evidence(shape + " found in " + where + ".")
+                .limitations(
+                        "Not reported when a GrantedAuthorityDefaults bean changes the role"
+                                + " prefix. SpEL expressions such as @PreAuthorize(\"hasRole("
+                                + "'ROLE_X')\") accept the prefix and are not affected.")
+                .source(relativePath, lineOf(call.getName()));
+        if (method != null) {
+            builder.target(chainTarget(method));
+        }
+        findings.add(builder.build());
+    }
+
+    private void addMatcherAfterCatchAllFinding(
+            MethodCallExpr matcher,
+            MethodDeclaration method,
+            String relativePath,
+            List<Finding> findings) {
+        boolean reactive = isReactiveAuthorization(matcher);
+        String catchAll = reactive ? "anyExchange()" : "anyRequest()";
+        String where = method != null ? chainTarget(method) : relativePath;
+        FindingFactory.Builder builder =
+                FindingFactory.builder(
+                                FindingRules.SPRING_SECURITY_AUTHORIZATION_RULE_INVALID,
+                                FindingConfidence.HIGH)
+                        .shortMessage(
+                                matcher.getNameAsString()
+                                        + "(...) after "
+                                        + catchAll
+                                        + " in "
+                                        + where
+                                        + " fails at startup.")
+                        .whyBadPractice(
+                                catchAll
+                                        + " must be the last authorization rule. Spring Security"
+                                        + " throws IllegalStateException while building the chain"
+                                        + (reactive
+                                                ? " (\"Cannot register ... which would be"
+                                                        + " unreachable because anyExchange() has"
+                                                        + " already been registered\")"
+                                                : " (\"Can't configure requestMatchers after"
+                                                        + " anyRequest\")")
+                                        + ", because a rule after the catch-all could never"
+                                        + " match.")
+                        .possibleImpact("The application context fails to start.")
+                        .recommendation(
+                                "Move " + catchAll + " to the end of the authorization rules.")
+                        .evidence(
+                                matcher.getNameAsString()
+                                        + "(...) is registered after "
+                                        + catchAll
+                                        + " in "
+                                        + where
+                                        + ".")
+                        .limitations(
+                                "Detected within one authorization block; rules split across"
+                                        + " helper methods are not followed.")
+                        .source(relativePath, lineOf(matcher.getName()));
+        if (method != null) {
+            builder.target(chainTarget(method));
+        }
+        findings.add(builder.build());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_SECURITY_FILTER_CHAIN_UNREACHABLE
+    // ---------------------------------------------------------------------------
+
+    /**
+     * A servlet SecurityFilterChain bean. {@code order} is {@code null} when the @Order value is
+     * an expression static analysis cannot evaluate; no @Order means lowest precedence.
+     */
+    private record FilterChainBean(
+            String relativePath,
+            Integer line,
+            String target,
+            boolean scoped,
+            Long order,
+            boolean conditional) {}
+
+    private static void collectFilterChains(
+            CompilationUnit cu, String relativePath, List<FilterChainBean> chains) {
+        for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
+            boolean classConditional = hasConditionalAnnotation(cls.getAnnotations());
+            for (MethodDeclaration method : cls.getMethods()) {
+                if (!isFilterChainBean(method)
+                        || !"SecurityFilterChain".equals(simpleName(method.getType().asString()))) {
+                    continue;
+                }
+                chains.add(
+                        new FilterChainBean(
+                                relativePath,
+                                lineOf(method.getName()),
+                                cls.getNameAsString() + "#" + method.getNameAsString(),
+                                isScopedChain(method),
+                                orderOf(method),
+                                classConditional
+                                        || hasConditionalAnnotation(method.getAnnotations())));
+            }
+        }
+    }
+
+    private static boolean hasConditionalAnnotation(List<AnnotationExpr> annotations) {
+        return annotations.stream()
+                .map(annotation -> simpleName(annotation.getNameAsString()))
+                .anyMatch(name -> name.equals("Profile") || name.startsWith("Conditional"));
+    }
+
+    private static Long orderOf(MethodDeclaration method) {
+        AnnotationExpr order = method.getAnnotationByName("Order").orElse(null);
+        if (order == null) {
+            return (long) Integer.MAX_VALUE;
+        }
+        Expression value = null;
+        if (order.isSingleMemberAnnotationExpr()) {
+            value = order.asSingleMemberAnnotationExpr().getMemberValue();
+        } else if (order.isNormalAnnotationExpr()) {
+            value =
+                    order.asNormalAnnotationExpr().getPairs().stream()
+                            .filter(pair -> "value".equals(pair.getNameAsString()))
+                            .map(pair -> pair.getValue())
+                            .findFirst()
+                            .orElse(null);
+        }
+        return value == null ? (long) Integer.MAX_VALUE : evaluateOrder(value);
+    }
+
+    private static Long evaluateOrder(Expression value) {
+        if (value.isEnclosedExpr()) {
+            return evaluateOrder(value.asEnclosedExpr().getInner());
+        }
+        if (value.isIntegerLiteralExpr()) {
+            return value.asIntegerLiteralExpr().asNumber().longValue();
+        }
+        if (value.isUnaryExpr()
+                && value.asUnaryExpr().getOperator()
+                        == com.github.javaparser.ast.expr.UnaryExpr.Operator.MINUS) {
+            Long inner = evaluateOrder(value.asUnaryExpr().getExpression());
+            return inner == null ? null : -inner;
+        }
+        if (value.isBinaryExpr()) {
+            BinaryExpr binary = value.asBinaryExpr();
+            Long left = evaluateOrder(binary.getLeft());
+            Long right = evaluateOrder(binary.getRight());
+            if (left == null || right == null) {
+                return null;
+            }
+            return switch (binary.getOperator()) {
+                case PLUS -> left + right;
+                case MINUS -> left - right;
+                default -> null;
+            };
+        }
+        String name =
+                value.isFieldAccessExpr()
+                        ? value.asFieldAccessExpr().getNameAsString()
+                        : value.isNameExpr() ? value.asNameExpr().getNameAsString() : "";
+        return switch (name) {
+            case "HIGHEST_PRECEDENCE" -> (long) Integer.MIN_VALUE;
+            case "LOWEST_PRECEDENCE" -> (long) Integer.MAX_VALUE;
+            case "BASIC_AUTH_ORDER" -> (long) Integer.MAX_VALUE - 5;
+            default -> null;
+        };
+    }
+
+    private void detectUnreachableFilterChains(
+            List<FilterChainBean> chains, BuildInfo buildInfo, List<Finding> findings) {
+        // Spring Security 6.4 (Spring Boot 3.4) rejects a chain behind an any-request chain at
+        // startup; older versions silently never invoke it.
+        String bootVersion = buildInfo == null ? null : buildInfo.springBootVersion();
+        Boolean failsAtStartup =
+                bootVersion == null || SpringBootVersions.major(bootVersion) < 0
+                        ? null
+                        : SpringBootVersions.isAtLeast(bootVersion, 3, 4);
+        List<FilterChainBean> active =
+                chains.stream().filter(chain -> !chain.conditional()).toList();
+        List<FilterChainBean> unscoped = active.stream().filter(chain -> !chain.scoped()).toList();
+        if (unscoped.size() >= 2) {
+            FilterChainBean first = unscoped.get(0);
+            FilterChainBean second = unscoped.get(1);
+            addUnreachableChainFinding(
+                    second,
+                    first.target()
+                            + " and "
+                            + second.target()
+                            + " both match every request — "
+                            + consequence(failsAtStartup, "the one ordered later"),
+                    "Neither chain calls securityMatcher(...), so both match any request. Filter"
+                            + " chains are tried in order and the first match wins, so the second"
+                            + " chain never sees a request.",
+                    failsAtStartup,
+                    findings);
+            return;
+        }
+        if (unscoped.size() != 1 || unscoped.get(0).order() == null) {
+            return;
+        }
+        FilterChainBean catchAll = unscoped.get(0);
+        for (FilterChainBean scoped : active) {
+            if (!scoped.scoped() || scoped.order() == null || catchAll.order() >= scoped.order()) {
+                continue;
+            }
+            addUnreachableChainFinding(
+                    catchAll,
+                    catchAll.target()
+                            + " matches every request and is ordered before "
+                            + scoped.target()
+                            + " — "
+                            + consequence(failsAtStartup, scoped.target()),
+                    "Filter chains are tried in @Order order and the first match wins. The chain"
+                            + " without securityMatcher(...) matches everything, so a scoped chain"
+                            + " ordered after it never sees a request.",
+                    failsAtStartup,
+                    findings);
+            return;
+        }
+    }
+
+    private static String consequence(Boolean failsAtStartup, String unreachable) {
+        if (Boolean.TRUE.equals(failsAtStartup)) {
+            return "Spring Security refuses to start.";
+        }
+        if (Boolean.FALSE.equals(failsAtStartup)) {
+            return unreachable + " never runs.";
+        }
+        return unreachable
+                + " never runs, and Spring Security 6.4+ (Spring Boot 3.4+) refuses to start.";
+    }
+
+    private void addUnreachableChainFinding(
+            FilterChainBean chain,
+            String message,
+            String why,
+            Boolean failsAtStartup,
+            List<Finding> findings) {
+        FindingFactory.Builder builder =
+                FindingFactory.builder(
+                                FindingRules.SPRING_SECURITY_FILTER_CHAIN_UNREACHABLE,
+                                FindingConfidence.HIGH)
+                        .shortMessage(message)
+                        .whyBadPractice(
+                                why
+                                        + " Since Spring Security 6.4 (Spring Boot 3.4) building"
+                                        + " the filter chain proxy fails with \"A filter chain that"
+                                        + " matches any request ... has already been configured,"
+                                        + " which means that this filter chain ... will never get"
+                                        + " invoked\"; older versions skip the chain silently.")
+                        .possibleImpact(
+                                Boolean.FALSE.equals(failsAtStartup)
+                                        ? "The security rules of the unreachable chain never apply;"
+                                                + " its requests are handled by the catch-all"
+                                                + " chain instead. Upgrading to Spring Boot 3.4+"
+                                                + " turns this into a startup failure."
+                                        : "The application context fails to start.")
+                        .recommendation(
+                                "Give every chain except the last one a securityMatcher(...), and"
+                                        + " order the catch-all chain last with the highest"
+                                        + " @Order value.")
+                        .evidence(message)
+                        .limitations(
+                                "Chains guarded by @Profile or @Conditional... annotations are not"
+                                        + " compared, because they may never be active together."
+                                        + " @Order values that are not literals or well-known"
+                                        + " constants are not evaluated.")
+                        .source(chain.relativePath(), chain.line())
+                        .target(chain.target());
+        if (Boolean.FALSE.equals(failsAtStartup)) {
+            builder.severity(FindingSeverity.WARNING);
+        }
+        findings.add(builder.build());
     }
 
     // ---------------------------------------------------------------------------
@@ -1514,7 +2258,11 @@ public class SecurityPracticeFindingAnalyzer {
                 continue;
             }
             if (creation.getArguments().stream()
-                    .anyMatch(SecurityPracticeFindingAnalyzer::isDynamicConcat)) {
+                    .anyMatch(
+                            argument ->
+                                    isDynamicConcat(argument)
+                                            && !hasFixedRedirectTarget(argument, false)
+                                            && !hostFromConfigurationOrConstant(argument))) {
                 addSsrf(relativePath, lineOf(creation), "new URL(...)", findings);
             }
         }
@@ -1529,10 +2277,155 @@ public class SecurityPracticeFindingAnalyzer {
             }
             boolean firstArgConcat =
                     !call.getArguments().isEmpty() && isDynamicConcat(call.getArgument(0));
-            if (firstArgConcat) {
-                addSsrf(relativePath, lineOf(call), name + "(...)", findings);
+            if (!firstArgConcat) {
+                continue;
+            }
+            // A literal prefix that fixes the host ("https://api.example.com/" or a relative
+            // "/orders/") leaves only the path to the concatenated value, and a URI that becomes a
+            // Location header or a ProblemDetail type is never requested by the server.
+            if (hasFixedRedirectTarget(call.getArgument(0), false)
+                    || hostFromConfigurationOrConstant(call.getArgument(0))
+                    || (isUriCreate && isResponseMetadataUri(call))) {
+                continue;
+            }
+            addSsrf(relativePath, lineOf(call), name + "(...)", findings);
+        }
+    }
+
+    private static final java.util.regex.Pattern CONSTANT_NAME =
+            java.util.regex.Pattern.compile("[A-Z][A-Z0-9_]*");
+
+    /** Names of values that hold a configured service address. */
+    private static final java.util.regex.Pattern CONFIGURED_ADDRESS_NAME =
+            java.util.regex.Pattern.compile(
+                    "(?i).*(?:base_?ur[il]|root_?ur[il]|api_?ur[il]|service_?ur[il]|server_?ur[il]"
+                            + "|endpoint)");
+
+    private static final List<String> CONFIGURATION_RECEIVER_SUFFIXES =
+            List.of("properties", "props", "config", "configuration", "settings");
+
+    /**
+     * Whether the leftmost operand of an outbound URL concatenation — the part that decides the
+     * scheme and host — is a constant or a configured service address: {@code BASE_URL + path},
+     * {@code properties.getBaseUrl() + path}, {@code endpoint + "?q=" + query}. Then only the path
+     * or query is dynamic, which cannot redirect the request to another host.
+     */
+    private static boolean hostFromConfigurationOrConstant(Expression concatenation) {
+        Expression leftmost = concatenation;
+        Expression followingOperand = null;
+        while (true) {
+            if (leftmost.isEnclosedExpr()) {
+                leftmost = leftmost.asEnclosedExpr().getInner();
+            } else if (leftmost.isBinaryExpr()
+                    && leftmost.asBinaryExpr().getOperator() == BinaryExpr.Operator.PLUS) {
+                followingOperand = leftmost.asBinaryExpr().getRight();
+                leftmost = leftmost.asBinaryExpr().getLeft();
+            } else {
+                break;
             }
         }
+        if (leftmost instanceof StringLiteralExpr literal) {
+            java.util.regex.Matcher origin = LITERAL_ORIGIN.matcher(literal.asString());
+            if (!origin.matches()) {
+                return false;
+            }
+            // The reserved .invalid TLD never resolves, and a path taken from a parsed URI starts
+            // with "/", so neither can move the request to another host.
+            return origin.group(1).toLowerCase(java.util.Locale.ROOT).endsWith(".invalid")
+                    || (followingOperand instanceof MethodCallExpr path
+                            && Set.of("getPath", "getRawPath").contains(path.getNameAsString()));
+        }
+        return isConfiguredAddress(leftmost, 0);
+    }
+
+    /** A literal scheme and host without a path: "https://www.example.com". */
+    private static final java.util.regex.Pattern LITERAL_ORIGIN =
+            java.util.regex.Pattern.compile("(?i)https?://([^/?#@\\\\]+)");
+
+    private static boolean isConfiguredAddress(Expression expression, int depth) {
+        if (depth > 6) {
+            return false;
+        }
+        if (expression instanceof NameExpr name) {
+            if (CONSTANT_NAME.matcher(name.getNameAsString()).matches()
+                    || CONFIGURED_ADDRESS_NAME.matcher(name.getNameAsString()).matches()) {
+                return true;
+            }
+            // A local variable initialized from a configured address: base = props.getUrl().trim()
+            return name.findAncestor(com.github.javaparser.ast.body.CallableDeclaration.class)
+                    .flatMap(
+                            callable ->
+                                    callable
+                                            .findAll(
+                                                    com.github.javaparser.ast.body
+                                                            .VariableDeclarator.class)
+                                            .stream()
+                                            .filter(
+                                                    variable ->
+                                                            variable.getNameAsString()
+                                                                    .equals(name.getNameAsString()))
+                                            .findFirst())
+                    .flatMap(variable -> variable.getInitializer())
+                    .map(initializer -> isConfiguredAddress(initializer, depth + 1))
+                    .orElse(false);
+        }
+        if (expression instanceof FieldAccessExpr field) {
+            return CONSTANT_NAME.matcher(field.getNameAsString()).matches()
+                    || CONFIGURED_ADDRESS_NAME.matcher(field.getNameAsString()).matches();
+        }
+        if (!(expression instanceof MethodCallExpr call)) {
+            return false;
+        }
+        String name = call.getNameAsString();
+        if (CONFIGURED_ADDRESS_NAME.matcher(name.replaceFirst("^get", "")).matches()) {
+            return true;
+        }
+        String receiver =
+                call.getScope()
+                        .map(scope -> scope.toString().toLowerCase(java.util.Locale.ROOT))
+                        .orElse("");
+        if (name.startsWith("get")
+                && call.getArguments().isEmpty()
+                && CONFIGURATION_RECEIVER_SUFFIXES.stream().anyMatch(receiver::endsWith)) {
+            return true;
+        }
+        // A normalizing helper around the address: trimTrailingSlash(properties.getBaseUrl()),
+        // URI.create(properties.getBaseUrl()), or a String method on it: baseUrl.strip().
+        boolean uriFactory =
+                "create".equals(name) && receiver.equals("uri") && call.getArguments().size() == 1;
+        if ((call.getScope().isEmpty() || uriFactory) && call.getArguments().size() == 1) {
+            return isConfiguredAddress(call.getArgument(0), depth + 1);
+        }
+        // baseUri.resolve("/register") keeps the configured host.
+        boolean resolvesLiteralPath =
+                "resolve".equals(name)
+                        && call.getArguments().size() == 1
+                        && call.getArgument(0) instanceof StringLiteralExpr path
+                        && path.asString().startsWith("/")
+                        && !path.asString().startsWith("//");
+        return call.getScope().isPresent()
+                && (STRING_NORMALIZERS.contains(name) || resolvesLiteralPath)
+                && isConfiguredAddress(call.getScope().get(), depth + 1);
+    }
+
+    private static final Set<String> STRING_NORMALIZERS =
+            Set.of("strip", "trim", "stripTrailing", "toString", "toLowerCase", "replaceAll");
+
+    /** Calls that only put a URI into a response (Location header, RFC 9457 type/instance). */
+    private static final Set<String> RESPONSE_URI_SINKS =
+            Set.of(
+                    "location",
+                    "created",
+                    "setLocation",
+                    "setType",
+                    "setInstance",
+                    "type",
+                    "instance");
+
+    private static boolean isResponseMetadataUri(MethodCallExpr uriCreate) {
+        return uriCreate.getParentNode().orElse(null) instanceof MethodCallExpr owner
+                && owner.getArguments().contains(uriCreate)
+                && RESPONSE_URI_SINKS.contains(owner.getNameAsString());
     }
 
     private void addSsrf(String relativePath, Integer line, String shape, List<Finding> findings) {
@@ -1556,7 +2449,9 @@ public class SecurityPracticeFindingAnalyzer {
                     + " making the call; do not let user input control the host or scheme. Block"
                     + " requests to private/loopback/link-local address ranges.",
                 "Medium confidence — flags concatenation into an outbound URL; confirm whether the"
-                        + " value is attacker-controlled.",
+                    + " value is attacker-controlled. A host fixed by a literal, a constant or a"
+                    + " configured base URL (properties.getBaseUrl(), a *BaseUrl or endpoint"
+                    + " variable) is not reported.",
                 shape + " with concatenated argument found in " + relativePath + ".");
     }
 
@@ -1609,15 +2504,26 @@ public class SecurityPracticeFindingAnalyzer {
      */
     private static boolean hasFixedRedirectTarget(Expression concatenation, boolean viewName) {
         Expression leftmost = concatenation;
+        Expression followingOperand = null;
         while (true) {
             if (leftmost.isEnclosedExpr()) {
                 leftmost = leftmost.asEnclosedExpr().getInner();
             } else if (leftmost.isBinaryExpr()
                     && leftmost.asBinaryExpr().getOperator() == BinaryExpr.Operator.PLUS) {
+                followingOperand = leftmost.asBinaryExpr().getRight();
                 leftmost = leftmost.asBinaryExpr().getLeft();
             } else {
                 break;
             }
+        }
+        // request.getContextPath() is set by the container ("" or "/app", never user input), so
+        // contextPath + "/login" stays on this site like a plain "/login".
+        if (!viewName
+                && leftmost instanceof MethodCallExpr contextPath
+                && "getContextPath".equals(contextPath.getNameAsString())
+                && contextPath.getArguments().isEmpty()) {
+            return followingOperand instanceof StringLiteralExpr next
+                    && FIXED_RELATIVE_TARGET.matcher(next.asString()).find();
         }
         if (!(leftmost instanceof StringLiteralExpr literal)) {
             return false;
@@ -1696,9 +2602,12 @@ public class SecurityPracticeFindingAnalyzer {
         if (httpOnlySet) {
             return;
         }
+        // A CSRF token cookie (XSRF-TOKEN for the double-submit pattern) must stay readable by
+        // client-side script, exactly like CookieCsrfTokenRepository.withHttpOnlyFalse().
         ObjectCreationExpr creation =
                 cu.findAll(ObjectCreationExpr.class).stream()
                         .filter(c -> "Cookie".equals(simpleName(c.getType().getNameAsString())))
+                        .filter(c -> !isCsrfTokenCookie(c))
                         .findFirst()
                         .orElse(null);
         if (creation == null) {
@@ -1730,6 +2639,14 @@ public class SecurityPracticeFindingAnalyzer {
                 "new Cookie(...) and response.addCookie(...) found in "
                         + relativePath
                         + " with no setHttpOnly(true) call anywhere in the file.");
+    }
+
+    private static boolean isCsrfTokenCookie(ObjectCreationExpr cookieCreation) {
+        if (cookieCreation.getArguments().isEmpty()) {
+            return false;
+        }
+        String name = cookieCreation.getArgument(0).toString().toLowerCase(java.util.Locale.ROOT);
+        return name.contains("xsrf") || name.contains("csrf");
     }
 
     // ---------------------------------------------------------------------------
@@ -2141,15 +3058,62 @@ public class SecurityPracticeFindingAnalyzer {
                                                                 s ->
                                                                         s.equalsIgnoreCase(
                                                                                 "authorization")));
-        boolean stringLiteralHint =
-                call.findAll(StringLiteralExpr.class).stream()
-                        .map(s -> s.asString().toLowerCase(java.util.Locale.ROOT))
-                        .anyMatch(s -> s.contains("authorization") || s.startsWith("bearer "));
-        boolean nameHint =
-                call.findAll(NameExpr.class).stream()
-                        .map(n -> n.getNameAsString().toLowerCase(java.util.Locale.ROOT))
-                        .anyMatch(AUTH_NAME_HINTS::contains);
-        return headerLookup || stringLiteralHint || nameHint;
+        if (headerLookup) {
+            return true;
+        }
+        // Judge what is written, not the message text: "token row missing" or
+        // "re-authorization required" in a format string logs no credential, and neither does a
+        // presence check such as token != null.
+        for (Expression argument : call.getArguments()) {
+            if (argument.isStringLiteralExpr()
+                    || argument.isTextBlockLiteralExpr()
+                    || LogArgumentHeuristics.isPresenceOrMaskedValue(argument)) {
+                continue;
+            }
+            if (concatenatesBearerLiteral(argument) || namesAuthorizationValue(argument)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean concatenatesBearerLiteral(Expression argument) {
+        return isDynamicConcat(argument)
+                && argument.findAll(StringLiteralExpr.class).stream()
+                        .map(literal -> literal.asString().toLowerCase(java.util.Locale.ROOT))
+                        .anyMatch(
+                                text -> text.contains("bearer ") || text.contains("authorization"));
+    }
+
+    /** Tokens that are cursors or request ids rather than credentials. */
+    private static final Set<String> NON_CREDENTIAL_TOKEN_SUFFIXES =
+            Set.of(
+                    "pagetoken",
+                    "nexttoken",
+                    "continuationtoken",
+                    "cancellationtoken",
+                    "synctoken",
+                    "resumetoken",
+                    "idempotencytoken",
+                    "fencingtoken");
+
+    private static boolean namesAuthorizationValue(Expression argument) {
+        return java.util.stream.Stream.of(
+                        argument.findAll(NameExpr.class).stream().map(NameExpr::getNameAsString),
+                        argument.findAll(FieldAccessExpr.class).stream()
+                                .map(FieldAccessExpr::getNameAsString),
+                        argument.findAll(MethodCallExpr.class).stream()
+                                .map(MethodCallExpr::getNameAsString))
+                .flatMap(names -> names)
+                .map(name -> name.toLowerCase(java.util.Locale.ROOT))
+                .filter(name -> NON_CREDENTIAL_TOKEN_SUFFIXES.stream().noneMatch(name::endsWith))
+                .anyMatch(
+                        name ->
+                                AUTH_NAME_HINTS.stream().anyMatch(name::endsWith)
+                                        || name.endsWith("token")
+                                        || name.endsWith("authorization")
+                                        || name.equals("jwt")
+                                        || name.contains("bearer"));
     }
 
     // ---------------------------------------------------------------------------

@@ -182,4 +182,148 @@ class TransactionPracticeFindingAnalyzerTest {
 
         assertThat(byRule(findings(), "SPRING_TRANSACTIONAL_ON_POSTCONSTRUCT")).isNull();
     }
+
+    private static List<Finding> allByRule(List<Finding> findings, String ruleId) {
+        return findings.stream().filter(f -> ruleId.equals(f.ruleId())).toList();
+    }
+
+    // ── SPRING_TRANSACTIONAL_SYNCHRONIZED ─────────────────────────────────────
+
+    @Test
+    void flagsSynchronizedTransactionalMethods() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/StockService.java",
+                """
+                package com.example;
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+                @Service
+                public class StockService {
+                    @Transactional
+                    public synchronized void reserve(String sku) {}
+
+                    public synchronized void notTransactional() {}
+
+                    @Transactional
+                    public void notSynchronized() {}
+                }
+                @Service
+                @Transactional
+                class LedgerService {
+                    public synchronized void book() {}
+
+                    private synchronized void helper() {}
+                }
+                """);
+
+        assertThat(allByRule(findings(), "SPRING_TRANSACTIONAL_SYNCHRONIZED"))
+                .extracting(Finding::target)
+                .containsExactly("StockService#reserve", "LedgerService#book");
+    }
+
+    // ── SPRING_TX_EVENT_LISTENER_NO_TRANSACTION ───────────────────────────────
+
+    private void writeOrderListener(String listenerAnnotation) throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/OrderListener.java",
+                """
+                package com.example;
+                import org.springframework.stereotype.Component;
+                import org.springframework.transaction.event.TransactionalEventListener;
+                @Component
+                public class OrderListener {
+                    %s
+                    public void on(OrderPlaced event) {}
+                }
+                record OrderPlaced(String id) {}
+                """
+                        .formatted(listenerAnnotation));
+    }
+
+    @Test
+    void flagsTransactionalEventPublishedOutsideTransaction() throws IOException {
+        writeOrderListener("@TransactionalEventListener");
+        writeSourceFile(
+                "src/main/java/com/example/OrderService.java",
+                """
+                package com.example;
+                import org.springframework.context.ApplicationEventPublisher;
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+                @Service
+                public class OrderService {
+                    private final ApplicationEventPublisher publisher;
+
+                    OrderService(ApplicationEventPublisher publisher) {
+                        this.publisher = publisher;
+                    }
+
+                    public void place(String id) {
+                        publisher.publishEvent(new OrderPlaced(id));
+                    }
+
+                    @Transactional
+                    public void placeInTransaction(String id) {
+                        publisher.publishEvent(new OrderPlaced(id));
+                        audit(id);
+                    }
+
+                    void audit(String id) {
+                        OrderPlaced event = new OrderPlaced(id);
+                        publisher.publishEvent(event);
+                    }
+                }
+                """);
+
+        assertThat(allByRule(findings(), "SPRING_TX_EVENT_LISTENER_NO_TRANSACTION"))
+                .singleElement()
+                .satisfies(
+                        finding -> {
+                            assertThat(finding.target()).isEqualTo("OrderService#place");
+                            assertThat(finding.message()).contains("publishes OrderPlaced");
+                            assertThat(finding.primaryLocation().startLine()).isEqualTo(14);
+                        });
+    }
+
+    @Test
+    void doesNotFlagFallbackListenersOrPublishersCalledFromTransactions() throws IOException {
+        writeOrderListener("@TransactionalEventListener(fallbackExecution = true)");
+        writeSourceFile(
+                "src/main/java/com/example/OrderService.java",
+                """
+                package com.example;
+                import org.springframework.context.ApplicationEventPublisher;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class OrderService {
+                    private ApplicationEventPublisher publisher;
+
+                    public void place(String id) {
+                        publisher.publishEvent(new OrderPlaced(id));
+                    }
+                }
+                """);
+
+        assertThat(allByRule(findings(), "SPRING_TX_EVENT_LISTENER_NO_TRANSACTION")).isEmpty();
+
+        writeOrderListener("@TransactionalEventListener");
+        writeSourceFile(
+                "src/main/java/com/example/CheckoutService.java",
+                """
+                package com.example;
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+                @Service
+                public class CheckoutService {
+                    private OrderService orders;
+
+                    @Transactional
+                    public void checkout(String id) {
+                        orders.place(id);
+                    }
+                }
+                """);
+
+        assertThat(allByRule(findings(), "SPRING_TX_EVENT_LISTENER_NO_TRANSACTION")).isEmpty();
+    }
 }

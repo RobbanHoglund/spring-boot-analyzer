@@ -3,6 +3,7 @@ package com.robbanhoglund.springbootanalyzer.analyzer;
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.NodeList;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
@@ -75,6 +76,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
@@ -162,6 +165,13 @@ public class StaticPracticeFindingAnalyzer {
                     "cleanup only",
                     "best effort",
                     "close failure");
+    private static final Set<String> CONFIGURATION_ANNOTATIONS =
+            Set.of(
+                    "Configuration",
+                    "SpringBootApplication",
+                    "SpringBootConfiguration",
+                    "AutoConfiguration",
+                    "TestConfiguration");
     private static final Set<String> MESSAGING_LISTENER_ANNOTATIONS =
             Set.of("KafkaListener", "RabbitListener", "JmsListener", "SqsListener");
     private static final Set<String> SENSITIVE_PARAM_NAMES =
@@ -209,6 +219,7 @@ public class StaticPracticeFindingAnalyzer {
                 httpSurfaceAnalysis,
                 detectedClasses,
                 legacyTransactionalVisibility,
+                bootVersion,
                 configurationAnalysis,
                 findings);
         detectRepeatedFallbackParsingPattern(findings);
@@ -220,6 +231,7 @@ public class StaticPracticeFindingAnalyzer {
             HttpSurfaceAnalysis httpSurfaceAnalysis,
             List<DetectedClass> detectedClasses,
             boolean legacyTransactionalVisibility,
+            String bootVersion,
             ConfigurationAnalysis configurationAnalysis,
             List<Finding> findings) {
         Path sourceRoot = repositoryRoot.resolve("src/main/java");
@@ -263,11 +275,15 @@ public class StaticPracticeFindingAnalyzer {
                             + " returning partial results",
                     exception);
         }
+        SourceIndex sourceIndex = SourceIndex.of(sourceFiles);
         SourcePracticeContext projectContext =
                 new SourcePracticeContext(
                         legacyTransactionalVisibility,
-                        anySourceContains(sourceFiles, "@EnableAsync"),
-                        configurationAnalysis);
+                        sourceIndex.contains("@EnableAsync"),
+                        configurationAnalysis,
+                        bootVersion,
+                        sourceIndex.constrainedTypes(),
+                        sourceIndex.enumTypes());
         for (Path sourceFile : sourceFiles) {
             try {
                 parseSourcePractices(
@@ -287,7 +303,7 @@ public class StaticPracticeFindingAnalyzer {
             }
         }
         detectAsyncWithoutExecutor(repositoryRoot, findings);
-        detectScheduledWithoutExecutor(repositoryRoot, findings);
+        detectScheduledWithoutExecutor(repositoryRoot, configurationAnalysis, findings);
     }
 
     private void parseSourcePractices(
@@ -331,23 +347,71 @@ public class StaticPracticeFindingAnalyzer {
      *     transaction advice applies to public methods only
      * @param projectEnablesAsync some {@code src/main/java} source declares {@code @EnableAsync}
      * @param configurationAnalysis the scanned configuration files; may be null
+     * @param bootVersion the resolved Spring Boot version; may be null
+     * @param constrainedTypes simple names of types declared in files that use Bean Validation
+     *     constraints
+     * @param enumTypes simple names of the enums declared in {@code src/main/java}
      */
     private record SourcePracticeContext(
             boolean legacyTransactionalVisibility,
             boolean projectEnablesAsync,
-            ConfigurationAnalysis configurationAnalysis) {}
+            ConfigurationAnalysis configurationAnalysis,
+            String bootVersion,
+            Set<String> constrainedTypes,
+            Set<String> enumTypes) {}
 
-    private static boolean anySourceContains(List<Path> sourceFiles, String marker) {
-        for (Path sourceFile : sourceFiles) {
-            try {
-                if (Files.readString(sourceFile, StandardCharsets.UTF_8).contains(marker)) {
-                    return true;
+    /** Bean Validation constraint annotations, plus {@code @Valid} for cascaded validation. */
+    private static final Pattern CONSTRAINT_ANNOTATION =
+            Pattern.compile(
+                    "@(?:NotNull|NotBlank|NotEmpty|Size|Min|Max|Pattern|Email|Positive"
+                            + "|PositiveOrZero|Negative|NegativeOrZero|Past|PastOrPresent|Future"
+                            + "|FutureOrPresent|DecimalMin|DecimalMax|Digits|AssertTrue"
+                            + "|AssertFalse|Null|Valid|Length|Range|URL|UUID)\\b");
+
+    private static final Pattern TYPE_DECLARATION =
+            Pattern.compile("\\b(?:class|record)\\s+([A-Z]\\w*)");
+
+    private static final Pattern ENUM_DECLARATION = Pattern.compile("\\benum\\s+([A-Z]\\w*)");
+
+    /** Facts gathered with one text pass over the sources before the per-file AST pass. */
+    private record SourceIndex(
+            List<String> contents, Set<String> constrainedTypes, Set<String> enumTypes) {
+
+        static SourceIndex of(List<Path> sourceFiles) {
+            List<String> contents = new ArrayList<>();
+            Set<String> constrainedTypes = new LinkedHashSet<>();
+            Set<String> enumTypes = new LinkedHashSet<>();
+            for (Path sourceFile : sourceFiles) {
+                String content;
+                try {
+                    content = Files.readString(sourceFile, StandardCharsets.UTF_8);
+                } catch (IOException | UncheckedIOException ignored) {
+                    // An unreadable file is skipped here and reported by the per-file pass.
+                    continue;
                 }
-            } catch (IOException | UncheckedIOException ignored) {
-                // An unreadable file is skipped here and reported by the per-file pass.
+                contents.add(content);
+                boolean validationImported =
+                        content.contains("jakarta.validation")
+                                || content.contains("javax.validation")
+                                || content.contains("org.hibernate.validator");
+                if (validationImported && CONSTRAINT_ANNOTATION.matcher(content).find()) {
+                    Matcher types = TYPE_DECLARATION.matcher(content);
+                    while (types.find()) {
+                        constrainedTypes.add(types.group(1));
+                    }
+                }
+                Matcher enums = ENUM_DECLARATION.matcher(content);
+                while (enums.find()) {
+                    enumTypes.add(enums.group(1));
+                }
             }
+            return new SourceIndex(
+                    List.copyOf(contents), Set.copyOf(constrainedTypes), Set.copyOf(enumTypes));
         }
-        return false;
+
+        boolean contains(String marker) {
+            return contents.stream().anyMatch(content -> content.contains(marker));
+        }
     }
 
     private JavaParser newJavaParser() {
@@ -392,7 +456,10 @@ public class StaticPracticeFindingAnalyzer {
         boolean repositoryLike =
                 hasAnyAnnotation(declaration.getAnnotations(), Set.of("Repository"));
         boolean entityLike = hasAnnotation(declaration.getAnnotations(), "Entity");
-        boolean configurationLike = hasAnnotation(declaration.getAnnotations(), "Configuration");
+        // @SpringBootApplication, @SpringBootConfiguration, @AutoConfiguration and
+        // @TestConfiguration are all meta-annotated with @Configuration.
+        boolean configurationLike =
+                hasAnyAnnotation(declaration.getAnnotations(), CONFIGURATION_ANNOTATIONS);
         boolean configPropertiesLike =
                 hasAnnotation(declaration.getAnnotations(), "ConfigurationProperties");
         boolean classTransactional = hasAnnotation(declaration.getAnnotations(), "Transactional");
@@ -588,7 +655,12 @@ public class StaticPracticeFindingAnalyzer {
             }
 
             if (controllerLike) {
-                detectValidationGap(relativePath, declaration, method, signals, findings);
+                detectValidationGap(
+                        relativePath,
+                        declaration,
+                        method,
+                        projectContext.constrainedTypes(),
+                        findings);
             }
 
             if (hasAnnotation(method.getAnnotations(), "Async")) {
@@ -610,6 +682,11 @@ public class StaticPracticeFindingAnalyzer {
                     && !hasAnnotation(method.getAnnotations(), "Transactional")
                     && !classTransactional) {
                 detectModifyingNoTransaction(relativePath, declaration, method, findings);
+            }
+
+            if (hasAnnotation(method.getAnnotations(), "Query")
+                    && !hasAnnotation(method.getAnnotations(), "Modifying")) {
+                detectQueryDmlWithoutModifying(relativePath, declaration, method, findings);
             }
 
             if (hasAnnotation(method.getAnnotations(), "Transactional") || classTransactional) {
@@ -636,12 +713,20 @@ public class StaticPracticeFindingAnalyzer {
         if (entityLike) {
             detectJpaRelationshipRisks(relativePath, declaration, findings);
         }
+        if (entityLike
+                || hasAnyAnnotation(
+                        declaration.getAnnotations(), Set.of("Embeddable", "MappedSuperclass"))) {
+            detectEnumPersistedByOrdinal(
+                    relativePath, declaration, projectContext.enumTypes(), findings);
+        }
 
         if (!configurationLike) {
             detectBeanInNonConfigurationClass(relativePath, declaration, findings);
         }
 
-        if (configPropertiesLike && !hasAnnotation(declaration.getAnnotations(), "Validated")) {
+        if (configPropertiesLike
+                && !hasAnnotation(declaration.getAnnotations(), "Validated")
+                && declaresConstraints(declaration)) {
             detectConfigPropertiesNotValidated(relativePath, declaration, findings);
         }
 
@@ -649,7 +734,8 @@ public class StaticPracticeFindingAnalyzer {
         detectCorsAllowAll(relativePath, declaration, findings);
         detectCorsCredentialsWildcard(relativePath, declaration, findings);
         detectCrossOriginAnnotation(relativePath, declaration, findings);
-        detectDuplicateExceptionHandlers(relativePath, declaration, findings);
+        detectDuplicateExceptionHandlers(
+                relativePath, declaration, projectContext.bootVersion(), findings);
         detectFeignClientRisks(
                 relativePath, declaration, projectContext.configurationAnalysis(), findings);
         detectSqlInjectionInQueries(relativePath, declaration, findings);
@@ -2497,6 +2583,15 @@ public class StaticPracticeFindingAnalyzer {
         }
     }
 
+    /** Whether the class, its fields or its nested types carry Bean Validation constraints. */
+    private boolean declaresConstraints(ClassOrInterfaceDeclaration declaration) {
+        return declaration.findAll(AnnotationExpr.class).stream()
+                .anyMatch(
+                        annotation ->
+                                !"Validated".equals(simpleName(annotation.getNameAsString()))
+                                        && looksLikeValidationAnnotation(annotation));
+    }
+
     private void detectConfigPropertiesNotValidated(
             String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
         String className = declaration.getNameAsString();
@@ -2508,7 +2603,8 @@ public class StaticPracticeFindingAnalyzer {
                         .shortMessage(
                                 "@ConfigurationProperties class "
                                         + className
-                                        + " has no @Validated annotation.")
+                                        + " declares validation constraints but no @Validated —"
+                                        + " they are never checked.")
                         .whyBadPractice(
                                 "Without @Validated, constraint annotations such as @NotNull, @Min,"
                                     + " @Max, and @Pattern on the properties class fields are"
@@ -2519,14 +2615,15 @@ public class StaticPracticeFindingAnalyzer {
                                     + " the application logic instead of failing fast at startup,"
                                     + " potentially causing hard-to-diagnose runtime errors.")
                         .recommendation(
-                                "Add @Validated to the @ConfigurationProperties class and annotate"
-                                        + " fields with appropriate Bean Validation constraints.")
+                                "Add @Validated to the @ConfigurationProperties class so Spring"
+                                        + " Boot enforces the constraints when it binds the"
+                                        + " properties.")
                         .evidence(
-                                "@ConfigurationProperties without @Validated found on class "
+                                "@ConfigurationProperties class "
                                         + className
                                         + " in "
                                         + relativePath
-                                        + ".")
+                                        + " carries constraint annotations but no @Validated.")
                         .limitations(
                                 "Static analysis cannot determine whether validation is performed"
                                         + " elsewhere, or whether the configuration is always"
@@ -2539,6 +2636,9 @@ public class StaticPracticeFindingAnalyzer {
     private void detectCsrfDisabled(
             String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
         for (MethodDeclaration method : declaration.getMethods()) {
+            if (csrfIrrelevantForChain(method)) {
+                continue;
+            }
             List<MethodCallExpr> allCalls = method.findAll(MethodCallExpr.class);
             for (MethodCallExpr call : allCalls) {
                 boolean isDisableCall =
@@ -2547,10 +2647,13 @@ public class StaticPracticeFindingAnalyzer {
                                         .map(Object::toString)
                                         .orElse("")
                                         .contains("csrf");
+                // An actual disable() call or ::disable reference — the argument's text also holds
+                // its comments, which may well say "disabled".
                 boolean isCsrfLambdaDisable =
                         "csrf".equals(call.getNameAsString())
                                 && call.getArguments().stream()
-                                        .anyMatch(arg -> arg.toString().contains("disable"));
+                                        .anyMatch(
+                                                StaticPracticeFindingAnalyzer::disablesConfigurer);
                 if (isDisableCall || isCsrfLambdaDisable) {
                     Integer line =
                             call.getName().getBegin().map(position -> position.line).orElse(null);
@@ -2598,6 +2701,75 @@ public class StaticPracticeFindingAnalyzer {
                 }
             }
         }
+    }
+
+    private static boolean disablesConfigurer(Expression argument) {
+        return argument.findAll(MethodCallExpr.class).stream()
+                        .anyMatch(
+                                call ->
+                                        "disable".equals(call.getNameAsString())
+                                                && call.getArguments().isEmpty())
+                || argument
+                        .findAll(com.github.javaparser.ast.expr.MethodReferenceExpr.class)
+                        .stream()
+                        .anyMatch(reference -> "disable".equals(reference.getIdentifier()));
+    }
+
+    private static final Set<String> BROWSER_LOGIN_METHODS =
+            Set.of("httpBasic", "formLogin", "oauth2Login", "saml2Login", "rememberMe");
+
+    /**
+     * CSRF only protects state-changing requests that a browser authenticates automatically with
+     * a session cookie or cached Basic credentials. A chain restricted to actuator endpoints, a
+     * bearer-token resource server, a stateless chain without a browser login, or a chain whose
+     * only rules are permitAll/denyAll has nothing for a forged request to ride on.
+     */
+    private static boolean csrfIrrelevantForChain(MethodDeclaration method) {
+        List<MethodCallExpr> calls = method.findAll(MethodCallExpr.class);
+        boolean actuatorScoped =
+                calls.stream()
+                        .filter(
+                                call ->
+                                        "securityMatcher".equals(call.getNameAsString())
+                                                || "securityMatchers"
+                                                        .equals(call.getNameAsString()))
+                        .map(Object::toString)
+                        .anyMatch(
+                                text ->
+                                        text.contains("EndpointRequest")
+                                                || text.contains("\"/actuator"));
+        if (actuatorScoped) {
+            return true;
+        }
+        boolean browserLogin =
+                calls.stream()
+                        .filter(call -> BROWSER_LOGIN_METHODS.contains(call.getNameAsString()))
+                        .anyMatch(call -> !call.getArguments().toString().contains("disable"));
+        boolean resourceServer =
+                calls.stream()
+                        .anyMatch(call -> "oauth2ResourceServer".equals(call.getNameAsString()));
+        boolean stateless = method.toString().contains("SessionCreationPolicy.STATELESS");
+        boolean onlyPublicOrDenied =
+                calls.stream()
+                                .anyMatch(
+                                        call ->
+                                                "authorizeHttpRequests"
+                                                        .equals(call.getNameAsString()))
+                        && calls.stream()
+                                .map(MethodCallExpr::getNameAsString)
+                                .noneMatch(
+                                        name ->
+                                                Set.of(
+                                                                "authenticated",
+                                                                "fullyAuthenticated",
+                                                                "hasRole",
+                                                                "hasAnyRole",
+                                                                "hasAuthority",
+                                                                "hasAnyAuthority",
+                                                                "access",
+                                                                "rememberMe")
+                                                        .contains(name));
+        return !browserLogin && (resourceServer || stateless || onlyPublicOrDenied);
     }
 
     private void detectCorsAllowAll(
@@ -2855,9 +3027,58 @@ public class StaticPracticeFindingAnalyzer {
     // Rule: SPRING_DUPLICATE_EXCEPTION_HANDLER
     // ---------------------------------------------------------------------------
 
+    /** Exceptions handled by ResponseEntityExceptionHandler since Spring Framework 6.0. */
+    private static final List<String> RESPONSE_ENTITY_HANDLED_EXCEPTIONS =
+            List.of(
+                    "HttpRequestMethodNotSupportedException",
+                    "HttpMediaTypeNotSupportedException",
+                    "HttpMediaTypeNotAcceptableException",
+                    "MissingPathVariableException",
+                    "MissingServletRequestParameterException",
+                    "MissingServletRequestPartException",
+                    "ServletRequestBindingException",
+                    "MethodArgumentNotValidException",
+                    "NoHandlerFoundException",
+                    "AsyncRequestTimeoutException",
+                    "ErrorResponseException",
+                    "ConversionNotSupportedException",
+                    "TypeMismatchException",
+                    "HttpMessageNotReadableException",
+                    "HttpMessageNotWritableException");
+
+    /** Added to ResponseEntityExceptionHandler in Spring Framework 6.1 (Spring Boot 3.2). */
+    private static final List<String> RESPONSE_ENTITY_HANDLED_EXCEPTIONS_6_1 =
+            List.of(
+                    "HandlerMethodValidationException",
+                    "NoResourceFoundException",
+                    "MaxUploadSizeExceededException",
+                    "MethodValidationException");
+
     private void detectDuplicateExceptionHandlers(
-            String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            String bootVersion,
+            List<Finding> findings) {
         Map<String, List<String>> handlersByException = new LinkedHashMap<>();
+        // The base class maps its Spring MVC exceptions in one inherited @ExceptionHandler; a
+        // subclass that declares its own handler for one of them makes the mapping ambiguous.
+        boolean extendsResponseEntityHandler =
+                declaration.getExtendedTypes().stream()
+                        .anyMatch(
+                                type ->
+                                        "ResponseEntityExceptionHandler"
+                                                .equals(type.getNameAsString()));
+        if (extendsResponseEntityHandler && SpringBootVersions.major(bootVersion) != 2) {
+            List<String> inherited = new ArrayList<>(RESPONSE_ENTITY_HANDLED_EXCEPTIONS);
+            if (bootVersion == null || SpringBootVersions.isAtLeast(bootVersion, 3, 2)) {
+                inherited.addAll(RESPONSE_ENTITY_HANDLED_EXCEPTIONS_6_1);
+            }
+            for (String exceptionType : inherited) {
+                handlersByException
+                        .computeIfAbsent(exceptionType, key -> new ArrayList<>())
+                        .add("ResponseEntityExceptionHandler.handleException (inherited)");
+            }
+        }
         for (MethodDeclaration method : declaration.getMethods()) {
             if (!hasAnnotation(method.getAnnotations(), "ExceptionHandler")) {
                 continue;
@@ -3394,12 +3615,90 @@ public class StaticPracticeFindingAnalyzer {
                                         && bool.getValue());
     }
 
-    private boolean methodHasPersistenceWriteCall(MethodDeclaration method) {
+    private static final Set<String> PERSISTENCE_RECEIVER_TYPES =
+            Set.of(
+                    "EntityManager",
+                    "Session",
+                    "StatelessSession",
+                    "JdbcTemplate",
+                    "NamedParameterJdbcTemplate",
+                    "JdbcClient",
+                    "JdbcOperations",
+                    "NamedParameterJdbcOperations",
+                    "JdbcAggregateTemplate",
+                    "MongoTemplate",
+                    "MongoOperations",
+                    "R2dbcEntityTemplate",
+                    "DatabaseClient");
+
+    /**
+     * Whether the method writes through a repository, EntityManager or JDBC template. The write
+     * verbs (save, delete, update, merge, execute, ...) are common method names, so the receiver
+     * must look like a persistence API: Map.merge(...) or executor.execute(...) is no write.
+     */
+    private boolean methodHasPersistenceWriteCall(
+            ClassOrInterfaceDeclaration declaration, MethodDeclaration method) {
+        Map<String, String> declaredTypes = new LinkedHashMap<>();
+        for (FieldDeclaration field : declaration.getFields()) {
+            for (VariableDeclarator variable : field.getVariables()) {
+                declaredTypes.put(
+                        variable.getNameAsString(), rawTypeName(variable.getTypeAsString()));
+            }
+        }
+        for (Parameter parameter : method.getParameters()) {
+            declaredTypes.put(
+                    parameter.getNameAsString(), rawTypeName(parameter.getTypeAsString()));
+        }
+        for (VariableDeclarator variable : method.findAll(VariableDeclarator.class)) {
+            declaredTypes.put(variable.getNameAsString(), rawTypeName(variable.getTypeAsString()));
+        }
         return method.findAll(MethodCallExpr.class).stream()
                 .anyMatch(
                         call ->
-                                call.getScope().isPresent()
-                                        && WRITE_CALL_MARKERS.contains(call.getNameAsString()));
+                                WRITE_CALL_MARKERS.contains(call.getNameAsString())
+                                        && call.getScope().isPresent()
+                                        && isPersistenceReceiver(
+                                                rootReceiverName(call.getScope().get()),
+                                                declaredTypes));
+    }
+
+    private static String rootReceiverName(Expression scope) {
+        Expression current = scope;
+        while (true) {
+            if (current instanceof MethodCallExpr call && call.getScope().isPresent()) {
+                current = call.getScope().get();
+            } else if (current instanceof FieldAccessExpr fieldAccess) {
+                if (fieldAccess.getScope() instanceof ThisExpr) {
+                    return fieldAccess.getNameAsString();
+                }
+                current = fieldAccess.getScope();
+            } else if (current instanceof NameExpr name) {
+                return name.getNameAsString();
+            } else {
+                return null;
+            }
+        }
+    }
+
+    private static boolean isPersistenceReceiver(String name, Map<String, String> declaredTypes) {
+        if (name == null) {
+            return false;
+        }
+        String type = declaredTypes.get(name);
+        if (type != null && !"var".equals(type)) {
+            return type.endsWith("Repository")
+                    || type.endsWith("Repo")
+                    || type.endsWith("Dao")
+                    || PERSISTENCE_RECEIVER_TYPES.contains(type);
+        }
+        String lower = name.toLowerCase(Locale.ROOT);
+        return lower.endsWith("repository")
+                || lower.endsWith("repo")
+                || lower.endsWith("dao")
+                || lower.equals("entitymanager")
+                || lower.equals("em")
+                || lower.equals("jdbctemplate")
+                || lower.equals("jdbcclient");
     }
 
     private String firstCheckedThrownException(MethodDeclaration method) {
@@ -3446,7 +3745,7 @@ public class StaticPracticeFindingAnalyzer {
                     method.getAnnotationByName("TransactionalEventListener").orElse(null);
             if (listener == null
                     || !isAfterCommitPhase(listener)
-                    || !methodHasPersistenceWriteCall(method)
+                    || !methodHasPersistenceWriteCall(declaration, method)
                     || runsInRequiresNewTransaction(method, declaration)) {
                 continue;
             }
@@ -3532,6 +3831,55 @@ public class StaticPracticeFindingAnalyzer {
                         .or(() -> declaration.getAnnotationByName("Transactional"))
                         .orElse(null);
         return annotation != null && annotation.toString().contains("REQUIRES_NEW");
+    }
+
+    private static String transactionalAttributes(AnnotationExpr annotation) {
+        if (annotation == null || annotation.isMarkerAnnotationExpr()) {
+            return "";
+        }
+        if (annotation.isSingleMemberAnnotationExpr()) {
+            return "value=" + annotation.asSingleMemberAnnotationExpr().getMemberValue();
+        }
+        return annotation.asNormalAnnotationExpr().getPairs().stream()
+                .map(pair -> pair.getNameAsString() + "=" + pair.getValue())
+                .map(text -> text.replaceAll("\\s+", ""))
+                .sorted()
+                .collect(Collectors.joining(","));
+    }
+
+    private static AnnotationExpr effectiveTransactional(
+            ClassOrInterfaceDeclaration declaration, MethodDeclaration method) {
+        return method.getAnnotationByName("Transactional")
+                .orElse(declaration.getAnnotationByName("Transactional").orElse(null));
+    }
+
+    /**
+     * Whether a self-invoked @Transactional method declares nothing beyond the transaction the
+     * calling method already runs in — then bypassing its proxy changes nothing.
+     */
+    private static boolean selfCallJoinsCallerTransaction(
+            ClassOrInterfaceDeclaration declaration,
+            MethodDeclaration caller,
+            MethodCallExpr call) {
+        MethodDeclaration callee =
+                declaration.getMethods().stream()
+                        .filter(
+                                candidate ->
+                                        candidate.getNameAsString().equals(call.getNameAsString()))
+                        .filter(
+                                candidate ->
+                                        candidate.getParameters().size()
+                                                == call.getArguments().size())
+                        .findFirst()
+                        .orElse(null);
+        if (callee == null) {
+            return false;
+        }
+        String calleeAttributes =
+                transactionalAttributes(effectiveTransactional(declaration, callee));
+        String callerAttributes =
+                transactionalAttributes(effectiveTransactional(declaration, caller));
+        return calleeAttributes.isEmpty() || calleeAttributes.equals(callerAttributes);
     }
 
     private void detectTransactionRisks(
@@ -3628,7 +3976,7 @@ public class StaticPracticeFindingAnalyzer {
         }
         if (transactional
                 && isReadOnlyTransactional(method, declaration)
-                && methodHasPersistenceWriteCall(method)) {
+                && methodHasPersistenceWriteCall(declaration, method)) {
             findings.add(
                     FindingFactory.builder(
                                     FindingRules.SPRING_TRANSACTIONAL_READONLY_WITH_WRITES,
@@ -3715,6 +4063,14 @@ public class StaticPracticeFindingAnalyzer {
                                 // method.
                                 var scope = call.getScope().orElse(null);
                                 if (scope != null && !(scope instanceof ThisExpr)) {
+                                    return;
+                                }
+                                // Inside a transaction the callee simply joins it; only settings
+                                // the callee declares beyond the caller's (REQUIRES_NEW,
+                                // readOnly, isolation, ...) are silently lost.
+                                if (transactional
+                                        && selfCallJoinsCallerTransaction(
+                                                declaration, method, call)) {
                                     return;
                                 }
                                 findings.add(
@@ -3869,147 +4225,319 @@ public class StaticPracticeFindingAnalyzer {
             String relativePath,
             ClassOrInterfaceDeclaration declaration,
             MethodDeclaration method,
-            MethodSignals signals,
+            Set<String> constrainedTypes,
             List<Finding> findings) {
-        if (!isWriteLikeEndpoint(method)
-                && !signals.hasDatabaseWrites()
-                && !signals.hasHttpCalls()
-                && !signals.hasMessagingCalls()) {
+        for (Parameter parameter : method.getParameters()) {
+            boolean requestBody = hasAnnotation(parameter.getAnnotations(), "RequestBody");
+            boolean modelAttribute = hasAnnotation(parameter.getAnnotations(), "ModelAttribute");
+            if (!requestBody && !modelAttribute) {
+                continue;
+            }
+            if (hasAnnotation(parameter.getAnnotations(), "Valid")
+                    || hasAnnotation(parameter.getAnnotations(), "Validated")) {
+                continue;
+            }
+            String typeName = simpleName(rawTypeName(parameter.getTypeAsString()));
+            // A payload without constraints has nothing for @Valid to check; one with constraints
+            // is only validated when the parameter asks for it.
+            if (!constrainedTypes.contains(typeName)) {
+                continue;
+            }
+            String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+            String annotation = requestBody ? "@RequestBody" : "@ModelAttribute";
+            String payload = requestBody ? "request body" : "bound form data";
+            findings.add(
+                    FindingFactory.builder(
+                                    requestBody
+                                            ? FindingRules.SPRING_REQUEST_BODY_NO_VALID
+                                            : FindingRules.SPRING_MODEL_ATTRIBUTE_NO_VALID,
+                                    FindingConfidence.MEDIUM)
+                            .shortMessage(
+                                    annotation
+                                            + " "
+                                            + typeName
+                                            + " in "
+                                            + target
+                                            + " declares validation constraints, but the parameter"
+                                            + " has no @Valid — they are never checked.")
+                            .whyBadPractice(
+                                    "Spring MVC validates the "
+                                            + payload
+                                            + " only when the parameter is annotated @Valid or"
+                                            + " @Validated. The constraint annotations on "
+                                            + typeName
+                                            + " are silently skipped.")
+                            .possibleImpact(
+                                    "Input that breaks the declared constraints (missing fields,"
+                                            + " out-of-range values) reaches the handler and the"
+                                            + " service layer as if it were valid.")
+                            .recommendation(
+                                    "Annotate the parameter with @Valid (or @Validated for"
+                                        + " validation groups) and turn validation failures into a"
+                                        + " 400 response, for example a ProblemDetail.")
+                            .evidence(
+                                    "Parameter "
+                                            + parameter.getNameAsString()
+                                            + " of type "
+                                            + typeName
+                                            + " in "
+                                            + relativePath
+                                            + " is annotated "
+                                            + annotation
+                                            + " without @Valid, and "
+                                            + typeName
+                                            + " declares Bean Validation constraints.")
+                            .limitations(
+                                    "Constraints are detected per source file: a type declared in a"
+                                        + " file that uses constraint annotations counts as"
+                                        + " constrained. Validation done manually or by a custom"
+                                        + " argument resolver is not visible.")
+                            .source(
+                                    relativePath,
+                                    parameter
+                                            .getBegin()
+                                            .map(position -> position.line)
+                                            .orElse(
+                                                    method.getBegin()
+                                                            .map(position -> position.line)
+                                                            .orElse(null)))
+                            .target(target)
+                            .build());
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_QUERY_DML_WITHOUT_MODIFYING
+    // ---------------------------------------------------------------------------
+
+    private static final Pattern DML_STATEMENT =
+            Pattern.compile(
+                    "^\\s*(?:/\\*.*?\\*/\\s*)*(update|delete|insert)\\b",
+                    Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+
+    private void detectQueryDmlWithoutModifying(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            MethodDeclaration method,
+            List<Finding> findings) {
+        AnnotationExpr queryAnnotation = method.getAnnotationByName("Query").orElse(null);
+        if (queryAnnotation == null || !isJpaOrJdbcQuery(queryAnnotation, declaration)) {
             return;
         }
-        for (Parameter parameter : method.getParameters()) {
-            if (!hasAnnotation(parameter.getAnnotations(), "RequestBody")) {
-                continue;
-            }
-            if (hasAnnotation(parameter.getAnnotations(), "Valid")
-                    || hasAnnotation(parameter.getAnnotations(), "Validated")) {
-                continue;
-            }
-            if (!isValidationCandidateType(parameter)) {
-                continue;
-            }
-            ValidationSignals validationSignals = validationSignals(parameter, declaration);
-            if (!validationSignals.shouldFlag()) {
-                continue;
-            }
-            findings.add(
-                    FindingFactory.builder(
-                                    FindingRules.SPRING_REQUEST_BODY_NO_VALID.ruleId(),
-                                    FindingRules.SPRING_REQUEST_BODY_NO_VALID.title(),
-                                    com.robbanhoglund.springbootanalyzer.analyzer.model
-                                            .FindingSeverity.INFO,
-                                    FindingRules.SPRING_REQUEST_BODY_NO_VALID.category(),
-                                    FindingRules.SPRING_REQUEST_BODY_NO_VALID.runtimeDetection(),
-                                    FindingConfidence.MEDIUM)
-                            .shortMessage(
-                                    "@RequestBody parameter is missing @Valid: "
-                                            + declaration.getNameAsString()
-                                            + "#"
-                                            + method.getNameAsString())
-                            .whyBadPractice(
-                                    "Spring can bind request payloads successfully even when"
-                                        + " business-critical fields are missing, out of range, or"
-                                        + " structurally inconsistent.")
-                            .possibleImpact(
-                                    "Invalid input can travel deeper into service logic before"
-                                        + " being rejected, which makes failure handling and client"
-                                        + " error reporting less predictable.")
-                            .recommendation(
-                                    "Add @Valid or @Validated at the request boundary and place"
-                                            + " validation annotations on the DTO fields that must"
-                                            + " satisfy business constraints.")
-                            .evidence(
-                                    "Parameter "
-                                            + parameter.getNameAsString()
-                                            + " of type "
-                                            + parameter.getTypeAsString()
-                                            + " in "
-                                            + relativePath
-                                            + " is annotated with @RequestBody without a local"
-                                            + " @Valid or @Validated annotation. DTO validation"
-                                            + " annotations detected: "
-                                            + (validationSignals.hasValidationAnnotations()
-                                                    ? "yes"
-                                                    : "no")
-                                            + ".")
-                            .limitations(
-                                    "Static analysis cannot prove whether validation occurs in a"
-                                        + " custom argument resolver, service layer, or downstream"
-                                        + " pipeline.")
-                            .source(
-                                    relativePath,
-                                    parameter
-                                            .getBegin()
-                                            .map(position -> position.line)
-                                            .orElse(
-                                                    method.getBegin()
-                                                            .map(position -> position.line)
-                                                            .orElse(null)))
-                            .target(declaration.getNameAsString() + "#" + method.getNameAsString())
-                            .build());
+        String query = queryText(queryAnnotation);
+        if (query == null) {
+            return;
         }
-        for (Parameter parameter : method.getParameters()) {
-            if (!hasAnnotation(parameter.getAnnotations(), "ModelAttribute")) {
+        Matcher statement = DML_STATEMENT.matcher(query);
+        if (!statement.find()) {
+            return;
+        }
+        String verb = statement.group(1).toUpperCase(Locale.ROOT);
+        String target = declaration.getNameAsString() + "#" + method.getNameAsString();
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_QUERY_DML_WITHOUT_MODIFYING,
+                                FindingConfidence.HIGH)
+                        .shortMessage(
+                                "@Query on "
+                                        + target
+                                        + (verb.equals("DELETE") ? " runs a " : " runs an ")
+                                        + verb
+                                        + " statement without @Modifying — every call fails.")
+                        .whyBadPractice(
+                                "Without @Modifying, Spring Data executes the statement as a query"
+                                        + " that must return rows. With JPA, Hibernate rejects an "
+                                        + verb
+                                        + " there (\"Query executed via 'getResultList()' or"
+                                        + " 'getSingleResult()' must be a 'select' query\"), and"
+                                        + " Spring Data JDBC fails the same way.")
+                        .possibleImpact(
+                                "The repository method throws on every invocation, so the write it"
+                                        + " is meant to perform never happens.")
+                        .recommendation(
+                                "Annotate the method with @Modifying (and run it inside a"
+                                        + " @Transactional service method); return void or the"
+                                        + " number of affected rows.")
+                        .evidence(
+                                "@Query(\""
+                                        + abbreviate(query.strip(), 80)
+                                        + "\") on "
+                                        + target
+                                        + " has no @Modifying.")
+                        .limitations(
+                                "Only queries whose text is a string literal or text block are"
+                                        + " inspected.")
+                        .source(relativePath, method.getBegin().map(p -> p.line).orElse(null))
+                        .target(target)
+                        .build());
+    }
+
+    /** Packages whose {@code @Query} needs {@code @Modifying} for DML (JPA and JDBC). */
+    private static final List<String> MODIFYING_QUERY_PACKAGES =
+            List.of(
+                    "org.springframework.data.jpa.repository",
+                    "org.springframework.data.jdbc.repository.query");
+
+    /**
+     * Whether a {@code @Query} is Spring Data JPA's or JDBC's. Other modules — Cassandra among
+     * them — run DML through {@code @Query} without any {@code @Modifying}.
+     */
+    private static boolean isJpaOrJdbcQuery(
+            AnnotationExpr query, ClassOrInterfaceDeclaration declaration) {
+        String name = query.getNameAsString();
+        if (name.contains(".")) {
+            return MODIFYING_QUERY_PACKAGES.stream()
+                    .anyMatch(packageName -> name.equals(packageName + ".Query"));
+        }
+        CompilationUnit cu = declaration.findCompilationUnit().orElse(null);
+        if (cu == null) {
+            return false;
+        }
+        for (ImportDeclaration imported : cu.getImports()) {
+            String importedName = imported.getNameAsString();
+            for (String packageName : MODIFYING_QUERY_PACKAGES) {
+                if (imported.isAsterisk()
+                        ? importedName.equals(packageName)
+                        : importedName.equals(packageName + ".Query")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private String queryText(AnnotationExpr query) {
+        Expression value = null;
+        if (query.isSingleMemberAnnotationExpr()) {
+            value = query.asSingleMemberAnnotationExpr().getMemberValue();
+        } else if (query.isNormalAnnotationExpr()) {
+            value =
+                    query.asNormalAnnotationExpr().getPairs().stream()
+                            .filter(pair -> "value".equals(pair.getNameAsString()))
+                            .map(pair -> pair.getValue())
+                            .findFirst()
+                            .orElse(null);
+        }
+        return value == null ? null : literalText(value);
+    }
+
+    private static String literalText(Expression expression) {
+        if (expression.isStringLiteralExpr()) {
+            return expression.asStringLiteralExpr().asString();
+        }
+        if (expression.isTextBlockLiteralExpr()) {
+            return expression.asTextBlockLiteralExpr().asString();
+        }
+        if (expression.isBinaryExpr()
+                && expression.asBinaryExpr().getOperator() == BinaryExpr.Operator.PLUS) {
+            String left = literalText(expression.asBinaryExpr().getLeft());
+            String right = literalText(expression.asBinaryExpr().getRight());
+            return left == null ? null : left + (right == null ? "" : right);
+        }
+        return null;
+    }
+
+    private static String abbreviate(String text, int maxLength) {
+        String flat = text.replaceAll("\\s+", " ");
+        return flat.length() <= maxLength ? flat : flat.substring(0, maxLength) + "…";
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_JPA_ENUM_ORDINAL
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> ENUM_MAPPING_OVERRIDES =
+            Set.of("Transient", "Convert", "Type", "JdbcType", "JdbcTypeCode");
+
+    private void detectEnumPersistedByOrdinal(
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            Set<String> enumTypes,
+            List<Finding> findings) {
+        if (enumTypes.isEmpty()) {
+            return;
+        }
+        for (FieldDeclaration field : declaration.getFields()) {
+            if (field.isStatic()
+                    || field.isTransient()
+                    || hasAnyAnnotation(field.getAnnotations(), ENUM_MAPPING_OVERRIDES)) {
                 continue;
             }
-            if (hasAnnotation(parameter.getAnnotations(), "Valid")
-                    || hasAnnotation(parameter.getAnnotations(), "Validated")) {
+            AnnotationExpr enumerated = field.getAnnotationByName("Enumerated").orElse(null);
+            if (enumerated != null && enumerated.toString().contains("STRING")) {
                 continue;
             }
-            if (!isValidationCandidateType(parameter)) {
-                continue;
+            boolean explicitOrdinal =
+                    enumerated != null && enumerated.toString().contains("ORDINAL");
+            boolean elementCollection = hasAnnotation(field.getAnnotations(), "ElementCollection");
+            for (VariableDeclarator variable : field.getVariables()) {
+                String declared = variable.getTypeAsString();
+                String enumType;
+                if (declared.contains("<")) {
+                    if (!elementCollection) {
+                        continue;
+                    }
+                    enumType =
+                            simpleName(
+                                    declared.substring(
+                                                    declared.indexOf('<') + 1,
+                                                    declared.lastIndexOf('>'))
+                                            .trim());
+                } else {
+                    enumType = simpleName(declared);
+                }
+                if (!enumTypes.contains(enumType)) {
+                    continue;
+                }
+                String target = declaration.getNameAsString() + "." + variable.getNameAsString();
+                FindingFactory.Builder builder =
+                        FindingFactory.builder(
+                                        FindingRules.SPRING_JPA_ENUM_ORDINAL,
+                                        FindingConfidence.HIGH)
+                                .shortMessage(
+                                        target
+                                                + " stores the "
+                                                + enumType
+                                                + " enum by ordinal"
+                                                + (explicitOrdinal ? " (EnumType.ORDINAL)" : "")
+                                                + " — reordering its constants changes the"
+                                                + " meaning of stored rows.")
+                                .whyBadPractice(
+                                        "JPA maps an enum to its ordinal position unless the field"
+                                            + " says @Enumerated(EnumType.STRING). The database"
+                                            + " then holds 0, 1, 2 ... and every row depends on the"
+                                            + " declaration order of the constants.")
+                                .possibleImpact(
+                                        "Inserting, removing or reordering a constant silently"
+                                            + " reassigns existing rows to a different value; the"
+                                            + " data is corrupt without any error.")
+                                .recommendation(
+                                        "Map the field with @Enumerated(EnumType.STRING) (and"
+                                            + " migrate the column), or use an AttributeConverter"
+                                            + " with stable codes.")
+                                .evidence(
+                                        "Field "
+                                                + target
+                                                + " of enum type "
+                                                + enumType
+                                                + " in "
+                                                + relativePath
+                                                + (explicitOrdinal
+                                                        ? " is mapped with EnumType.ORDINAL."
+                                                        : " has no @Enumerated(EnumType.STRING)."))
+                                .limitations(
+                                        "Only enums declared in this repository are recognized.")
+                                .source(
+                                        relativePath,
+                                        field.getBegin().map(p -> p.line).orElse(null))
+                                .target(target);
+                if (explicitOrdinal) {
+                    builder.severity(
+                            com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity
+                                    .INFO);
+                }
+                findings.add(builder.build());
             }
-            ValidationSignals validationSignals = validationSignals(parameter, declaration);
-            if (!validationSignals.shouldFlag()) {
-                continue;
-            }
-            findings.add(
-                    FindingFactory.builder(
-                                    FindingRules.SPRING_MODEL_ATTRIBUTE_NO_VALID,
-                                    FindingConfidence.MEDIUM)
-                            .shortMessage(
-                                    "@ModelAttribute parameter is missing @Valid: "
-                                            + declaration.getNameAsString()
-                                            + "#"
-                                            + method.getNameAsString())
-                            .whyBadPractice(
-                                    "Spring binds form or query parameters to the model attribute"
-                                            + " without validating constraints unless @Valid or"
-                                            + " @Validated is present.")
-                            .possibleImpact(
-                                    "Invalid form input reaches service logic unchecked, making it"
-                                            + " harder to return precise client error messages.")
-                            .recommendation(
-                                    "Add @Valid or @Validated to the @ModelAttribute parameter and"
-                                            + " annotate the DTO fields with Bean Validation"
-                                            + " constraints.")
-                            .evidence(
-                                    "Parameter "
-                                            + parameter.getNameAsString()
-                                            + " of type "
-                                            + parameter.getTypeAsString()
-                                            + " in "
-                                            + relativePath
-                                            + " is annotated with @ModelAttribute without @Valid or"
-                                            + " @Validated. DTO validation annotations detected: "
-                                            + (validationSignals.hasValidationAnnotations()
-                                                    ? "yes"
-                                                    : "no")
-                                            + ".")
-                            .limitations(
-                                    "Static analysis cannot prove whether validation occurs in a"
-                                            + " custom argument resolver or service layer.")
-                            .source(
-                                    relativePath,
-                                    parameter
-                                            .getBegin()
-                                            .map(position -> position.line)
-                                            .orElse(
-                                                    method.getBegin()
-                                                            .map(position -> position.line)
-                                                            .orElse(null)))
-                            .target(declaration.getNameAsString() + "#" + method.getNameAsString())
-                            .build());
         }
     }
 
@@ -4196,9 +4724,13 @@ public class StaticPracticeFindingAnalyzer {
                         .anyMatch(BROAD_EXCEPTION_TYPES::contains);
     }
 
+    /** Any 5xx response: 500 as well as 503 SERVICE_UNAVAILABLE and the other server errors. */
     private static final java.util.regex.Pattern SERVER_ERROR_RESPONSE =
             java.util.regex.Pattern.compile(
-                    "internalservererror\\(|status\\(\\s*500\\s*\\)|internal_server_error");
+                    "internalservererror\\(|(?:status|valueof)\\(\\s*5\\d\\d\\s*\\)"
+                            + "|internal_server_error|service_unavailable|bad_gateway"
+                            + "|gateway_timeout|not_implemented|insufficient_storage");
+
     private static final java.util.regex.Pattern CLIENT_ERROR_RESPONSE =
             java.util.regex.Pattern.compile(
                     "badrequest\\(|status\\(\\s*400\\s*\\)|httpstatus\\.bad_request");
@@ -4981,6 +5513,11 @@ public class StaticPracticeFindingAnalyzer {
                     continue;
                 }
                 for (Expression arg : call.getArguments()) {
+                    // A presence check such as password != null reports whether a secret exists,
+                    // not the secret itself.
+                    if (LogArgumentHeuristics.isPresenceOrMaskedValue(arg)) {
+                        continue;
+                    }
                     if (hasSensitiveIdentifierReference(arg)) {
                         Integer line = call.getBegin().map(p -> p.line).orElse(null);
                         String target =
@@ -5131,6 +5668,16 @@ public class StaticPracticeFindingAnalyzer {
                     "WebApplicationContext",
                     "ConfigurableWebApplicationContext");
 
+    private static final Set<String> BEAN_LOOKUP_METHODS =
+            Set.of(
+                    "getBean",
+                    "getBeansOfType",
+                    "getBeanProvider",
+                    "getBeanNamesForType",
+                    "getBeansWithAnnotation",
+                    "getAutowireCapableBeanFactory",
+                    "getBeanFactory");
+
     private static boolean isApplicationContextField(FieldDeclaration field) {
         return field.getVariables().stream()
                 .anyMatch(
@@ -5150,6 +5697,25 @@ public class StaticPracticeFindingAnalyzer {
                 field.getVariables().isEmpty()
                         ? "ApplicationContext"
                         : rawTypeName(field.getVariables().get(0).getTypeAsString());
+        // Closing or exiting the context, publishing events or reading the environment is
+        // lifecycle use, not a service locator; only bean lookups hide dependencies.
+        boolean looksUpBeans =
+                declaration.findAll(MethodCallExpr.class).stream()
+                        .anyMatch(
+                                call ->
+                                        BEAN_LOOKUP_METHODS.contains(call.getNameAsString())
+                                                && call.getScope()
+                                                        .map(Object::toString)
+                                                        .filter(
+                                                                scope ->
+                                                                        scope.equals(fieldName)
+                                                                                || scope.equals(
+                                                                                        "this."
+                                                                                                + fieldName))
+                                                        .isPresent());
+        if (!looksUpBeans) {
+            return;
+        }
         String target = declaration.getNameAsString() + "." + fieldName;
         Integer line = field.getBegin().map(p -> p.line).orElse(null);
         findings.add(
@@ -6049,9 +6615,35 @@ public class StaticPracticeFindingAnalyzer {
         }
     }
 
-    private void detectScheduledWithoutExecutor(Path repositoryRoot, List<Finding> findings) {
+    /**
+     * Spring Boot's auto-configured scheduler is single-threaded only by default: a
+     * spring.task.scheduling.pool.size above 1 widens it, and with virtual threads enabled Boot
+     * uses a SimpleAsyncTaskScheduler that starts a virtual thread per run.
+     */
+    private static boolean schedulerNotSingleThreaded(ConfigurationAnalysis configurationAnalysis) {
+        if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
+            return false;
+        }
+        for (var property : configurationAnalysis.properties()) {
+            String value = property.value() == null ? "" : property.value().trim();
+            if ("spring.task.scheduling.pool.size".equals(property.name())
+                    && (property.placeholderValue() || !"1".equals(value))) {
+                return true;
+            }
+            if ("spring.threads.virtual.enabled".equals(property.name())
+                    && "true".equalsIgnoreCase(value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void detectScheduledWithoutExecutor(
+            Path repositoryRoot,
+            ConfigurationAnalysis configurationAnalysis,
+            List<Finding> findings) {
         Path sourceRoot = repositoryRoot.resolve("src/main/java");
-        if (Files.notExists(sourceRoot)) {
+        if (Files.notExists(sourceRoot) || schedulerNotSingleThreaded(configurationAnalysis)) {
             return;
         }
         int scheduledCount = 0;

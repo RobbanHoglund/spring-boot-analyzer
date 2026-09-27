@@ -3,6 +3,14 @@ package com.robbanhoglund.springbootanalyzer.analyzer;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.body.Parameter;
+import com.github.javaparser.ast.body.VariableDeclarator;
+import com.github.javaparser.ast.expr.AnnotationExpr;
+import com.github.javaparser.ast.expr.ClassExpr;
+import com.github.javaparser.ast.expr.Expression;
+import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.expr.NameExpr;
+import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
@@ -10,7 +18,9 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
 import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import org.springframework.stereotype.Component;
 
 /**
@@ -22,6 +32,10 @@ import org.springframework.stereotype.Component;
  *   <li>{@link FindingRules#SPRING_ASYNC_TRANSACTIONAL} — a method annotated with both
  *       {@code @Async} and {@code @Transactional}; the transaction context is not propagated to
  *       the async thread.
+ *   <li>{@link FindingRules#SPRING_TRANSACTIONAL_SYNCHRONIZED} — a {@code synchronized}
+ *       {@code @Transactional} method, whose lock is released before the commit.
+ *   <li>{@link FindingRules#SPRING_TX_EVENT_LISTENER_NO_TRANSACTION} — an event with a
+ *       {@code @TransactionalEventListener} published from a method without a transaction.
  * </ul>
  *
  * <p>{@code @Transactional} on private methods and self-invocation are detected by {@link
@@ -49,11 +63,22 @@ public class TransactionPracticeFindingAnalyzer {
      */
     public List<Finding> analyze(JavaSources sources) {
         List<Finding> findings = new ArrayList<>();
+        Set<String> transactionalEvents = transactionalEventTypes(sources);
+        Set<String> calledInTransactions =
+                transactionalEvents.isEmpty() ? Set.of() : methodsCalledFromTransactions(sources);
         for (JavaSources.JavaFile file : sources.files()) {
             if (file.compilationUnit() == null) {
                 continue;
             }
             analyzeSourceFile(file.compilationUnit(), file.relativePath(), findings);
+            if (!transactionalEvents.isEmpty()) {
+                detectTransactionalEventPublishedWithoutTransaction(
+                        file.compilationUnit(),
+                        file.relativePath(),
+                        transactionalEvents,
+                        calledInTransactions,
+                        findings);
+            }
         }
         return findings;
     }
@@ -68,6 +93,7 @@ public class TransactionPracticeFindingAnalyzer {
             for (MethodDeclaration method : cls.getMethods()) {
                 detectAsyncTransactional(cls, method, relativePath, findings);
                 detectTransactionalOnPostConstruct(cls, method, relativePath, findings);
+                detectTransactionalSynchronized(cls, method, relativePath, findings);
             }
         }
     }
@@ -200,6 +226,253 @@ public class TransactionPracticeFindingAnalyzer {
                         .source(relativePath, line)
                         .target(target)
                         .build());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_TRANSACTIONAL_SYNCHRONIZED
+    // ---------------------------------------------------------------------------
+
+    private void detectTransactionalSynchronized(
+            ClassOrInterfaceDeclaration cls,
+            MethodDeclaration method,
+            String relativePath,
+            List<Finding> findings) {
+        if (!method.isSynchronized()
+                || method.isPrivate()
+                || method.isStatic()
+                || !(hasTransactionalAnnotation(method)
+                        || cls.getAnnotations().stream()
+                                .anyMatch(
+                                        a ->
+                                                "Transactional"
+                                                        .equals(
+                                                                simpleName(
+                                                                        a.getNameAsString()))))) {
+            return;
+        }
+        String target = cls.getNameAsString() + "#" + method.getNameAsString();
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_TRANSACTIONAL_SYNCHRONIZED,
+                                FindingConfidence.HIGH)
+                        .shortMessage(
+                                target
+                                        + " is synchronized and @Transactional — the lock is"
+                                        + " released before the transaction commits.")
+                        .whyBadPractice(
+                                "The transaction proxy wraps the method: it begins the transaction"
+                                    + " before the synchronized method is entered and commits after"
+                                    + " it returns. Another thread can acquire the lock in between"
+                                    + " and read the state the first thread has not committed yet.")
+                        .possibleImpact(
+                                "Concurrent calls still interleave their read-modify-write cycles,"
+                                        + " so updates are lost despite the lock.")
+                        .recommendation(
+                                "Serialize at the database instead — optimistic locking with"
+                                        + " @Version, a pessimistic lock (SELECT ... FOR UPDATE),"
+                                        + " or an atomic UPDATE statement — or take the lock in a"
+                                        + " caller that wraps the whole transaction.")
+                        .evidence(
+                                "Method "
+                                        + target
+                                        + " is declared synchronized and is transactional.")
+                        .source(relativePath, method.getBegin().map(p -> p.line).orElse(null))
+                        .target(target)
+                        .build());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_TX_EVENT_LISTENER_NO_TRANSACTION
+    // ---------------------------------------------------------------------------
+
+    /**
+     * Event types handled by a @TransactionalEventListener that does not opt into
+     * {@code fallbackExecution}: publishing them without a transaction skips the listener.
+     */
+    private Set<String> transactionalEventTypes(JavaSources sources) {
+        Set<String> types = new LinkedHashSet<>();
+        for (JavaSources.JavaFile file : sources.files()) {
+            if (file.compilationUnit() == null
+                    || !file.content().contains("TransactionalEventListener")) {
+                continue;
+            }
+            for (MethodDeclaration method :
+                    file.compilationUnit().findAll(MethodDeclaration.class)) {
+                AnnotationExpr listener =
+                        method.getAnnotationByName("TransactionalEventListener").orElse(null);
+                if (listener == null
+                        || listener.toString()
+                                .replaceAll("\\s", "")
+                                .contains("fallbackExecution=true")) {
+                    continue;
+                }
+                listener.findAll(ClassExpr.class)
+                        .forEach(
+                                classExpr -> types.add(simpleName(classExpr.getType().asString())));
+                if (method.getParameters().size() == 1) {
+                    types.add(rawType(method.getParameter(0).getType().asString()));
+                }
+            }
+        }
+        types.remove("Object");
+        types.remove("ApplicationEvent");
+        return types;
+    }
+
+    /**
+     * Names of methods invoked on another object from transactional code anywhere in the
+     * project. A publisher called like that may run inside the caller's transaction.
+     */
+    private Set<String> methodsCalledFromTransactions(JavaSources sources) {
+        Set<String> names = new LinkedHashSet<>();
+        for (JavaSources.JavaFile file : sources.files()) {
+            if (file.compilationUnit() == null) {
+                continue;
+            }
+            for (ClassOrInterfaceDeclaration cls :
+                    file.compilationUnit().findAll(ClassOrInterfaceDeclaration.class)) {
+                boolean classTransactional =
+                        cls.getAnnotations().stream()
+                                .anyMatch(
+                                        a ->
+                                                "Transactional"
+                                                        .equals(simpleName(a.getNameAsString())));
+                for (MethodDeclaration method : cls.getMethods()) {
+                    if (!classTransactional && !hasTransactionalAnnotation(method)) {
+                        continue;
+                    }
+                    method.findAll(MethodCallExpr.class).stream()
+                            .filter(
+                                    call ->
+                                            call.getScope().isPresent()
+                                                    && !call.getScope().get().isThisExpr())
+                            .forEach(call -> names.add(call.getNameAsString()));
+                }
+            }
+        }
+        return names;
+    }
+
+    private void detectTransactionalEventPublishedWithoutTransaction(
+            CompilationUnit cu,
+            String relativePath,
+            Set<String> eventTypes,
+            Set<String> calledInTransactions,
+            List<Finding> findings) {
+        for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
+            boolean classTransactional =
+                    cls.getAnnotations().stream()
+                            .anyMatch(a -> "Transactional".equals(simpleName(a.getNameAsString())));
+            if (classTransactional) {
+                continue;
+            }
+            Set<String> transactionalCallers = new LinkedHashSet<>();
+            for (MethodDeclaration method : cls.getMethods()) {
+                if (hasTransactionalAnnotation(method)) {
+                    method.findAll(MethodCallExpr.class).stream()
+                            .filter(
+                                    call ->
+                                            call.getScope().isEmpty()
+                                                    || call.getScope().get().isThisExpr())
+                            .forEach(call -> transactionalCallers.add(call.getNameAsString()));
+                }
+            }
+            for (MethodDeclaration method : cls.getMethods()) {
+                // A helper called from a @Transactional method of the same class runs inside that
+                // transaction, and one that transactional code elsewhere calls may as well.
+                if (hasTransactionalAnnotation(method)
+                        || transactionalCallers.contains(method.getNameAsString())
+                        || calledInTransactions.contains(method.getNameAsString())) {
+                    continue;
+                }
+                for (MethodCallExpr call : method.findAll(MethodCallExpr.class)) {
+                    if (!"publishEvent".equals(call.getNameAsString())
+                            || call.getArguments().size() != 1) {
+                        continue;
+                    }
+                    String eventType = eventType(call.getArgument(0), cls, method);
+                    if (eventType == null || !eventTypes.contains(eventType)) {
+                        continue;
+                    }
+                    String target = cls.getNameAsString() + "#" + method.getNameAsString();
+                    findings.add(
+                            FindingFactory.builder(
+                                            FindingRules.SPRING_TX_EVENT_LISTENER_NO_TRANSACTION,
+                                            FindingConfidence.MEDIUM)
+                                    .shortMessage(
+                                            target
+                                                    + " publishes "
+                                                    + eventType
+                                                    + " without a transaction — its"
+                                                    + " @TransactionalEventListener is skipped.")
+                                    .whyBadPractice(
+                                            "A @TransactionalEventListener runs in a phase of the"
+                                                + " publishing transaction (after commit by"
+                                                + " default). When no transaction is active, Spring"
+                                                + " skips it and only logs \"No transaction is"
+                                                + " active - skipping\" at debug level, unless the"
+                                                + " listener sets fallbackExecution = true.")
+                                    .possibleImpact(
+                                            "The reaction to the event (notification, projection"
+                                                    + " update, outbox write) silently never"
+                                                    + " happens.")
+                                    .recommendation(
+                                            "Publish the event inside a @Transactional method, or"
+                                                + " set fallbackExecution = true on the listener if"
+                                                + " it should also run without a transaction.")
+                                    .evidence(
+                                            "publishEvent(...) of "
+                                                    + eventType
+                                                    + " in "
+                                                    + target
+                                                    + ", which is not @Transactional; a"
+                                                    + " @TransactionalEventListener handles "
+                                                    + eventType
+                                                    + ".")
+                                    .limitations(
+                                            "Methods that transactional code elsewhere calls by"
+                                                    + " name are not reported; a transaction opened"
+                                                    + " by a caller the analyzer cannot see is"
+                                                    + " missed.")
+                                    .source(
+                                            relativePath,
+                                            call.getBegin().map(p -> p.line).orElse(null))
+                                    .target(target)
+                                    .build());
+                }
+            }
+        }
+    }
+
+    private static String eventType(
+            Expression argument, ClassOrInterfaceDeclaration cls, MethodDeclaration method) {
+        if (argument instanceof ObjectCreationExpr creation) {
+            return simpleName(creation.getType().getNameAsString());
+        }
+        if (argument instanceof NameExpr name) {
+            String variable = name.getNameAsString();
+            for (Parameter parameter : method.getParameters()) {
+                if (parameter.getNameAsString().equals(variable)) {
+                    return rawType(parameter.getType().asString());
+                }
+            }
+            for (VariableDeclarator declarator : method.findAll(VariableDeclarator.class)) {
+                if (declarator.getNameAsString().equals(variable)) {
+                    return rawType(declarator.getTypeAsString());
+                }
+            }
+            for (VariableDeclarator declarator : cls.findAll(VariableDeclarator.class)) {
+                if (declarator.getNameAsString().equals(variable)) {
+                    return rawType(declarator.getTypeAsString());
+                }
+            }
+        }
+        return null;
+    }
+
+    private static String rawType(String type) {
+        int generic = type.indexOf('<');
+        return simpleName(generic >= 0 ? type.substring(0, generic) : type);
     }
 
     // ---------------------------------------------------------------------------

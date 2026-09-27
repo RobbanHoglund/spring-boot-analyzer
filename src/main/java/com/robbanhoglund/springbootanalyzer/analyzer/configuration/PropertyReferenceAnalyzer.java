@@ -275,6 +275,8 @@ public class PropertyReferenceAnalyzer {
             String pairName = pair.getNameAsString();
             if (!pairName.equals("fixedDelayString")
                     && !pairName.equals("fixedRateString")
+                    && !pairName.equals("initialDelayString")
+                    && !pairName.equals("zone")
                     && !pairName.equals("cron")) {
                 continue;
             }

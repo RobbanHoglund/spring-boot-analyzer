@@ -6,6 +6,7 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingOccurrence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.HighlightRange;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.SourceLocation;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ApplicationProperty;
@@ -79,6 +80,12 @@ public class ConfigurationAnalyzer {
                             "management.metrics.tags.",
                             "org.springframework.boot.actuate.autoconfigure.metrics.MetricsProperties",
                             "Actuator metrics tag configured via management.metrics.tags.*",
+                            "java.lang.String"),
+                    new MapPrefixMetadata(
+                            "info.",
+                            "org.springframework.boot.actuate.info.EnvironmentInfoContributor",
+                            "Application information published under info.* (the info endpoint"
+                                    + " shows it when management.info.env.enabled=true)",
                             "java.lang.String"));
 
     private static final List<ThirdPartyPrefixMetadata> THIRD_PARTY_PREFIXES =
@@ -116,7 +123,8 @@ public class ConfigurationAnalyzer {
 
     public Result analyze(Path repositoryRoot, BuildInfo buildInfo) {
         SpringConfigurationMetadataCatalog.MetadataCatalog metadataCatalog =
-                springConfigurationMetadataCatalog.load(repositoryRoot);
+                springConfigurationMetadataCatalog.load(
+                        repositoryRoot, buildInfo == null ? null : buildInfo.springBootVersion());
         List<ConfigurationPropertiesClass> customConfigurationClasses =
                 configurationPropertiesClassAnalyzer.analyze(repositoryRoot);
         List<PropertyReference> propertyReferences =
@@ -339,7 +347,7 @@ public class ConfigurationAnalyzer {
             return metadataProperty.documentation();
         }
 
-        MapPrefixMetadata mapMetadata = mapMetadataFor(propertyName);
+        MapPrefixMetadata mapMetadata = mapMetadataFor(propertyName, metadataCatalog);
         if (mapMetadata != null) {
             return new PropertyDocumentation(
                     true,
@@ -347,8 +355,8 @@ public class ConfigurationAnalyzer {
                     mapMetadata.description(),
                     null,
                     mapMetadata.sourceType(),
-                    false,
-                    null,
+                    mapMetadata.deprecated(),
+                    mapMetadata.deprecationReason(),
                     List.of());
         }
 
@@ -428,7 +436,7 @@ public class ConfigurationAnalyzer {
             }
             return PropertyKind.SPRING_BOOT;
         }
-        if (mapMetadataFor(propertyName) != null) {
+        if (mapMetadataFor(propertyName, metadataCatalog) != null) {
             return PropertyKind.SPRING_BOOT_MAP_PROPERTY;
         }
         if (documentation.known() && isThirdPartySource(documentation.sourceType(), buildInfo)) {
@@ -473,7 +481,7 @@ public class ConfigurationAnalyzer {
             }
             return PropertyKind.SPRING_BOOT;
         }
-        if (mapMetadataFor(propertyName) != null) {
+        if (mapMetadataFor(propertyName, metadataCatalog) != null) {
             return PropertyKind.SPRING_BOOT_MAP_PROPERTY;
         }
         if (documentation.known() && isThirdPartySource(documentation.sourceType(), buildInfo)) {
@@ -703,32 +711,54 @@ public class ConfigurationAnalyzer {
         for (ApplicationProperty property : configuredProperties) {
             if (property.documentation().deprecated()
                     && deprecatedPropertyNames.add(property.name())) {
-                findings.add(
+                String reason = property.documentation().deprecationReason();
+                boolean unsupported =
+                        SpringConfigurationMetadataCatalog.isUnsupported(property.documentation());
+                FindingFactory.Builder builder =
                         FindingFactory.builder(
-                                        FindingRules.SPRING_DEPRECATED_CONFIGURATION_PROPERTY,
-                                        FindingConfidence.HIGH)
-                                .shortMessage(
-                                        "Deprecated configuration property is used: "
-                                                + property.name())
-                                .whyBadPractice(
-                                        "Spring Boot's configuration metadata marks this property"
+                                FindingRules.SPRING_DEPRECATED_CONFIGURATION_PROPERTY,
+                                FindingConfidence.HIGH);
+                if (unsupported) {
+                    builder.shortMessage(
+                                    property.name()
+                                            + " is no longer supported by Spring Boot — the"
+                                            + " setting is ignored.")
+                            .whyBadPractice(
+                                    "Spring Boot's configuration metadata lists this key at"
+                                        + " deprecation level error: it is kept only so tools can"
+                                        + " point to the successor. Spring Boot no longer binds it,"
+                                        + " and nothing reports that at runtime.")
+                            .possibleImpact(
+                                    "The application already runs with the default instead of"
+                                            + " the configured value.")
+                            .recommendation(
+                                    "Move the value to the successor named in the metadata"
+                                            + " and check that it still has the same meaning.");
+                } else {
+                    builder.shortMessage(
+                                    "Deprecated configuration property is used: " + property.name())
+                            .whyBadPractice(
+                                    "Spring Boot's configuration metadata marks this property"
                                             + " as deprecated. Deprecated properties are removed in"
                                             + " a later release, and a removed property is ignored"
                                             + " silently rather than reported.")
-                                .possibleImpact(
-                                        "After an upgrade the setting stops taking effect without"
+                            .possibleImpact(
+                                    "After an upgrade the setting stops taking effect without"
                                             + " any error, so the application silently falls back"
                                             + " to the default behaviour.")
-                                .recommendation(
-                                        "Replace the property with its documented successor before"
-                                                + " upgrading Spring Boot; check the metadata"
-                                                + " replacement hint or the release notes.")
-                                .evidence(
+                            .recommendation(
+                                    "Replace the property with its documented successor before"
+                                            + " upgrading Spring Boot; check the metadata"
+                                            + " replacement hint or the release notes.");
+                }
+                findings.add(
+                        builder.evidence(
                                         property.name()
                                                 + " is marked deprecated in the configuration"
                                                 + " metadata and is set in "
                                                 + property.sourceFile()
-                                                + ".")
+                                                + "."
+                                                + (reason == null ? "" : " " + reason))
                                 .source(property.sourceFile(), property.line())
                                 .target(property.name())
                                 .build());
@@ -773,16 +803,29 @@ public class ConfigurationAnalyzer {
             }
         }
 
-        Map<String, List<PropertyReference>> missingReferencesByProperty = new LinkedHashMap<>();
+        // ${key:default}, Environment#getProperty(key) and @ConditionalOnProperty all handle an
+        // absent key by design; only a reference without a fallback breaks. Once one reference
+        // breaks, every reference to the key is listed, failing ones first.
+        Map<String, List<PropertyReference>> referencesByProperty = new LinkedHashMap<>();
         for (PropertyReference reference : referencedOnly) {
-            if (missingReferencedProperties.add(reference.propertyName())) {
-                missingReferencesByProperty.put(reference.propertyName(), new ArrayList<>());
+            referencesByProperty
+                    .computeIfAbsent(reference.propertyName(), name -> new ArrayList<>())
+                    .add(reference);
+        }
+        Map<String, List<PropertyReference>> missingReferencesByProperty = new LinkedHashMap<>();
+        for (Map.Entry<String, List<PropertyReference>> entry : referencesByProperty.entrySet()) {
+            List<PropertyReference> failing =
+                    entry.getValue().stream()
+                            .filter(ConfigurationAnalyzer::failsWithoutConfiguration)
+                            .toList();
+            if (failing.isEmpty() || !missingReferencedProperties.add(entry.getKey())) {
+                continue;
             }
-            List<PropertyReference> bucket =
-                    missingReferencesByProperty.get(reference.propertyName());
-            if (bucket != null) {
-                bucket.add(reference);
-            }
+            List<PropertyReference> ordered = new ArrayList<>(failing);
+            entry.getValue().stream()
+                    .filter(reference -> !failing.contains(reference))
+                    .forEach(ordered::add);
+            missingReferencesByProperty.put(entry.getKey(), ordered);
         }
 
         for (Map.Entry<String, List<PropertyReference>> entry :
@@ -811,18 +854,20 @@ public class ConfigurationAnalyzer {
                                     FindingRules.CONFIG_CODE_REFERENCE_MISSING,
                                     FindingConfidence.MEDIUM)
                             .shortMessage(
-                                    "Property is referenced in code but no matching configured"
-                                            + " property was found in scanned files: "
+                                    "Property is referenced in code without a default, and no"
+                                            + " configuration file sets it: "
                                             + propertyName)
                             .whyBadPractice(
-                                    "A property that is only referenced in code can silently fall"
-                                            + " back to defaults, null-like behavior, or"
-                                            + " environment-only wiring that is hard to see in code"
-                                            + " review.")
+                                    "A placeholder without a default (@Value(\"${"
+                                            + propertyName
+                                            + "}\"), a @Scheduled attribute or"
+                                            + " Environment#getRequiredProperty) must be resolved"
+                                            + " when the bean is created. If no property source"
+                                            + " provides the key, the context fails to start.")
                             .possibleImpact(
-                                    "Behavior may differ between local development, CI, and"
-                                            + " production depending on environment variables,"
-                                            + " deployment secrets, or missing profile files.")
+                                    "Startup fails in every environment that does not supply the"
+                                            + " key through an environment variable or deployment"
+                                            + " secret — including local runs and test contexts.")
                             .recommendation(
                                     "Either configure the property explicitly, document that it"
                                         + " must come from the environment, or remove the unused"
@@ -894,6 +939,39 @@ public class ConfigurationAnalyzer {
 
     /** Mirrors the prod-like profile set used by {@code ConfigurationFindingAnalyzer}. */
     private static final Set<String> PROD_LIKE_PROFILES = Set.of("prod", "production", "staging");
+
+    private static boolean failsWithoutConfiguration(PropertyReference reference) {
+        if (reference.required()) {
+            return true;
+        }
+        String type = reference.referenceType();
+        return ("@Value".equals(type) || "@Scheduled".equals(type))
+                && reference.defaultValue() == null;
+    }
+
+    private static final Set<String> NON_PRODUCTION_PROFILES =
+            Set.of(
+                    "test",
+                    "tests",
+                    "it",
+                    "ci",
+                    "e2e",
+                    "integration-test",
+                    "local",
+                    "dev",
+                    "development");
+
+    /** Local, development or test configuration: a committed credential there is a lesser risk. */
+    private static boolean nonProductionConfiguration(ApplicationProperty property) {
+        String profile =
+                property.profile() == null ? "" : property.profile().toLowerCase(Locale.ROOT);
+        String sourceFile = property.sourceFile() == null ? "" : property.sourceFile();
+        return NON_PRODUCTION_PROFILES.contains(profile)
+                || profile.startsWith("local-")
+                || profile.startsWith("dev-")
+                || sourceFile.startsWith("src/test/")
+                || sourceFile.contains("/src/test/");
+    }
 
     private void addRiskFinding(
             ApplicationProperty property,
@@ -990,6 +1068,10 @@ public class ConfigurationAnalyzer {
             findings.add(
                     FindingFactory.builder(
                                     FindingRules.SPRING_SECRET_LITERAL, FindingConfidence.HIGH)
+                            .severity(
+                                    nonProductionConfiguration(property)
+                                            ? FindingSeverity.INFO
+                                            : FindingSeverity.WARNING)
                             .shortMessage(
                                     literalFallback
                                             ? "Sensitive configuration property falls back to a"
@@ -1037,7 +1119,8 @@ public class ConfigurationAnalyzer {
                             .limitations(
                                     "Static analysis cannot prove whether the value is real,"
                                             + " already rotated, or only used in a private"
-                                            + " environment.")
+                                            + " environment. Reported as INFO in local,"
+                                            + " development and test configuration.")
                             .source(property.sourceFile(), property.line())
                             .target(name)
                             .build());
@@ -1258,11 +1341,34 @@ public class ConfigurationAnalyzer {
         }
     }
 
-    private MapPrefixMetadata mapMetadataFor(String propertyName) {
-        return SPRING_BOOT_MAP_PREFIXES.stream()
-                .filter(metadata -> propertyName.startsWith(metadata.prefix()))
-                .findFirst()
-                .orElse(null);
+    /**
+     * Resolves an entry of a map-valued property: first the hand-maintained pass-through prefixes,
+     * then any property whose metadata type is a {@code java.util.Map}
+     * ({@code logging.structured.json.add.*}, {@code management.metrics.distribution.*}, ...).
+     */
+    private MapPrefixMetadata mapMetadataFor(
+            String propertyName,
+            SpringConfigurationMetadataCatalog.MetadataCatalog metadataCatalog) {
+        MapPrefixMetadata known =
+                SPRING_BOOT_MAP_PREFIXES.stream()
+                        .filter(metadata -> propertyName.startsWith(metadata.prefix()))
+                        .findFirst()
+                        .orElse(null);
+        if (known != null || metadataCatalog == null) {
+            return known;
+        }
+        SpringConfigurationMetadataCatalog.MetadataProperty owner =
+                metadataCatalog.findMapOwner(propertyName);
+        if (owner == null) {
+            return null;
+        }
+        return new MapPrefixMetadata(
+                owner.name() + ".",
+                owner.documentation().sourceType(),
+                "Entry of the map property " + owner.name() + ".",
+                owner.documentation().type(),
+                owner.documentation().deprecated(),
+                owner.documentation().deprecationReason());
     }
 
     private ThirdPartyPrefixMetadata thirdPartyMetadataFor(
@@ -1298,7 +1404,17 @@ public class ConfigurationAnalyzer {
             ConfigurationPropertiesClass sourceClass, CustomPropertyDefinition property) {}
 
     private record MapPrefixMetadata(
-            String prefix, String sourceType, String description, String type) {}
+            String prefix,
+            String sourceType,
+            String description,
+            String type,
+            boolean deprecated,
+            String deprecationReason) {
+
+        MapPrefixMetadata(String prefix, String sourceType, String description, String type) {
+            this(prefix, sourceType, description, type, false, null);
+        }
+    }
 
     private record ThirdPartyPrefixMetadata(String prefix, String providerDependencyMarker) {
         String provider() {

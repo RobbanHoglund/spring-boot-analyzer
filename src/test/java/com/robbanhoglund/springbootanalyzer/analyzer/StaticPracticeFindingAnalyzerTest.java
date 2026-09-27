@@ -333,7 +333,7 @@ record CreateRequest(@NotBlank String symbol, int quantity) {
                                                 .ruleId()
                                                 .equals(finding.ruleId())
                                         && finding.severity() != null
-                                        && finding.severity().name().equals("INFO")
+                                        && finding.severity().name().equals("WARNING")
                                         && finding.evidence() != null
                                         && finding.evidence().contains("CreateRequest"));
         assertThat(findings)
@@ -1388,6 +1388,8 @@ class PriceRefreshJob {
                 """
                 package com.example.demo;
 
+                import jakarta.validation.constraints.NotBlank;
+
                 class OrderRepository {
                     void save(Object value) {
                     }
@@ -1398,7 +1400,7 @@ class PriceRefreshJob {
                     }
                 }
 
-                record CreateOrderRequest(String symbol, int quantity) {
+                record CreateOrderRequest(@NotBlank String symbol, int quantity) {
                 }
                 """);
     }
@@ -3205,7 +3207,7 @@ class SecurityConfig {
                                 FindingRules.SPRING_CONFIGURATION_PROPERTIES_NOT_VALIDATED
                                                 .ruleId()
                                                 .equals(finding.ruleId())
-                                        && finding.severity() == FindingSeverity.INFO
+                                        && finding.severity() == FindingSeverity.WARNING
                                         && "AppProperties".equals(finding.target())
                                         && finding.primaryLocation() != null);
     }
@@ -3485,7 +3487,7 @@ class SecurityConfig {
                     private final RestTemplate rest = new RestTemplate();
 
                     void charge() {
-                        rest.postForObject("http://payment.internal/charge", null, String.class);
+                        rest.postForObject("http://payments.example.com/charge", null, String.class);
                     }
                 }
                 """);
@@ -4820,6 +4822,18 @@ interface InventoryClient {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
         Path sourceRoot =
                 Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("CreateOrderRequest.java"),
+                """
+                package com.example.demo;
+
+                import jakarta.validation.constraints.Positive;
+
+                public class CreateOrderRequest {
+                    @Positive
+                    private int quantity;
+                }
+                """);
         Files.writeString(
                 sourceRoot.resolve("OrderController.java"),
                 """

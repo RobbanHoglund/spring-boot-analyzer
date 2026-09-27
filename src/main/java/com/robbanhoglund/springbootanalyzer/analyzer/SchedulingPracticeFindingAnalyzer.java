@@ -5,6 +5,7 @@ import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.ThisExpr;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
@@ -96,6 +97,11 @@ public class SchedulingPracticeFindingAnalyzer {
         String retryUsagePath = null;
         Integer retryUsageLine = null;
         String retryUsageTarget = null;
+        // Spring Framework 7's own @Retryable/@ConcurrencyLimit need @EnableResilientMethods.
+        boolean resilientMethodsEnabled = false;
+        String resilienceUsagePath = null;
+        Integer resilienceUsageLine = null;
+        String resilienceUsageTarget = null;
 
         for (JavaSources.JavaFile file : sources.files()) {
             CompilationUnit cu = file.compilationUnit();
@@ -105,6 +111,12 @@ public class SchedulingPracticeFindingAnalyzer {
             // Guard the spring-retry rule on the import to avoid clashing with same-named
             // annotations from other libraries (resilience4j uses @Retry, so overlap is rare).
             boolean springRetryImported = file.content().contains("org.springframework.retry");
+            boolean resilienceImported =
+                    file.content().contains("org.springframework.resilience.annotation");
+            if (file.content().contains("RetryAnnotationBeanPostProcessor")
+                    || file.content().contains("ConcurrencyLimitBeanPostProcessor")) {
+                resilientMethodsEnabled = true;
+            }
             for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
                 if (hasAnnotation(cls.getAnnotations(), "EnableScheduling")) {
                     enableScheduling = true;
@@ -114,6 +126,9 @@ public class SchedulingPracticeFindingAnalyzer {
                 }
                 if (hasAnnotation(cls.getAnnotations(), "EnableRetry")) {
                     enableRetry = true;
+                }
+                if (hasAnnotation(cls.getAnnotations(), "EnableResilientMethods")) {
+                    resilientMethodsEnabled = true;
                 }
                 if (retryUsageTarget == null
                         && springRetryImported
@@ -164,6 +179,22 @@ public class SchedulingPracticeFindingAnalyzer {
                         retryUsageLine = method.getBegin().map(p -> p.line).orElse(null);
                         retryUsagePath = file.relativePath();
                     }
+                    if (resilienceUsageTarget == null
+                            && resilienceImported
+                            && (hasAnnotation(method.getAnnotations(), "Retryable")
+                                    || hasAnnotation(
+                                            method.getAnnotations(), "ConcurrencyLimit"))) {
+                        resilienceUsageTarget =
+                                cls.getNameAsString() + "#" + method.getNameAsString();
+                        resilienceUsageLine = method.getBegin().map(p -> p.line).orElse(null);
+                        resilienceUsagePath = file.relativePath();
+                    }
+                    if (hasAnnotation(method.getAnnotations(), "EventListener")
+                            || hasAnnotation(
+                                    method.getAnnotations(), "TransactionalEventListener")) {
+                        detectEventListenerInvalidSignature(
+                                cls, method, file.relativePath(), findings);
+                    }
                     detectAsyncSelfInvocation(
                             cls, method, asyncMethodNames, file.relativePath(), findings);
                 }
@@ -181,6 +212,16 @@ public class SchedulingPracticeFindingAnalyzer {
         if (retryUsageTarget != null && !enableRetry) {
             addRetryableWithoutEnableRetryFinding(
                     retryUsagePath, retryUsageLine, retryUsageTarget, findings);
+        }
+        if (resilienceUsageTarget != null && !resilientMethodsEnabled) {
+            addResilientMethodsNotEnabledFinding(
+                    resilienceUsagePath, resilienceUsageLine, resilienceUsageTarget, findings);
+        }
+        for (JavaSources.JavaFile file : sources.files()) {
+            if (file.compilationUnit() != null) {
+                detectExecutorMaxPoolIgnored(
+                        file.compilationUnit(), file.relativePath(), file.content(), findings);
+            }
         }
         return findings;
     }
@@ -228,6 +269,247 @@ public class SchedulingPracticeFindingAnalyzer {
                                         + " meta-annotation, this finding is a false positive.")
                         .source(relativePath, line)
                         .target(target)
+                        .build());
+    }
+
+    private void addResilientMethodsNotEnabledFinding(
+            String relativePath, Integer line, String target, List<Finding> findings) {
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_RETRYABLE_WITHOUT_ENABLE_RETRY,
+                                FindingConfidence.MEDIUM)
+                        .shortMessage(
+                                "Spring Framework's @Retryable/@ConcurrencyLimit is used (first"
+                                        + " seen on "
+                                        + target
+                                        + ") but @EnableResilientMethods is missing — the"
+                                        + " annotations have no effect.")
+                        .whyBadPractice(
+                                "The resilience annotations of Spring Framework 7"
+                                    + " (org.springframework.resilience.annotation) are processed"
+                                    + " by post-processors that @EnableResilientMethods registers."
+                                    + " Spring Boot does not register them, so without the"
+                                    + " annotation a @Retryable method runs exactly once and"
+                                    + " @ConcurrencyLimit limits nothing.")
+                        .possibleImpact(
+                                "The retries and concurrency limits the code visibly declares do"
+                                        + " not exist; transient failures surface directly and"
+                                        + " protected resources can be overloaded.")
+                        .recommendation(
+                                "Add @EnableResilientMethods to a @Configuration class, and verify"
+                                        + " the behaviour with a test that forces a transient"
+                                        + " failure.")
+                        .evidence(
+                                "@Retryable/@ConcurrencyLimit from"
+                                    + " org.springframework.resilience.annotation is used (first"
+                                    + " seen on "
+                                        + target
+                                        + " in "
+                                        + relativePath
+                                        + ") but no @EnableResilientMethods was found.")
+                        .limitations(
+                                "Post-processors registered as explicit beans are recognized by"
+                                        + " name; enabling through an imported library"
+                                        + " configuration is not visible.")
+                        .source(relativePath, line)
+                        .target(target)
+                        .build());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_EVENT_LISTENER_INVALID_SIGNATURE
+    // ---------------------------------------------------------------------------
+
+    private void detectEventListenerInvalidSignature(
+            ClassOrInterfaceDeclaration cls,
+            MethodDeclaration method,
+            String relativePath,
+            List<Finding> findings) {
+        AnnotationExpr listener =
+                method.getAnnotationByName("EventListener")
+                        .or(() -> method.getAnnotationByName("TransactionalEventListener"))
+                        .orElse(null);
+        if (listener == null) {
+            return;
+        }
+        int parameters = method.getParameters().size();
+        boolean namesEventTypes =
+                listener.isSingleMemberAnnotationExpr()
+                        || (listener.isNormalAnnotationExpr()
+                                && listener.asNormalAnnotationExpr().getPairs().stream()
+                                        .anyMatch(
+                                                pair ->
+                                                        "classes".equals(pair.getNameAsString())
+                                                                || "value"
+                                                                        .equals(
+                                                                                pair
+                                                                                        .getNameAsString())));
+        String problem;
+        if (parameters > 1) {
+            problem = "declares " + parameters + " parameters";
+        } else if (parameters == 0 && !namesEventTypes) {
+            problem = "declares no parameter and names no event type";
+        } else {
+            return;
+        }
+        String annotation = "@" + simpleName(listener.getNameAsString());
+        String target = cls.getNameAsString() + "#" + method.getNameAsString();
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_EVENT_LISTENER_INVALID_SIGNATURE,
+                                FindingConfidence.HIGH)
+                        .shortMessage(
+                                annotation
+                                        + " method "
+                                        + target
+                                        + " "
+                                        + problem
+                                        + " — startup fails.")
+                        .whyBadPractice(
+                                "An event listener method receives at most one argument, the event."
+                                    + " Spring throws IllegalStateException while registering the"
+                                    + " listener: \"Maximum one parameter is allowed for event"
+                                    + " listener method\", or \"Event parameter is mandatory\" when"
+                                    + " neither a parameter nor classes names the event type.")
+                        .possibleImpact("The application context fails to start.")
+                        .recommendation(
+                                parameters > 1
+                                        ? "Take the event as the only parameter and read the other"
+                                                + " values from it, or inject collaborators into"
+                                                + " the bean."
+                                        : "Add the event as a parameter, or name it with "
+                                                + annotation
+                                                + "(MyEvent.class) when the method does not need"
+                                                + " it.")
+                        .evidence(annotation + " on " + target + " " + problem + ".")
+                        .source(relativePath, method.getBegin().map(p -> p.line).orElse(null))
+                        .target(target)
+                        .build());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_TASK_EXECUTOR_MAX_POOL_IGNORED
+    // ---------------------------------------------------------------------------
+
+    private static final Set<String> UNBOUNDED_QUEUE_TYPES =
+            Set.of(
+                    "LinkedBlockingQueue",
+                    "LinkedBlockingDeque",
+                    "LinkedTransferQueue",
+                    "PriorityBlockingQueue");
+
+    private void detectExecutorMaxPoolIgnored(
+            CompilationUnit cu, String relativePath, String content, List<Finding> findings) {
+        for (MethodDeclaration method : cu.findAll(MethodDeclaration.class)) {
+            List<MethodCallExpr> calls = method.findAll(MethodCallExpr.class);
+            // ThreadPoolTaskExecutor: setMaxPoolSize without setQueueCapacity on the same receiver;
+            // ThreadPoolTaskExecutorBuilder: maxPoolSize(..) without queueCapacity(..).
+            for (MethodCallExpr call : calls) {
+                String name = call.getNameAsString();
+                boolean setter = "setMaxPoolSize".equals(name);
+                boolean builder =
+                        "maxPoolSize".equals(name)
+                                && content.contains("ThreadPoolTaskExecutorBuilder");
+                if (!setter && !builder) {
+                    continue;
+                }
+                String receiver = setter ? call.getScope().map(Object::toString).orElse("") : null;
+                boolean queueConfigured =
+                        calls.stream()
+                                .anyMatch(
+                                        other ->
+                                                setter
+                                                        ? "setQueueCapacity"
+                                                                        .equals(
+                                                                                other
+                                                                                        .getNameAsString())
+                                                                && other.getScope()
+                                                                        .map(Object::toString)
+                                                                        .orElse("")
+                                                                        .equals(receiver)
+                                                        : "queueCapacity"
+                                                                .equals(other.getNameAsString()));
+                // A core size equal to the maximum loses nothing when the queue never fills.
+                String maximum =
+                        call.getArguments().isEmpty() ? "" : call.getArgument(0).toString();
+                boolean coreEqualsMax =
+                        calls.stream()
+                                .anyMatch(
+                                        other ->
+                                                (setter ? "setCorePoolSize" : "corePoolSize")
+                                                                .equals(other.getNameAsString())
+                                                        && other.getArguments().size() == 1
+                                                        && other.getArgument(0)
+                                                                .toString()
+                                                                .equals(maximum));
+                if (queueConfigured
+                        || coreEqualsMax
+                        || (setter && !content.contains("ThreadPoolTaskExecutor"))) {
+                    continue;
+                }
+                addMaxPoolIgnored(
+                        relativePath,
+                        call,
+                        (setter ? "setMaxPoolSize" : "maxPoolSize")
+                                + "(...) without a queue capacity",
+                        findings);
+                break;
+            }
+        }
+        // new ThreadPoolExecutor(core, max, keepAlive, unit, new LinkedBlockingQueue<>())
+        for (ObjectCreationExpr creation : cu.findAll(ObjectCreationExpr.class)) {
+            if (!"ThreadPoolExecutor".equals(simpleName(creation.getType().getNameAsString()))
+                    || creation.getArguments().size() < 5
+                    || creation.getArgument(0).toString().equals(creation.getArgument(1).toString())
+                    || !(creation.getArgument(4) instanceof ObjectCreationExpr queue)
+                    || !UNBOUNDED_QUEUE_TYPES.contains(
+                            simpleName(queue.getType().getNameAsString()))
+                    || !queue.getArguments().isEmpty()) {
+                continue;
+            }
+            addMaxPoolIgnored(
+                    relativePath,
+                    creation,
+                    "new ThreadPoolExecutor(core, max, ..., new "
+                            + simpleName(queue.getType().getNameAsString())
+                            + "<>())",
+                    findings);
+        }
+    }
+
+    private void addMaxPoolIgnored(
+            String relativePath,
+            com.github.javaparser.ast.Node node,
+            String shape,
+            List<Finding> findings) {
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_TASK_EXECUTOR_MAX_POOL_IGNORED,
+                                FindingConfidence.HIGH)
+                        .shortMessage(
+                                shape
+                                        + " in "
+                                        + relativePath
+                                        + " — the pool never grows beyond its core size.")
+                        .whyBadPractice(
+                                "A ThreadPoolExecutor adds threads beyond the core size only when"
+                                    + " its queue is full. ThreadPoolTaskExecutor's default queue"
+                                    + " capacity is Integer.MAX_VALUE and a LinkedBlockingQueue"
+                                    + " without a capacity is unbounded, so the queue never fills"
+                                    + " and the maximum pool size is never used.")
+                        .possibleImpact(
+                                "Under load, tasks wait behind the core threads instead of running"
+                                        + " in parallel, and the queue can grow without limit.")
+                        .recommendation(
+                                "Give the queue a bounded capacity (setQueueCapacity(...) or new"
+                                        + " LinkedBlockingQueue<>(n)) and decide what happens when"
+                                        + " it is full, or size the core pool for the load"
+                                        + " instead.")
+                        .evidence(shape + " found in " + relativePath + ".")
+                        .limitations(
+                                "A queue capacity set in another method or class for the same"
+                                        + " executor is not followed.")
+                        .source(relativePath, node.getBegin().map(p -> p.line).orElse(null))
                         .build());
     }
 

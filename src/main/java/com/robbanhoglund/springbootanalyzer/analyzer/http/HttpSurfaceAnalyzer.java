@@ -480,6 +480,16 @@ public class HttpSurfaceAnalyzer {
                         "execute")
                 .contains(methodName)) {
             Optional<String> url = extractUrlArgument(callExpr, 0, valueFieldIndex);
+            // execute(...) and exchange(...) are also JDBC Statement, JdbcTemplate, executor and
+            // TransactionTemplate methods; only a RestTemplate-like receiver or a URL-shaped
+            // argument makes the call an outbound HTTP request.
+            boolean ambiguousName = "execute".equals(methodName) || "exchange".equals(methodName);
+            if (url.isPresent()
+                    && ambiguousName
+                    && !looksLikeRestTemplateReceiver(callExpr)
+                    && !looksLikeUrl(url.get())) {
+                url = Optional.empty();
+            }
             if (url.isPresent()) {
                 return Optional.of(
                         outboundEndpointFor(
@@ -939,8 +949,9 @@ public class HttpSurfaceAnalyzer {
                                             + " network.")
                             .evidence(
                                     "Configured URLs and outbound endpoint templates included"
-                                            + " external plain HTTP addresses outside localhost and"
-                                            + " test-only configuration.")
+                                            + " external plain HTTP addresses outside localhost,"
+                                            + " private-network hostnames and test-only"
+                                            + " configuration.")
                             .limitations(
                                     "Static analysis cannot prove the full network topology or"
                                             + " whether an internal transport layer adds encryption"
@@ -1085,9 +1096,25 @@ public class HttpSurfaceAnalyzer {
         return matcher.replaceAll("$1$2=[redacted]");
     }
 
+    /** The authority's host of scheme://[userinfo@]host[:port]..., bracketed IPv6 included. */
+    private static final Pattern URL_HOST =
+            Pattern.compile("(?i)^[a-z][a-z0-9+.-]*://(?:[^@/?#]*@)?(\\[[^\\]]*]|[^:/?#]+)");
+
+    /**
+     * The host when {@link URI} cannot parse the value: a placeholder port such as
+     * http://localhost:${server.port} or a pattern such as http://localhost:[*].
+     */
+    private static String hostByPattern(String value) {
+        Matcher matcher = URL_HOST.matcher(value);
+        return matcher.find() ? matcher.group(1) : null;
+    }
+
     private String hostForValue(String propertyName, String value, UrlKind kind) {
-        if (value == null || value.isBlank() || value.contains("${")) {
+        if (value == null || value.isBlank()) {
             return null;
+        }
+        if (value.contains("${")) {
+            return hostByPattern(value);
         }
         String normalizedName = propertyName == null ? "" : propertyName.toLowerCase(Locale.ROOT);
         if (kind == UrlKind.MAIL_HOST
@@ -1106,9 +1133,9 @@ public class HttpSurfaceAnalyzer {
                 return null;
             }
             URI uri = new URI(value);
-            return uri.getHost();
+            return uri.getHost() != null ? uri.getHost() : hostByPattern(value);
         } catch (URISyntaxException ignored) {
-            return null;
+            return hostByPattern(value);
         }
     }
 
@@ -1428,10 +1455,47 @@ public class HttpSurfaceAnalyzer {
         return SENSITIVE_NAME_MARKERS.stream().anyMatch(normalizedName::contains);
     }
 
+    private static boolean looksLikeRestTemplateReceiver(MethodCallExpr callExpr) {
+        String receiver =
+                callExpr.getScope().map(Object::toString).orElse("").toLowerCase(Locale.ROOT);
+        if (receiver.isEmpty()) {
+            return false;
+        }
+        boolean nonHttpTemplate =
+                receiver.contains("jdbc")
+                        || receiver.contains("transaction")
+                        || receiver.contains("statement")
+                        || receiver.contains("executor")
+                        || receiver.contains("jms")
+                        || receiver.contains("rabbit")
+                        || receiver.contains("kafka")
+                        || receiver.contains("redis")
+                        || receiver.contains("mongo")
+                        || receiver.contains("retry");
+        return !nonHttpTemplate
+                && (receiver.contains("rest")
+                        || receiver.contains("template")
+                        || receiver.contains("http"));
+    }
+
+    private static boolean looksLikeUrl(String value) {
+        String normalized = value.strip().toLowerCase(Locale.ROOT);
+        return normalized.startsWith("http://")
+                || normalized.startsWith("https://")
+                || normalized.startsWith("/")
+                || normalized.startsWith("{")
+                || normalized.startsWith("${");
+    }
+
     private boolean isReportablePlainHttpConfiguredUrl(ConfiguredUrl configuredUrl) {
         if (configuredUrl == null
                 || configuredUrl.value() == null
                 || !configuredUrl.value().startsWith("http://")) {
+            return false;
+        }
+        // A host injected from a placeholder (http://${PRIVATE_DOMAIN}:8080) cannot be judged
+        // statically and is typically a platform's private-network name.
+        if (configuredUrl.value().startsWith("http://${")) {
             return false;
         }
         if (isLocalHost(configuredUrl.host())) {
@@ -1457,14 +1521,44 @@ public class HttpSurfaceAnalyzer {
                 && !isLocalHost(endpoint.host());
     }
 
+    private static final Pattern PRIVATE_IPV4 =
+            Pattern.compile(
+                    "^(10\\.|127\\.|192\\.168\\.|169\\.254\\.|172\\.(1[6-9]|2\\d|3[01])\\.)");
+
+    /** Suffixes of names that only resolve inside a private network or on the local machine. */
+    private static final List<String> INTERNAL_HOST_SUFFIXES =
+            List.of(
+                    ".internal",
+                    ".local",
+                    ".localhost",
+                    ".localdomain",
+                    ".svc",
+                    ".cluster.local",
+                    ".lan",
+                    ".intranet",
+                    ".home.arpa");
+
+    /**
+     * Whether a host is the local machine or a private-network name: loopback, private IPv4
+     * ranges, internal DNS suffixes (Kubernetes, Docker, Railway, mDNS), single-label service
+     * names such as {@code kafka} or {@code backend}, or a host taken from a placeholder.
+     */
     private boolean isLocalHost(String host) {
         if (host == null || host.isBlank()) {
             return false;
         }
         String normalized = host.toLowerCase(Locale.ROOT);
+        if (normalized.startsWith("[") && normalized.endsWith("]")) {
+            normalized = normalized.substring(1, normalized.length() - 1);
+        }
         return normalized.equals("localhost")
                 || normalized.equals("127.0.0.1")
-                || normalized.equals("::1");
+                || normalized.equals("::1")
+                || normalized.equals("0.0.0.0")
+                || normalized.contains("${")
+                || PRIVATE_IPV4.matcher(normalized).find()
+                || INTERNAL_HOST_SUFFIXES.stream().anyMatch(normalized::endsWith)
+                || (!normalized.contains(".") && !normalized.contains(":"));
     }
 
     private boolean isSafeLiteralUrl(String value) {

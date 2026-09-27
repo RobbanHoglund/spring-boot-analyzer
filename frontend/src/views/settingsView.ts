@@ -820,7 +820,7 @@ export function categoryDisplayName(category: string): string {
     OBSERVABILITY: 'Observability',
     CACHING: 'Caching',
     TESTING: 'Testing practice',
-    MIGRATION: 'Spring Boot 3 migration',
+    MIGRATION: 'Spring Boot migration',
     CONDITIONAL_BEAN: 'Conditional beans',
     STARTUP: 'Startup',
     ACTUATOR: 'Actuator',

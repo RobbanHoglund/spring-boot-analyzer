@@ -4,11 +4,13 @@ import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRule;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.RuntimeStackAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
@@ -94,6 +96,30 @@ public class MigrationPracticeFindingAnalyzer {
             analyzeSourceFile(
                     file.compilationUnit(), file.relativePath(), springBoot3Plus, findings);
         }
+        return findings;
+    }
+
+    /**
+     * Analyzes the shared source tree together with the build and configuration context that the
+     * version-specific upgrade checks need.
+     *
+     * @param sources the source tree parsed once for this analysis
+     * @param runtimeStackAnalysis the detected runtime stacks
+     * @param buildInfo build metadata with the resolved Spring Boot version; may be null
+     * @param configurationAnalysis parsed configuration; may be null
+     * @return all detected migration findings; never null, may be empty
+     */
+    public List<Finding> analyze(
+            JavaSources sources,
+            RuntimeStackAnalysis runtimeStackAnalysis,
+            BuildInfo buildInfo,
+            ConfigurationAnalysis configurationAnalysis) {
+        List<Finding> findings = new ArrayList<>(analyze(sources, runtimeStackAnalysis));
+        findings.addAll(
+                BootUpgradeChecks.analyze(
+                        sources,
+                        buildInfo == null ? null : buildInfo.springBootVersion(),
+                        configurationAnalysis));
         return findings;
     }
 

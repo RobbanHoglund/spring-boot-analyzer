@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.robbanhoglund.springbootanalyzer.analyzer.BuildFileAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.CachingPracticeFindingAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.ConfigurationFindingAnalyzer;
+import com.robbanhoglund.springbootanalyzer.analyzer.ContainerPracticeFindingAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.JavaSourceAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.MigrationPracticeFindingAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.ObservabilityFindingAnalyzer;
@@ -16,6 +17,7 @@ import com.robbanhoglund.springbootanalyzer.analyzer.SpringBootProjectAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.StaticPracticeFindingAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.TestingPracticeFindingAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.TransactionPracticeFindingAnalyzer;
+import com.robbanhoglund.springbootanalyzer.analyzer.WebHandlerFindingAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.configuration.ConfigurationAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.configuration.ConfigurationFileScanner;
 import com.robbanhoglund.springbootanalyzer.analyzer.configuration.ConfigurationPropertiesClassAnalyzer;
@@ -128,6 +130,8 @@ class AnalysisReportContractTest {
                     new ScalabilityPracticeFindingAnalyzer(),
                     new MigrationPracticeFindingAnalyzer(),
                     new SchedulingPracticeFindingAnalyzer(),
+                    new ContainerPracticeFindingAnalyzer(),
+                    new WebHandlerFindingAnalyzer(),
                     new AnalyzerProperties(
                             Path.of("."),
                             true,

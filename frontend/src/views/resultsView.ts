@@ -7122,7 +7122,7 @@ export function findingCategoryLabel(value: string): string {
     case 'HTTP':
       return 'HTTP clients';
     case 'MIGRATION':
-      return 'Spring Boot 3 migration';
+      return 'Spring Boot migration';
     default:
       return value
         .toLowerCase()

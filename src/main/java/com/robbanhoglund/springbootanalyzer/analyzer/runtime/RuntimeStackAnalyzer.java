@@ -63,8 +63,11 @@ public class RuntimeStackAnalyzer {
 
         RuntimeEvidence evidence = collectRuntimeEvidence(repositoryRoot, detectedComponents);
         List<String> dependencyCoordinates = runtimeDependencies(buildInfo, gradleModelAnalysis);
+        // A job-only profile (spring.main.web-application-type=none in application-migrate.yml)
+        // does not make the application non-web; only the default configuration decides.
         String configuredWebApplicationType =
-                configuredPropertyValue(configurationAnalysis, "spring.main.web-application-type");
+                defaultProfilePropertyValue(
+                        configurationAnalysis, "spring.main.web-application-type");
 
         WebStack webStack =
                 determineWebStack(
@@ -645,6 +648,28 @@ public class RuntimeStackAnalyzer {
         }
         return configurationAnalysis.properties().stream()
                 .filter(property -> name.equals(property.name()))
+                .map(ApplicationProperty::value)
+                .filter(value -> value != null && !value.isBlank())
+                .findFirst()
+                .orElse(null);
+    }
+
+    private String defaultProfilePropertyValue(
+            ConfigurationAnalysis configurationAnalysis, String name) {
+        if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
+            return null;
+        }
+        return configurationAnalysis.properties().stream()
+                .filter(property -> name.equals(property.name()))
+                .filter(
+                        property ->
+                                property.profile() == null
+                                        || property.profile().isBlank()
+                                        || "default".equalsIgnoreCase(property.profile()))
+                .filter(
+                        property ->
+                                property.sourceFile() == null
+                                        || !property.sourceFile().contains("src/test/"))
                 .map(ApplicationProperty::value)
                 .filter(value -> value != null && !value.isBlank())
                 .findFirst()

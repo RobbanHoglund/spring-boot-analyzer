@@ -11,6 +11,7 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.Propert
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -292,7 +293,6 @@ public class TradingService {
         assertThat(result.findings())
                 .extracting(finding -> finding.message())
                 .anyMatch(message -> message.contains("could not be matched"))
-                .anyMatch(message -> message.contains("trading.missing"))
                 .anyMatch(message -> message.contains("Deprecated configuration property"))
                 .anyMatch(message -> message.contains("literal value"))
                 .anyMatch(message -> message.contains("Profile-specific configuration files"))
@@ -300,6 +300,12 @@ public class TradingService {
                 // SPRING_DDL_AUTO_DESTRUCTIVE_PROD / SPRING_ACTUATOR_ENDPOINT_EXPOSED_PROD rules
                 // in ConfigurationFindingAnalyzer, not as generic risky-prod-config findings.
                 .anyMatch(message -> message.contains("health.show-details=always"));
+        // containsProperty("trading.missing") is a presence check: an absent key is the
+        // expected case, so it is a code reference but not a missing-configuration finding.
+        assertThat(result.findings())
+                .filteredOn(finding -> "CONFIG_CODE_REFERENCE_MISSING".equals(finding.ruleId()))
+                .extracting(Finding::target)
+                .doesNotContain("trading.missing");
     }
 
     @Test
@@ -508,6 +514,68 @@ public class TradingService {
     }
 
     @Test
+    void reportsOnlyReferencesThatFailWithoutConfiguration() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.writeString(
+                tempDir.resolve("src/main/resources/application.properties"), "app.mode=demo\n");
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Lookups.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.beans.factory.annotation.Value;
+                import org.springframework.core.env.Environment;
+                import org.springframework.scheduling.annotation.Scheduled;
+                import org.springframework.stereotype.Component;
+
+                @Component
+                class Lookups {
+
+                    @Value("${app.defaulted:fallback}")
+                    String defaulted;
+
+                    String read(Environment environment) {
+                        return environment.getProperty("app.required")
+                                + environment.getProperty("app.optional")
+                                + environment.getProperty("app.optional-default", "x")
+                                + environment.containsProperty("app.present")
+                                + environment.getRequiredProperty("app.mandatory");
+                    }
+
+                    @Value("${app.required}")
+                    String required;
+
+                    @Scheduled(cron = "${app.cron}")
+                    void run() {
+                    }
+                }
+                """);
+
+        var result = analyzer.analyze(tempDir, emptyBuildInfo());
+
+        List<Finding> missing =
+                result.findings().stream()
+                        .filter(finding -> "CONFIG_CODE_REFERENCE_MISSING".equals(finding.ruleId()))
+                        .toList();
+        assertThat(missing)
+                .extracting(Finding::target)
+                .containsExactlyInAnyOrder("app.required", "app.mandatory", "app.cron");
+        // Every reference to a missing key is listed, but the primary location is the one that
+        // fails — the @Value, not the nullable lookup that precedes it in the file.
+        Finding required =
+                missing.stream()
+                        .filter(finding -> "app.required".equals(finding.target()))
+                        .findFirst()
+                        .orElseThrow();
+        assertThat(required.occurrences()).hasSize(2);
+        assertThat(required.occurrences().get(0).message()).startsWith("@Value");
+        assertThat(required.primaryLocation().startLine())
+                .isEqualTo(required.occurrences().get(0).location().startLine());
+    }
+
+    @Test
     void ignoresGradleAndWrapperPropertyLookupsWhenCheckingMissingSpringConfiguration()
             throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
@@ -534,7 +602,7 @@ public class TradingService {
                         return properties.getProperty("distributionUrl")
                                 + properties.getProperty("org.gradle.jvmargs")
                                 + properties.getProperty("java_version")
-                                + environment.getProperty("spring.application.name");
+                                + environment.getRequiredProperty("spring.application.name");
                     }
                 }
                 """);
@@ -699,5 +767,113 @@ public class TradingService {
                 "3.5.13",
                 "build.gradle plugin",
                 "HIGH");
+    }
+
+    private static com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo bootBuild(
+            String bootVersion) {
+        return new com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo(
+                com.robbanhoglund.springbootanalyzer.analyzer.model.BuildTool.GRADLE,
+                true,
+                "21",
+                List.of(),
+                bootVersion,
+                "build.gradle plugin",
+                "HIGH");
+    }
+
+    @Test
+    void resolvesMapEntriesThroughTheirMetadataOwner() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.writeString(
+                tempDir.resolve("src/main/resources/application.properties"),
+                """
+                info.app.name=shop
+                spring.jackson.serialization.indent-output=true
+                """);
+
+        var result = analyzer.analyze(tempDir, bootBuild("3.5.13"));
+
+        assertThat(result.configurationAnalysis().properties())
+                .filteredOn(
+                        property ->
+                                property.name().startsWith("info.")
+                                        || property.name().startsWith("spring.jackson."))
+                .extracting(property -> property.kind())
+                .containsOnly(PropertyKind.SPRING_BOOT_MAP_PROPERTY);
+        assertThat(result.findings())
+                .extracting(Finding::message)
+                .noneMatch(message -> message != null && message.contains("could not be matched"));
+    }
+
+    @Test
+    void reportsSpringBoot4DeprecationsOfMapProperties() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.writeString(
+                tempDir.resolve("src/main/resources/application.properties"),
+                "spring.jackson.parser.allow-comments=true\n");
+
+        var boot4 = analyzer.analyze(tempDir, bootBuild("4.0.6"));
+        var boot35 = analyzer.analyze(tempDir, bootBuild("3.5.13"));
+
+        assertThat(boot4.findings())
+                .filteredOn(
+                        finding ->
+                                "SPRING_DEPRECATED_CONFIGURATION_PROPERTY".equals(finding.ruleId()))
+                .extracting(Finding::target)
+                .contains("spring.jackson.parser.allow-comments");
+        assertThat(boot35.findings())
+                .filteredOn(
+                        finding ->
+                                "SPRING_DEPRECATED_CONFIGURATION_PROPERTY".equals(finding.ruleId()))
+                .isEmpty();
+    }
+
+    @Test
+    void lowersLiteralSecretSeverityInLocalAndTestConfiguration() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.writeString(
+                tempDir.resolve("src/main/resources/application.properties"),
+                "payment.api-key=sk-live-prod-key\n");
+        Files.writeString(
+                tempDir.resolve("src/main/resources/application-dev.properties"),
+                "payment.api-key=sk-dev-key\n");
+
+        var result = analyzer.analyze(tempDir, bootBuild("3.5.13"));
+
+        assertThat(result.findings())
+                .filteredOn(finding -> "SPRING_SECRET_LITERAL".equals(finding.ruleId()))
+                .extracting(finding -> finding.primaryLocation().filePath(), Finding::severity)
+                .containsExactlyInAnyOrder(
+                        org.assertj.core.groups.Tuple.tuple(
+                                "src/main/resources/application.properties",
+                                FindingSeverity.WARNING),
+                        org.assertj.core.groups.Tuple.tuple(
+                                "src/main/resources/application-dev.properties",
+                                FindingSeverity.INFO));
+    }
+
+    @Test
+    void reportsKeysSpringBootNoLongerBindsAsIgnored() throws IOException {
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.writeString(
+                tempDir.resolve("src/main/resources/application.properties"),
+                "server.servlet.encoding.charset=UTF-8\n");
+
+        var result = analyzer.analyze(tempDir, bootBuild("4.0.6"));
+
+        assertThat(result.findings())
+                .filteredOn(
+                        finding ->
+                                "SPRING_DEPRECATED_CONFIGURATION_PROPERTY".equals(finding.ruleId()))
+                .singleElement()
+                .satisfies(
+                        finding -> {
+                            assertThat(finding.message())
+                                    .isEqualTo(
+                                            "server.servlet.encoding.charset is no longer supported"
+                                                    + " by Spring Boot — the setting is ignored.");
+                            assertThat(finding.evidence())
+                                    .contains("Replaced by 'spring.servlet.encoding.charset'");
+                        });
     }
 }

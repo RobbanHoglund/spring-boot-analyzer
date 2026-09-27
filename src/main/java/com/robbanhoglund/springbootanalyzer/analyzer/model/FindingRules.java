@@ -295,8 +295,10 @@ public final class FindingRules {
                     FindingCategory.SECURITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** Two or more {@code @ExceptionHandler} methods in the same {@code @Controller}/
-     *  {@code @ControllerAdvice} class map the same exception type. Spring rejects this with an
+    /** Two {@code @ExceptionHandler} methods in the same class (or advice) map the same exception
+     *  type — including a subclass of {@code ResponseEntityExceptionHandler} that redeclares one of
+     *  the Spring MVC exceptions the base class already handles (for example
+     *  {@code MethodArgumentNotValidException}). Spring cannot choose between them and throws
      *  {@code IllegalStateException} ("Ambiguous @ExceptionHandler method mapped") at startup. */
     public static final FindingRule SPRING_DUPLICATE_EXCEPTION_HANDLER =
             rule(
@@ -320,24 +322,26 @@ public final class FindingRules {
                     FindingCategory.EXCEPTION_HANDLING,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** A controller method accepts a {@code @RequestBody} parameter without
-     *  {@code @Valid}, so Bean Validation constraints on the request object are
-     *  silently ignored and invalid input reaches the service layer. */
+    /** A {@code @RequestBody} parameter whose type carries Bean Validation constraints is not
+     *  annotated with {@code @Valid} or {@code @Validated}. Spring MVC only cascades into the body
+     *  when asked to, so the constraints are silently skipped and invalid payloads reach the
+     *  handler. */
     public static final FindingRule SPRING_REQUEST_BODY_NO_VALID =
             rule(
                     "SPRING_REQUEST_BODY_NO_VALID",
-                    "@RequestBody is missing @Valid",
-                    FindingSeverity.INFO,
+                    "@RequestBody constraints are ignored without @Valid",
+                    FindingSeverity.WARNING,
                     FindingCategory.VALIDATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** A controller method accepts a {@code @ModelAttribute} parameter without
-     *  {@code @Valid}. Same consequence as {@link #SPRING_REQUEST_BODY_NO_VALID}. */
+    /** A {@code @ModelAttribute} parameter whose type carries Bean Validation constraints is not
+     *  annotated with {@code @Valid} or {@code @Validated}, so the constraints are silently
+     *  skipped for bound form data. */
     public static final FindingRule SPRING_MODEL_ATTRIBUTE_NO_VALID =
             rule(
                     "SPRING_MODEL_ATTRIBUTE_NO_VALID",
-                    "@ModelAttribute is missing @Valid",
-                    FindingSeverity.INFO,
+                    "@ModelAttribute constraints are ignored without @Valid",
+                    FindingSeverity.WARNING,
                     FindingCategory.VALIDATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
@@ -683,14 +687,15 @@ public final class FindingRules {
                     FindingCategory.API_SURFACE,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** A {@code @ConfigurationProperties} class is missing {@code @Validated}.
-     *  Without it, Bean Validation annotations ({@code @NotNull}, {@code @Min}, …) on
-     *  the properties fields are silently ignored at startup. */
+    /** A {@code @ConfigurationProperties} class carries Bean Validation constraints
+     *  ({@code @NotBlank}, {@code @Min}, ...) but is not annotated with {@code @Validated}.
+     *  Spring Boot only validates properties classes marked {@code @Validated}, so the
+     *  constraints are silently ignored and invalid configuration starts the application. */
     public static final FindingRule SPRING_CONFIGURATION_PROPERTIES_NOT_VALIDATED =
             rule(
                     "SPRING_CONFIGURATION_PROPERTIES_NOT_VALIDATED",
-                    "@ConfigurationProperties class has no @Validated annotation",
-                    FindingSeverity.INFO,
+                    "@ConfigurationProperties constraints are ignored without @Validated",
+                    FindingSeverity.WARNING,
                     FindingCategory.VALIDATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
@@ -843,12 +848,12 @@ public final class FindingRules {
                     FindingCategory.TESTING,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** A {@code @SpringBootTest} class injects a {@code Repository} but has no class-level
-     *  {@code @Transactional}, so each test method that writes to the database leaves rows
-     *  behind. Slices that are already transactional ({@code @DataJpaTest}) and tests that drive
-     *  a real server ({@code RANDOM_PORT}/{@code DEFINED_PORT}, {@code @LocalServerPort}, an HTTP
-     *  client field) are not reported: there a test transaction cannot roll back the server's
-     *  writes. */
+    /** A {@code @SpringBootTest} class injects a {@code Repository} but has no class-level {@code
+     *  @Transactional}, so each test method that writes to the database leaves rows behind. Slices
+     *  that are already transactional ({@code @DataJpaTest}), tests that drive a real server
+     *  ({@code RANDOM_PORT}/{@code DEFINED_PORT}, {@code @LocalServerPort}, an HTTP client field)
+     *  and tests that clean the database themselves ({@code deleteAll()} or {@code TRUNCATE} in a
+     *  lifecycle method, {@code @Sql}) are not reported. */
     public static final FindingRule SPRING_TEST_NO_TRANSACTIONAL_ROLLBACK =
             rule(
                     "SPRING_TEST_NO_TRANSACTIONAL_ROLLBACK",
@@ -955,7 +960,7 @@ public final class FindingRules {
 
     /** {@code @Cacheable(sync = true)} is combined with an {@code unless} expression or more than
      *  one cache name. Both combinations are explicitly unsupported by Spring's caching
-     *  infrastructure and cause an {@code IllegalArgumentException} at runtime when the method
+     *  infrastructure and cause an {@code IllegalStateException} at runtime when the method
      *  is first invoked. */
     public static final FindingRule SPRING_CACHEABLE_SYNC_INCOMPATIBLE =
             rule(
@@ -1145,8 +1150,13 @@ public final class FindingRules {
                     FindingCategory.OBSERVABILITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** {@code spring.autoconfigure.exclude} removes a Spring Security auto-configuration class,
-     *  bypassing the default security filter chain for that profile. */
+    /** {@code spring.autoconfigure.exclude} removes the auto-configuration that registers Spring
+     *  Security's filter ({@code SecurityFilterAutoConfiguration}) or, in a project without its own
+     *  {@code @EnableWebSecurity} configuration, the one that creates the web security chain
+     *  ({@code SecurityAutoConfiguration}; {@code ServletWebSecurityAutoConfiguration} on Spring
+     *  Boot 4) in a profile. Requests in that profile are then served without authentication.
+     *  Excluding {@code UserDetailsServiceAutoConfiguration} only removes the generated default
+     *  user and is not reported. */
     public static final FindingRule SPRING_SECURITY_AUTOCONFIGURE_EXCLUDED =
             rule(
                     "SPRING_SECURITY_AUTOCONFIGURE_EXCLUDED",
@@ -1155,8 +1165,10 @@ public final class FindingRules {
                     FindingCategory.PROFILE_DRIFT,
                     FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT);
 
-    /** The default profile configures a non-embedded datasource URL, but no test profile
-     *  overrides {@code spring.datasource.url}, so integration tests may hit the real database. */
+    /** The default profile configures a non-embedded datasource URL and {@code @SpringBootTest}
+     *  tests load it without a test-profile override, Testcontainers ({@code @ServiceConnection},
+     *  {@code @DynamicPropertySource}) or a replaced datasource, so integration tests may hit the
+     *  real database. */
     public static final FindingRule SPRING_DATASOURCE_NO_TEST_OVERRIDE =
             rule(
                     "SPRING_DATASOURCE_NO_TEST_OVERRIDE",
@@ -1332,9 +1344,11 @@ public final class FindingRules {
                     FindingCategory.CONFIGURATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** A property is referenced from application code but no matching property was found in the
-     *  scanned configuration files. WARNING rather than INFO: a {@code @Value("${x}")} with no
-     *  configured value and no default fails context startup, so this is not a cosmetic gap. */
+    /** A property that application code reads without a fallback — {@code @Value("${x}")} without a
+     *  default, a {@code @Scheduled} placeholder or {@code Environment#getRequiredProperty} — has
+     *  no value in the scanned configuration files, so the context fails to start unless the
+     *  environment supplies it. Lookups that tolerate a missing key ({@code getProperty}, {@code
+     *  containsProperty}, {@code ${x:default}}, {@code @ConditionalOnProperty}) are not reported. */
     public static final FindingRule CONFIG_CODE_REFERENCE_MISSING =
             rule(
                     "CONFIG_CODE_REFERENCE_MISSING",
@@ -1343,10 +1357,11 @@ public final class FindingRules {
                     FindingCategory.CONFIGURATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** A Spring-managed component ({@code @Service}, {@code @Controller}, {@code @Repository},
-     *  etc.) injects {@code ApplicationContext} as a field. This is the service-locator
-     *  anti-pattern: it bypasses compile-time dependency checking, hides real dependencies
-     *  from the class signature, and tightly couples the code to the Spring framework API. */
+    /** A Spring-managed component injects {@code ApplicationContext} as a field and looks beans up
+     *  through it ({@code getBean}, {@code getBeansOfType}, {@code getBeanProvider}, ...). This is
+     *  the service-locator anti-pattern: it hides real dependencies from the class signature and
+     *  bypasses compile-time dependency checking. Using the context for lifecycle work — publishing
+     *  events, closing it, reading the environment — is not reported. */
     public static final FindingRule SPRING_APPLICATION_CONTEXT_INJECTED =
             rule(
                     "SPRING_APPLICATION_CONTEXT_INJECTED",
@@ -1571,11 +1586,11 @@ public final class FindingRules {
                     FindingCategory.SECURITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** A Spring Security {@code SecurityFilterChain} configures
-     *  {@code .anyRequest().permitAll()} or {@code .requestMatchers("/**").permitAll()}.
-     *  Either pattern grants public access to every endpoint and is almost always a
-     *  copy/paste accident or an unfinished migration from the deprecated
-     *  {@code WebSecurityConfigurerAdapter}. */
+    /** A {@code SecurityFilterChain} ends in {@code .anyRequest().permitAll()} (or
+     *  {@code .requestMatchers("/**").permitAll()}). As the only rule it makes every endpoint
+     *  public (ERROR); after other rules or on a conditional branch it is the chain's fail-open
+     *  default for every unmatched path (WARNING). Chains restricted with
+     *  {@code securityMatcher(...)} are not reported. */
     public static final FindingRule SPRING_PERMIT_ALL_ANY_REQUEST =
             rule(
                     "SPRING_PERMIT_ALL_ANY_REQUEST",
@@ -1867,14 +1882,17 @@ public final class FindingRules {
                     FindingCategory.MIGRATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** A configuration file sets the deprecated {@code spring.profiles} property to activate or
-     *  group profiles. It was deprecated in Spring Boot 2.4 and removed in Spring Boot 3 in
-     *  favour of {@code spring.config.activate.on-profile} and {@code spring.profiles.group}. */
+    /** The legacy {@code spring.profiles} key (used to bind a document to a profile) appears in a
+     *  configuration file. Spring Boot 3 rejects it: it throws {@code
+     *  InvalidConfigDataPropertyException} while loading the file and the context never starts.
+     *  Spring Boot 2.4-2.7 still apply it with a deprecation warning (reported as WARNING), and
+     *  with {@code spring.config.use-legacy-processing=true} (reported as INFO). */
     public static final FindingRule SPRING_PROFILES_PROPERTY_DEPRECATED =
             rule(
                     "SPRING_PROFILES_PROPERTY_DEPRECATED",
-                    "Deprecated spring.profiles property — use spring.config.activate.on-profile",
-                    FindingSeverity.INFO,
+                    "Legacy spring.profiles property fails startup — use"
+                            + " spring.config.activate.on-profile",
+                    FindingSeverity.ERROR,
                     FindingCategory.MIGRATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
@@ -2043,14 +2061,15 @@ public final class FindingRules {
 
     // ── Silent-failure & startup-crash rules (catalog review 2026-07) ─────────
 
-    /** {@code @Retryable}/{@code @Recover} (spring-retry) are used, but no class is annotated
-     *  with {@code @EnableRetry}. Spring Boot does not auto-configure spring-retry, so without
-     *  the enabler the annotations are silently inert: methods execute exactly once and
-     *  {@code @Recover} callbacks never run. */
+    /** {@code @Retryable} is used but retry support is never enabled. Spring Retry's annotations
+     *  need {@code @EnableRetry}; Spring Framework 7's {@code @Retryable} and
+     *  {@code @ConcurrencyLimit} ({@code org.springframework.resilience.annotation}) need
+     *  {@code @EnableResilientMethods}. Spring Boot auto-configures neither, so the annotated
+     *  methods run exactly once. */
     public static final FindingRule SPRING_RETRYABLE_WITHOUT_ENABLE_RETRY =
             rule(
                     "SPRING_RETRYABLE_WITHOUT_ENABLE_RETRY",
-                    "@Retryable is used but @EnableRetry is missing — no retries happen",
+                    "@Retryable is used but retry support is not enabled — no retries happen",
                     FindingSeverity.WARNING,
                     FindingCategory.EXCEPTION_HANDLING,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
@@ -2068,14 +2087,15 @@ public final class FindingRules {
                     FindingCategory.SCHEDULING,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** {@code spring.profiles.active} or {@code spring.profiles.include} appears in a
-     *  profile-specific configuration file or an {@code on-profile} document. Since the Spring
-     *  Boot 2.4 config-data model (all of Boot 3.x), these keys are invalid there: startup fails
-     *  with {@code InvalidConfigDataPropertyException} whenever that profile is activated. */
+    /** {@code spring.profiles.active}, {@code spring.profiles.include} or
+     *  {@code spring.profiles.default} (including their list forms) is set in a profile-specific
+     *  file such as {@code application-dev.yml}. Spring Boot's config-data model rejects this with
+     *  {@code InvalidConfigDataPropertyException} as soon as that profile is activated. */
     public static final FindingRule SPRING_PROFILES_ACTIVE_IN_PROFILE_SPECIFIC_FILE =
             rule(
                     "SPRING_PROFILES_ACTIVE_IN_PROFILE_SPECIFIC_FILE",
-                    "spring.profiles.active in a profile-specific file fails at startup",
+                    "spring.profiles.active/include/default in a profile-specific file fails at"
+                            + " startup",
                     FindingSeverity.ERROR,
                     FindingCategory.CONFIGURATION,
                     FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT);
@@ -2298,8 +2318,10 @@ public final class FindingRules {
                     FindingCategory.CONFIGURATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** A configuration property marked deprecated in Spring Boot's configuration metadata is
-     *  used. Deprecated properties are removed in later releases, silently losing their effect. */
+    /** A configuration property marked deprecated in Spring Boot's configuration metadata is used.
+     *  Deprecated properties are removed in later releases, silently losing their effect; keys the
+     *  metadata lists at level error are no longer bound at all and are reported as already
+     *  ignored. */
     public static final FindingRule SPRING_DEPRECATED_CONFIGURATION_PROPERTY =
             rule(
                     "SPRING_DEPRECATED_CONFIGURATION_PROPERTY",
@@ -2360,15 +2382,341 @@ public final class FindingRules {
                     FindingCategory.STARTUP,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
-    /** A Spring stereotype component lives outside the main application class's package tree.
-     *  Default component scanning starts at the application package, so the bean is never
-     *  registered unless an explicit {@code @ComponentScan} includes it. */
+    /** A Spring stereotype component lives outside every package component scanning covers — the
+     *  {@code @SpringBootApplication} package or its {@code scanBasePackages}, and the {@code
+     *  @ComponentScan} packages of registered configurations — and is not registered through {@code
+     *  @Import} or an auto-configuration entry, so the bean is never created. Classes of one
+     *  package are reported together. */
     public static final FindingRule SPRING_COMPONENT_OUTSIDE_MAIN_PACKAGE =
             rule(
                     "SPRING_COMPONENT_OUTSIDE_MAIN_PACKAGE",
                     "Component lives outside the main application package — not scanned",
                     FindingSeverity.WARNING,
                     FindingCategory.STARTUP,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code SecurityFilterChain} bean builds {@code HttpSecurity} without calling
+     *  {@code authorizeHttpRequests(...)} (or {@code authorizeExchange(...)} in WebFlux).
+     *  HttpSecurity adds no authorization filter by default, and declaring the bean turns off
+     *  Spring Boot's default chain, so every request the chain handles is permitted. */
+    public static final FindingRule SPRING_SECURITY_FILTER_CHAIN_NO_AUTHORIZATION =
+            rule(
+                    "SPRING_SECURITY_FILTER_CHAIN_NO_AUTHORIZATION",
+                    "SecurityFilterChain declares no authorization rules — every request is"
+                            + " permitted",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** An authorization rule Spring Security cannot use: {@code hasRole("ROLE_X")} in the HTTP
+     *  authorization DSL (rejected with {@code IllegalArgumentException} at startup; in WebFlux it
+     *  silently checks for {@code ROLE_ROLE_X} and never matches), or a matcher registered after
+     *  {@code anyRequest()}/{@code anyExchange()} ({@code IllegalStateException} at startup). */
+    public static final FindingRule SPRING_SECURITY_AUTHORIZATION_RULE_INVALID =
+            rule(
+                    "SPRING_SECURITY_AUTHORIZATION_RULE_INVALID",
+                    "Invalid Spring Security authorization rule — startup fails or the rule never"
+                            + " matches",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** Two {@code SecurityFilterChain} beans without {@code securityMatcher(...)} both match every
+     *  request, or the catch-all chain is ordered before a scoped chain. Since Spring Security 6.4
+     *  (Spring Boot 3.4) building the filter chain proxy fails and the context does not start;
+     *  older versions silently never invoke the chain (reported as WARNING). */
+    public static final FindingRule SPRING_SECURITY_FILTER_CHAIN_UNREACHABLE =
+            rule(
+                    "SPRING_SECURITY_FILTER_CHAIN_UNREACHABLE",
+                    "Security filter chain can never be reached",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SECURITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** Cache annotations ({@code @Cacheable}, {@code @CachePut}, {@code @CacheEvict},
+     *  {@code @Caching}) are used but no class enables caching with {@code @EnableCaching}. Spring
+     *  Boot's cache auto-configuration only activates once caching is enabled, so the annotations
+     *  are ignored and every call executes the method. */
+    public static final FindingRule SPRING_CACHEABLE_WITHOUT_ENABLE_CACHING =
+            rule(
+                    "SPRING_CACHEABLE_WITHOUT_ENABLE_CACHING",
+                    "Cache annotations are used but @EnableCaching is missing — nothing is cached",
+                    FindingSeverity.WARNING,
+                    FindingCategory.CACHING,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A cache annotation sets both {@code key} and {@code keyGenerator}, or both
+     *  {@code cacheManager} and {@code cacheResolver}. Spring's cache annotation parser treats the
+     *  pairs as mutually exclusive and throws {@code IllegalStateException} when the bean is
+     *  proxied, so the context does not start. */
+    public static final FindingRule SPRING_CACHE_ANNOTATION_CONFLICTING_ATTRIBUTES =
+            rule(
+                    "SPRING_CACHE_ANNOTATION_CONFLICTING_ATTRIBUTES",
+                    "Cache annotation sets mutually exclusive attributes — startup fails",
+                    FindingSeverity.ERROR,
+                    FindingCategory.CACHING,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** {@code @Cacheable(condition = ...)} references {@code #result}. The condition is evaluated
+     *  before the method runs, when {@code #result} is always {@code null}, so a check such as
+     *  {@code #result != null} is never true and nothing is cached ({@code unless} is the attribute
+     *  that sees the result). */
+    public static final FindingRule SPRING_CACHEABLE_CONDITION_USES_RESULT =
+            rule(
+                    "SPRING_CACHEABLE_CONDITION_USES_RESULT",
+                    "@Cacheable condition references #result — the method is never cached",
+                    FindingSeverity.WARNING,
+                    FindingCategory.CACHING,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** An {@code @Enable...} annotation ({@code @EnableWebSecurity}, {@code @EnableMethodSecurity},
+     *  {@code @EnableScheduling}, {@code @EnableAsync}, {@code @EnableCaching}, ...) sits on a class
+     *  that is not a {@code @Configuration}, not a component and not imported. Since Spring
+     *  Security 6 the security annotations no longer include {@code @Configuration}, so such a
+     *  class is never registered and the feature it enables stays off. */
+    public static final FindingRule SPRING_ENABLE_ANNOTATION_ON_NON_BEAN_CLASS =
+            rule(
+                    "SPRING_ENABLE_ANNOTATION_ON_NON_BEAN_CLASS",
+                    "@Enable annotation on a class Spring never registers — the feature stays off",
+                    FindingSeverity.ERROR,
+                    FindingCategory.STARTUP,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @Bean} method or its {@code @Configuration} class violates the container's
+     *  constraints: a private or final {@code @Bean} method (or a final class) in a proxied
+     *  configuration, a {@code void} {@code @Bean} method, a {@code @Bean} method also annotated
+     *  {@code @Autowired}, or two {@code @Bean} methods with the same name. Spring reports a
+     *  configuration problem and the context does not start. */
+    public static final FindingRule SPRING_BEAN_METHOD_INVALID =
+            rule(
+                    "SPRING_BEAN_METHOD_INVALID",
+                    "@Bean method or @Configuration class breaks container rules — startup fails",
+                    FindingSeverity.ERROR,
+                    FindingCategory.STARTUP,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** An {@code @EventListener} (or {@code @TransactionalEventListener}) method declares more than
+     *  one parameter, or none without naming the event types in {@code classes}. Spring throws
+     *  {@code IllegalStateException} while registering the listener, so the context does not
+     *  start. */
+    public static final FindingRule SPRING_EVENT_LISTENER_INVALID_SIGNATURE =
+            rule(
+                    "SPRING_EVENT_LISTENER_INVALID_SIGNATURE",
+                    "@EventListener method has an invalid signature — startup fails",
+                    FindingSeverity.ERROR,
+                    FindingCategory.SCHEDULING,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @ConfigurationProperties} prefix is not in canonical form (lowercase letters,
+     *  digits and dashes, separated by dots) — for example {@code myApp} or {@code my_app}.
+     *  Spring Boot throws {@code InvalidConfigurationPropertyNameException} when it binds the
+     *  class, so the context does not start. */
+    public static final FindingRule SPRING_CONFIGURATION_PROPERTIES_INVALID_PREFIX =
+            rule(
+                    "SPRING_CONFIGURATION_PROPERTIES_INVALID_PREFIX",
+                    "@ConfigurationProperties prefix is not canonical kebab-case — startup fails",
+                    FindingSeverity.ERROR,
+                    FindingCategory.CONFIGURATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @ConfigurationProperties} record, or a class whose only constructor takes the
+     *  property values, is also registered as a component ({@code @Component},
+     *  {@code @Configuration}, ...). Constructor binding only works for classes registered through
+     *  {@code @EnableConfigurationProperties} or {@code @ConfigurationPropertiesScan}; as a regular
+     *  bean Spring tries to autowire the {@code String}/{@code int} parameters and the context
+     *  does not start. */
+    public static final FindingRule SPRING_CONFIGURATION_PROPERTIES_BEAN_CONSTRUCTOR_BINDING =
+            rule(
+                    "SPRING_CONFIGURATION_PROPERTIES_BEAN_CONSTRUCTOR_BINDING",
+                    "Constructor-bound @ConfigurationProperties class is also a component — startup"
+                            + " fails",
+                    FindingSeverity.ERROR,
+                    FindingCategory.CONFIGURATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A handler parameter such as {@code @RequestParam(required = false) int page} is optional
+     *  but declared as a primitive (other than {@code boolean}) without a {@code defaultValue}.
+     *  When the client omits it Spring cannot convert {@code null} and throws
+     *  {@code IllegalStateException}, so the request fails with 500. */
+    public static final FindingRule SPRING_OPTIONAL_PRIMITIVE_REQUEST_PARAMETER =
+            rule(
+                    "SPRING_OPTIONAL_PRIMITIVE_REQUEST_PARAMETER",
+                    "Optional request parameter declared as a primitive — 500 when it is missing",
+                    FindingSeverity.ERROR,
+                    FindingCategory.API_SURFACE,
+                    FindingRuntimeDetection.RUNTIME_REQUIRED);
+
+    /** A handler method declares more than one {@code @RequestBody} parameter. The request body can
+     *  only be read once, so the second parameter never receives a body: every call is rejected
+     *  with 400 ("Required request body is missing"), or the parameter is always {@code null} when
+     *  it is declared {@code required = false}. */
+    public static final FindingRule SPRING_MULTIPLE_REQUEST_BODY =
+            rule(
+                    "SPRING_MULTIPLE_REQUEST_BODY",
+                    "Handler method declares more than one @RequestBody — every call fails",
+                    FindingSeverity.ERROR,
+                    FindingCategory.API_SURFACE,
+                    FindingRuntimeDetection.RUNTIME_REQUIRED);
+
+    /** Two handler methods declare the same mapping: the same path, the same HTTP methods and the
+     *  same params/headers/consumes/produces conditions. Spring MVC refuses to register the second
+     *  one ("Ambiguous mapping") and the context does not start. */
+    public static final FindingRule SPRING_AMBIGUOUS_HANDLER_MAPPING =
+            rule(
+                    "SPRING_AMBIGUOUS_HANDLER_MAPPING",
+                    "Two handler methods declare the same mapping — startup fails",
+                    FindingSeverity.ERROR,
+                    FindingCategory.API_SURFACE,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** An event with a {@code @TransactionalEventListener} is published from a method that runs
+     *  outside a transaction. Without an active transaction the listener is skipped (Spring only
+     *  logs "No transaction is active - skipping" at debug level) unless it sets
+     *  {@code fallbackExecution = true}. */
+    public static final FindingRule SPRING_TX_EVENT_LISTENER_NO_TRANSACTION =
+            rule(
+                    "SPRING_TX_EVENT_LISTENER_NO_TRANSACTION",
+                    "Transactional event is published outside a transaction — the listener never"
+                            + " runs",
+                    FindingSeverity.WARNING,
+                    FindingCategory.TRANSACTION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A {@code @Transactional} method is also {@code synchronized}. The lock is released when the
+     *  method returns, but the transaction proxy commits afterwards, so another thread can enter and
+     *  read the not-yet-committed state — lost updates despite the lock. */
+    public static final FindingRule SPRING_TRANSACTIONAL_SYNCHRONIZED =
+            rule(
+                    "SPRING_TRANSACTIONAL_SYNCHRONIZED",
+                    "synchronized @Transactional method releases the lock before the commit",
+                    FindingSeverity.WARNING,
+                    FindingCategory.TRANSACTION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A thread pool sets a maximum size but keeps an unbounded queue:
+     *  {@code ThreadPoolTaskExecutor.setMaxPoolSize(...)} without {@code setQueueCapacity(...)}, or
+     *  {@code spring.task.execution.pool.max-size} without {@code queue-capacity}. The pool only
+     *  grows beyond its core size when the queue is full, so the maximum is never used. */
+    public static final FindingRule SPRING_TASK_EXECUTOR_MAX_POOL_IGNORED =
+            rule(
+                    "SPRING_TASK_EXECUTOR_MAX_POOL_IGNORED",
+                    "Executor max pool size is ignored because the queue is unbounded",
+                    FindingSeverity.WARNING,
+                    FindingCategory.SCHEDULING,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A file in a Flyway migration location looks like a migration but does not match Flyway's
+     *  naming convention ({@code V1__description.sql}, {@code R__description.sql}) — for example
+     *  {@code V1_init.sql} or {@code v2__add_index.sql}. Flyway skips such files without an error
+     *  ({@code validateMigrationNaming} defaults to false), so the migration never runs. */
+    public static final FindingRule SPRING_FLYWAY_MIGRATION_NAME_IGNORED =
+            rule(
+                    "SPRING_FLYWAY_MIGRATION_NAME_IGNORED",
+                    "Flyway migration file name breaks the naming convention — it never runs",
+                    FindingSeverity.WARNING,
+                    FindingCategory.PERSISTENCE,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A Spring Data JPA or JDBC {@code @Query} runs an {@code UPDATE}, {@code DELETE} or
+     *  {@code INSERT} but the method is not annotated {@code @Modifying}. Spring Data executes it as
+     *  a query that must return rows, so every call fails. Other modules (Cassandra, MongoDB, ...)
+     *  are not checked. */
+    public static final FindingRule SPRING_QUERY_DML_WITHOUT_MODIFYING =
+            rule(
+                    "SPRING_QUERY_DML_WITHOUT_MODIFYING",
+                    "@Query runs an UPDATE/DELETE/INSERT without @Modifying — every call fails",
+                    FindingSeverity.ERROR,
+                    FindingCategory.PERSISTENCE,
+                    FindingRuntimeDetection.RUNTIME_REQUIRED);
+
+    /** An entity field of an enum type has no {@code @Enumerated(EnumType.STRING)} (or converter),
+     *  so JPA stores the constant's ordinal. Reordering or inserting enum constants later silently
+     *  changes the meaning of every stored row. */
+    public static final FindingRule SPRING_JPA_ENUM_ORDINAL =
+            rule(
+                    "SPRING_JPA_ENUM_ORDINAL",
+                    "Enum is persisted by ordinal — reordering its constants corrupts stored data",
+                    FindingSeverity.WARNING,
+                    FindingCategory.PERSISTENCE,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A class annotated {@code @Scope("request")} or {@code @Scope("session")} without a
+     *  {@code proxyMode} is injected into a singleton. The scoped bean is resolved while the
+     *  singleton is created — outside any request — so Spring throws
+     *  {@code ScopeNotActiveException} and the context does not start. */
+    public static final FindingRule SPRING_SCOPED_BEAN_WITHOUT_PROXY =
+            rule(
+                    "SPRING_SCOPED_BEAN_WITHOUT_PROXY",
+                    "Request- or session-scoped bean injected into a singleton without a proxy —"
+                            + " startup fails",
+                    FindingSeverity.ERROR,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A non-static {@code @Bean} method returns a {@code BeanFactoryPostProcessor} (such as
+     *  {@code PropertySourcesPlaceholderConfigurer}) in a configuration class that also relies on
+     *  {@code @Autowired}/{@code @Value} injection. The configuration class has to be created before
+     *  annotation processing is ready, so that injection does not happen; Spring only logs a
+     *  warning. */
+    public static final FindingRule SPRING_BFPP_BEAN_METHOD_NOT_STATIC =
+            rule(
+                    "SPRING_BFPP_BEAN_METHOD_NOT_STATIC",
+                    "Non-static @Bean method returns a BeanFactoryPostProcessor — injection in its"
+                            + " class breaks",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MAINTAINABILITY,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** Spring Framework 6.1+ (Spring Boot 3.2+) resolves parameter names only from the
+     *  {@code -parameters} compiler flag. The build does not set it (no Spring Boot Gradle plugin or
+     *  {@code spring-boot-starter-parent}, and no explicit flag) while the code relies on names:
+     *  a {@code @PathVariable}/{@code @RequestParam} without an explicit name, or a SpEL
+     *  {@code #parameter} reference in a cache or security annotation. Such calls fail at runtime
+     *  or silently evaluate {@code null}. */
+    public static final FindingRule SPRING_PARAMETER_NAMES_NOT_RETAINED =
+            rule(
+                    "SPRING_PARAMETER_NAMES_NOT_RETAINED",
+                    "Code relies on parameter names but the build does not compile with"
+                            + " -parameters",
+                    FindingSeverity.ERROR,
+                    FindingCategory.MIGRATION,
+                    FindingRuntimeDetection.RUNTIME_REQUIRED);
+
+    /** On Spring Boot 4, Spring MVC and WebFlux convert JSON with the auto-configured Jackson 3
+     *  {@code JsonMapper}. A {@code @Bean} of Jackson 2's {@code ObjectMapper} (or a
+     *  {@code Jackson2ObjectMapperBuilderCustomizer}) is only used for HTTP messages when
+     *  {@code spring.http.converters.preferred-json-mapper=jackson2}, so its settings do not reach
+     *  request and response bodies. */
+    public static final FindingRule SPRING_JACKSON2_OBJECTMAPPER_IGNORED_FOR_HTTP =
+            rule(
+                    "SPRING_JACKSON2_OBJECTMAPPER_IGNORED_FOR_HTTP",
+                    "Jackson 2 ObjectMapper bean does not configure HTTP JSON on Spring Boot 4",
+                    FindingSeverity.INFO,
+                    FindingCategory.MIGRATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** On Spring Boot 4 a {@code @SpringBootTest} no longer provides {@code TestRestTemplate} or
+     *  {@code RestTestClient} on its own: the test class needs
+     *  {@code @AutoConfigureTestRestTemplate} or {@code @AutoConfigureRestTestClient}. Without it
+     *  the injection point cannot be satisfied and the test context fails to load. */
+    public static final FindingRule SPRING_BOOT4_TEST_CLIENT_NOT_AUTOCONFIGURED =
+            rule(
+                    "SPRING_BOOT4_TEST_CLIENT_NOT_AUTOCONFIGURED",
+                    "Test HTTP client is not auto-configured on Spring Boot 4 — the test context"
+                            + " fails",
+                    FindingSeverity.ERROR,
+                    FindingCategory.MIGRATION,
+                    FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
+
+    /** A configuration property that Spring Boot removed or renamed is still set — for example
+     *  {@code server.tomcat.max-threads} (now {@code server.tomcat.threads.max}). Nothing reads the
+     *  old key any more, so the setting is silently ignored and the default applies. */
+    public static final FindingRule SPRING_REMOVED_CONFIGURATION_PROPERTY =
+            rule(
+                    "SPRING_REMOVED_CONFIGURATION_PROPERTY",
+                    "Configuration property no longer exists — the setting is silently ignored",
+                    FindingSeverity.WARNING,
+                    FindingCategory.MIGRATION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
     private FindingRules() {}

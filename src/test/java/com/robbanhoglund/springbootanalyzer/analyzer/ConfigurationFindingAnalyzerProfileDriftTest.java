@@ -12,6 +12,7 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.Configu
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertyKind;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleAnalysisStatus;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleModelAnalysis;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -114,8 +115,8 @@ class ConfigurationFindingAnalyzerProfileDriftTest {
     }
 
     @Test
-    void flagsSecurityAutoconfigureExcludedForUserDetailsServiceAutoConfiguration()
-            throws Exception {
+    void doesNotFlagExcludedUserDetailsServiceAutoConfiguration() {
+        // Removes only the generated in-memory user; the default filter chain stays in place.
         ConfigurationAnalysis cfg =
                 config(
                         prop(
@@ -123,9 +124,87 @@ class ConfigurationFindingAnalyzerProfileDriftTest {
                                 "org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration",
                                 null));
 
+        assertThat(byRule(findings(cfg), "SPRING_SECURITY_AUTOCONFIGURE_EXCLUDED")).isNull();
+    }
+
+    @Test
+    void flagsExcludedBoot4ServletWebSecurityAutoConfiguration() {
+        ConfigurationAnalysis cfg =
+                config(
+                        prop(
+                                "spring.autoconfigure.exclude",
+                                "org.springframework.boot.security.autoconfigure.web.servlet.ServletWebSecurityAutoConfiguration",
+                                "local"));
+
         Finding f = byRule(findings(cfg), "SPRING_SECURITY_AUTOCONFIGURE_EXCLUDED");
         assertThat(f).isNotNull();
-        assertThat(f.message()).contains("UserDetailsServiceAutoConfiguration");
+        assertThat(f.message())
+                .contains("ServletWebSecurityAutoConfiguration", "\"local\" profile");
+    }
+
+    @Test
+    void doesNotFlagBoot4CoreSecurityAutoConfigurationExclusion() {
+        // Boot 4's security.autoconfigure.SecurityAutoConfiguration only wires core beans.
+        ConfigurationAnalysis cfg =
+                config(
+                        prop(
+                                "spring.autoconfigure.exclude",
+                                "org.springframework.boot.security.autoconfigure.SecurityAutoConfiguration",
+                                null));
+
+        assertThat(byRule(findings(cfg), "SPRING_SECURITY_AUTOCONFIGURE_EXCLUDED")).isNull();
+    }
+
+    @Test
+    void doesNotFlagExcludedChainAutoConfigurationWhenProjectEnablesWebSecurity() throws Exception {
+        Path sources = Files.createDirectories(repoRoot.resolve("src/main/java/com/example"));
+        Files.writeString(
+                sources.resolve("SecurityConfig.java"),
+                """
+                package com.example;
+
+                import org.springframework.context.annotation.Configuration;
+                import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+
+                @Configuration
+                @EnableWebSecurity
+                class SecurityConfig {
+                }
+                """);
+        ConfigurationAnalysis cfg =
+                config(
+                        prop(
+                                "spring.autoconfigure.exclude",
+                                "org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration",
+                                null));
+
+        assertThat(byRule(findings(cfg), "SPRING_SECURITY_AUTOCONFIGURE_EXCLUDED")).isNull();
+    }
+
+    @Test
+    void flagsExcludedSecurityFilterAutoConfigurationEvenWithOwnWebSecurity() throws Exception {
+        Path sources = Files.createDirectories(repoRoot.resolve("src/main/java/com/example"));
+        Files.writeString(
+                sources.resolve("SecurityConfig.java"),
+                """
+                package com.example;
+
+                import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+
+                @EnableWebSecurity
+                class SecurityConfig {
+                }
+                """);
+        ConfigurationAnalysis cfg =
+                config(
+                        prop(
+                                "spring.autoconfigure.exclude",
+                                "org.springframework.boot.autoconfigure.security.servlet.SecurityFilterAutoConfiguration",
+                                null));
+
+        Finding f = byRule(findings(cfg), "SPRING_SECURITY_AUTOCONFIGURE_EXCLUDED");
+        assertThat(f).isNotNull();
+        assertThat(f.whyBadPractice()).contains("not even the application's own");
     }
 
     @Test
@@ -150,8 +229,24 @@ class ConfigurationFindingAnalyzerProfileDriftTest {
 
     // ── SPRING_DATASOURCE_NO_TEST_OVERRIDE ────────────────────────────────────
 
+    private void writeTestSource(String name, String content) throws Exception {
+        Path tests = Files.createDirectories(repoRoot.resolve("src/test/java/com/example"));
+        Files.writeString(tests.resolve(name), content);
+    }
+
     @Test
-    void flagsDatasourceNoTestOverrideWhenDefaultHasRealDbAndNoTestProfile() {
+    void flagsDatasourceNoTestOverrideWhenDefaultHasRealDbAndNoTestProfile() throws Exception {
+        writeTestSource(
+                "OrdersIT.java",
+                """
+                package com.example;
+
+                import org.springframework.boot.test.context.SpringBootTest;
+
+                @SpringBootTest
+                class OrdersIT {
+                }
+                """);
         ConfigurationAnalysis cfg =
                 config(
                         prop(
@@ -162,6 +257,46 @@ class ConfigurationFindingAnalyzerProfileDriftTest {
         Finding f = byRule(findings(cfg), "SPRING_DATASOURCE_NO_TEST_OVERRIDE");
         assertThat(f).isNotNull();
         assertThat(f.target()).isEqualTo("spring.datasource.url");
+    }
+
+    @Test
+    void doesNotFlagDatasourceNoTestOverrideWithoutSpringBootTests() {
+        // Nothing loads the application context in tests, so nothing connects to the database.
+        ConfigurationAnalysis cfg =
+                config(
+                        prop(
+                                "spring.datasource.url",
+                                "jdbc:postgresql://db.prod.example.com:5432/orders",
+                                null));
+
+        assertThat(byRule(findings(cfg), "SPRING_DATASOURCE_NO_TEST_OVERRIDE")).isNull();
+    }
+
+    @Test
+    void doesNotFlagDatasourceNoTestOverrideWhenTestsUseServiceConnection() throws Exception {
+        writeTestSource(
+                "OrdersIT.java",
+                """
+                package com.example;
+
+                import org.springframework.boot.test.context.SpringBootTest;
+                import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+                import org.testcontainers.containers.PostgreSQLContainer;
+
+                @SpringBootTest
+                class OrdersIT {
+                    @ServiceConnection
+                    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:17");
+                }
+                """);
+        ConfigurationAnalysis cfg =
+                config(
+                        prop(
+                                "spring.datasource.url",
+                                "jdbc:postgresql://db.prod.example.com:5432/orders",
+                                null));
+
+        assertThat(byRule(findings(cfg), "SPRING_DATASOURCE_NO_TEST_OVERRIDE")).isNull();
     }
 
     @Test

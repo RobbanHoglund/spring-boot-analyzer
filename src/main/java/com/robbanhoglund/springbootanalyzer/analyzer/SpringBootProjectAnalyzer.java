@@ -11,7 +11,9 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.DetectedClass;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.Finding;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingOccurrence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.SourceLocation;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.SpringComponentType;
 import com.robbanhoglund.springbootanalyzer.analyzer.runtime.RuntimeStackAnalyzer;
 import com.robbanhoglund.springbootanalyzer.analyzer.scheduling.SchedulingAnalyzer;
@@ -20,9 +22,7 @@ import com.robbanhoglund.springbootanalyzer.config.AnalyzerProperties;
 import com.robbanhoglund.springbootanalyzer.git.GitRepositoryReference;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,7 +46,7 @@ import org.springframework.stereotype.Component;
  *   <li><b>HTTP surface</b> — {@link HttpSurfaceAnalyzer} maps exposed endpoints.</li>
  *   <li><b>Scheduling</b> — {@link SchedulingAnalyzer} identifies scheduled tasks.</li>
  *   <li><b>Messaging</b> — {@link MessagingAnalyzer} identifies messaging listeners.</li>
- *   <li><b>Finding generation</b> — nine finding analyzers each contribute rule-based findings:
+ *   <li><b>Finding generation</b> — the finding analyzers each contribute rule-based findings:
  *     <ul>
  *       <li>{@link StaticPracticeFindingAnalyzer} — source-code practice rules (field injection,
  *           transaction/async misuse, exception handling, CORS/CSRF, etc.)</li>
@@ -66,6 +66,12 @@ import org.springframework.stereotype.Component;
  *           @PreAuthorize on private methods, weak password hashing)</li>
  *       <li>{@link ScalabilityPracticeFindingAnalyzer} — scalability and bean-lifecycle rules
  *           (hardcoded paths, prototype-in-singleton, RestTemplate without timeout, etc.)</li>
+ *       <li>{@link ContainerPracticeFindingAnalyzer} — bean-definition rules the container
+ *           rejects at startup (invalid {@code @Bean} methods, enable annotations on non-bean
+ *           classes, invalid {@code @ConfigurationProperties} prefixes, scoped beans)</li>
+ *       <li>{@link WebHandlerFindingAnalyzer} — handler-method rules Spring MVC rejects
+ *           (ambiguous mappings, several {@code @RequestBody} parameters, optional
+ *           primitives)</li>
  *     </ul>
  *   </li>
  *   <li><b>Component scan validation</b> — warns when Spring components exist outside the
@@ -100,6 +106,8 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
     private final ScalabilityPracticeFindingAnalyzer scalabilityPracticeFindingAnalyzer;
     private final MigrationPracticeFindingAnalyzer migrationPracticeFindingAnalyzer;
     private final SchedulingPracticeFindingAnalyzer schedulingPracticeFindingAnalyzer;
+    private final ContainerPracticeFindingAnalyzer containerPracticeFindingAnalyzer;
+    private final WebHandlerFindingAnalyzer webHandlerFindingAnalyzer;
     private final AnalyzerProperties analyzerProperties;
 
     public SpringBootProjectAnalyzer(
@@ -122,6 +130,8 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
             ScalabilityPracticeFindingAnalyzer scalabilityPracticeFindingAnalyzer,
             MigrationPracticeFindingAnalyzer migrationPracticeFindingAnalyzer,
             SchedulingPracticeFindingAnalyzer schedulingPracticeFindingAnalyzer,
+            ContainerPracticeFindingAnalyzer containerPracticeFindingAnalyzer,
+            WebHandlerFindingAnalyzer webHandlerFindingAnalyzer,
             AnalyzerProperties analyzerProperties) {
         this.buildFileAnalyzer = buildFileAnalyzer;
         this.javaSourceAnalyzer = javaSourceAnalyzer;
@@ -142,6 +152,8 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
         this.scalabilityPracticeFindingAnalyzer = scalabilityPracticeFindingAnalyzer;
         this.migrationPracticeFindingAnalyzer = migrationPracticeFindingAnalyzer;
         this.schedulingPracticeFindingAnalyzer = schedulingPracticeFindingAnalyzer;
+        this.containerPracticeFindingAnalyzer = containerPracticeFindingAnalyzer;
+        this.webHandlerFindingAnalyzer = webHandlerFindingAnalyzer;
         this.analyzerProperties = analyzerProperties;
     }
 
@@ -186,7 +198,8 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
                         .map(detectedClass -> detectedClass.fullyQualifiedClassName())
                         .toList();
 
-        addApplicationStructureFindings(detectedClasses, mainApplicationClasses, findings);
+        addApplicationStructureFindings(
+                javaSources, detectedClasses, mainApplicationClasses, findings);
         RuntimeStackAnalyzer.Result runtimeResult =
                 runtimeStackAnalyzer.analyze(
                         repositoryRoot,
@@ -267,11 +280,20 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
                 findings,
                 () -> schedulingPracticeFindingAnalyzer.analyze(javaSources, buildInfo));
         collectStage(
+                "container-practice",
+                findings,
+                () -> containerPracticeFindingAnalyzer.analyze(javaSources, buildInfo));
+        collectStage(
+                "web-handlers", findings, () -> webHandlerFindingAnalyzer.analyze(javaSources));
+        collectStage(
                 "migration-practice",
                 findings,
                 () ->
                         migrationPracticeFindingAnalyzer.analyze(
-                                javaSources, runtimeResult.runtimeStackAnalysis()));
+                                javaSources,
+                                runtimeResult.runtimeStackAnalysis(),
+                                buildInfo,
+                                configurationResult.configurationAnalysis()));
 
         return new AnalysisResult(
                 repositoryReference.repositoryUrl(),
@@ -321,6 +343,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
     }
 
     private void addApplicationStructureFindings(
+            JavaSources javaSources,
             List<DetectedClass> detectedClasses,
             List<String> mainApplicationClasses,
             List<Finding> findings) {
@@ -389,68 +412,98 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
                             .build());
         }
 
-        Set<String> mainPackages = new LinkedHashSet<>();
-        for (String mainApplicationClass : mainApplicationClasses) {
-            int separatorIndex = mainApplicationClass.lastIndexOf('.');
-            if (separatorIndex > 0) {
-                mainPackages.add(mainApplicationClass.substring(0, separatorIndex));
-            }
-        }
-
+        ComponentScanModel scanModel = ComponentScanModel.of(javaSources, mainApplicationClasses);
+        java.util.Map<String, List<DetectedClass>> outsideByPackage =
+                new java.util.LinkedHashMap<>();
         for (DetectedClass detectedClass : detectedClasses) {
             if (detectedClass.componentType() == SpringComponentType.MAIN_APPLICATION) {
                 continue;
             }
-            if (detectedClass.packageName() == null || detectedClass.packageName().isBlank()) {
+            String packageName = detectedClass.packageName();
+            if (packageName == null
+                    || packageName.isBlank()
+                    || scanModel.isScanned(packageName)
+                    || scanModel.isRegistered(detectedClass.fullyQualifiedClassName())) {
                 continue;
             }
-            boolean underMainPackage =
-                    mainPackages.stream()
-                            .anyMatch(
-                                    mainPackage ->
-                                            detectedClass.packageName().startsWith(mainPackage));
-            if (!underMainPackage) {
-                findings.add(
-                        FindingFactory.builder(
-                                        FindingRules.SPRING_COMPONENT_OUTSIDE_MAIN_PACKAGE,
-                                        FindingConfidence.MEDIUM)
-                                .shortMessage(
-                                        "Component "
-                                                + detectedClass.fullyQualifiedClassName()
-                                                + " lives outside the main application package —"
-                                                + " it may never be scanned.")
-                                .whyBadPractice(
-                                        "Default component scanning starts at the"
-                                            + " @SpringBootApplication class's package and covers"
-                                            + " only its sub-packages. A stereotype class outside"
-                                            + " that tree is not registered as a bean unless an"
-                                            + " explicit @ComponentScan or auto-configuration"
-                                            + " import includes it.")
-                                .possibleImpact(
-                                        "The bean silently does not exist: injection points fail at"
-                                            + " startup, or a @ConditionalOnMissingBean default"
-                                            + " takes over and the intended implementation never"
-                                            + " runs.")
-                                .recommendation(
-                                        "Move the class under the application package, or add it"
-                                            + " explicitly via @ComponentScan/@Import (for a"
-                                            + " library, register it through an auto-configuration"
-                                            + " entry).")
-                                .evidence(
-                                        detectedClass.fullyQualifiedClassName()
-                                                + " is in package "
-                                                + detectedClass.packageName()
-                                                + ", outside the main application package(s): "
-                                                + String.join(", ", mainPackages)
-                                                + ".")
-                                .limitations(
-                                        "An explicit @ComponentScan, @Import, or"
-                                                + " auto-configuration registration elsewhere may"
-                                                + " already include this package.")
-                                .location(detectedClass.filePath())
-                                .target(detectedClass.fullyQualifiedClassName())
-                                .build());
-            }
+            outsideByPackage
+                    .computeIfAbsent(packageName, key -> new ArrayList<>())
+                    .add(detectedClass);
         }
+        String scanRoots = String.join(", ", scanModel.scanRoots());
+        outsideByPackage.forEach(
+                (packageName, classes) -> {
+                    DetectedClass first = classes.get(0);
+                    List<FindingOccurrence> occurrences =
+                            classes.stream()
+                                    .map(
+                                            detectedClass ->
+                                                    new FindingOccurrence(
+                                                            detectedClass.fullyQualifiedClassName()
+                                                                    + " is not covered by component"
+                                                                    + " scanning.",
+                                                            new SourceLocation(
+                                                                    detectedClass.filePath(),
+                                                                    1,
+                                                                    1,
+                                                                    null,
+                                                                    null,
+                                                                    detectedClass
+                                                                            .fullyQualifiedClassName(),
+                                                                    null,
+                                                                    null),
+                                                            List.of()))
+                                    .toList();
+                    findings.add(
+                            FindingFactory.builder(
+                                            FindingRules.SPRING_COMPONENT_OUTSIDE_MAIN_PACKAGE,
+                                            FindingConfidence.MEDIUM)
+                                    .shortMessage(
+                                            classes.size() == 1
+                                                    ? "Component "
+                                                            + first.fullyQualifiedClassName()
+                                                            + " lives outside the main application"
+                                                            + " package — it may never be scanned."
+                                                    : classes.size()
+                                                            + " components in package "
+                                                            + packageName
+                                                            + " live outside the main application"
+                                                            + " package and every @ComponentScan —"
+                                                            + " they may never be registered.")
+                                    .whyBadPractice(
+                                            "Component scanning starts at the"
+                                                + " @SpringBootApplication package (or its"
+                                                + " scanBasePackages) and at the packages that"
+                                                + " registered configuration classes add with"
+                                                + " @ComponentScan. A stereotype class outside all"
+                                                + " of them is not registered as a bean unless"
+                                                + " something imports it explicitly.")
+                                    .possibleImpact(
+                                            "The bean silently does not exist: injection points"
+                                                + " fail at startup, or a @ConditionalOnMissingBean"
+                                                + " default takes over and the intended"
+                                                + " implementation never runs.")
+                                    .recommendation(
+                                            "Move the class under a scanned package, add its"
+                                                + " package to scanBasePackages or a"
+                                                + " @ComponentScan, or register it with @Import"
+                                                + " (for a library, through an auto-configuration"
+                                                + " entry).")
+                                    .evidence(
+                                            packageName
+                                                    + " is outside the scanned packages: "
+                                                    + scanRoots
+                                                    + ".")
+                                    .limitations(
+                                            "Scan roots come from @SpringBootApplication,"
+                                                + " @ComponentScan and @Import on classes in this"
+                                                + " repository and from AutoConfiguration.imports;"
+                                                + " registrations made programmatically or by other"
+                                                + " modules are not visible.")
+                                    .location(first.filePath())
+                                    .target(packageName)
+                                    .occurrences(occurrences)
+                                    .build());
+                });
     }
 }

@@ -447,4 +447,104 @@ class ResendGateway {
                 PropertyDocumentation.unknown(),
                 List.of());
     }
+
+    private static BuildInfo webBuild() {
+        return new BuildInfo(
+                BuildTool.GRADLE,
+                true,
+                "25",
+                List.of("org.springframework.boot:spring-boot-starter-web"),
+                "3.5.13",
+                "Gradle plugins",
+                "HIGH");
+    }
+
+    private static ConfigurationAnalysis configuration(ApplicationProperty... properties) {
+        return new ConfigurationAnalysis(
+                List.of(),
+                List.of(properties),
+                List.of(),
+                List.of(),
+                new ConfigurationSummary(properties.length, 0, 0, 0, 0, 0, List.of("default")));
+    }
+
+    @Test
+    void doesNotTreatJdbcOrTransactionExecuteCallsAsHttp() throws IOException {
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Maintenance.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.http.HttpMethod;
+                import org.springframework.jdbc.core.JdbcTemplate;
+                import org.springframework.stereotype.Component;
+                import org.springframework.transaction.support.TransactionTemplate;
+                import org.springframework.web.client.RestTemplate;
+
+                @Component
+                class Maintenance {
+                    private final JdbcTemplate jdbcTemplate;
+                    private final TransactionTemplate transactionTemplate;
+                    private final RestTemplate restTemplate;
+
+                    Maintenance(JdbcTemplate jdbcTemplate, TransactionTemplate transactionTemplate,
+                            RestTemplate restTemplate) {
+                        this.jdbcTemplate = jdbcTemplate;
+                        this.transactionTemplate = transactionTemplate;
+                        this.restTemplate = restTemplate;
+                    }
+
+                    void run() {
+                        jdbcTemplate.execute("VACUUM ANALYZE");
+                        transactionTemplate.execute(status -> null);
+                        restTemplate.exchange("https://api.example.com/sync", HttpMethod.POST, null, String.class);
+                    }
+                }
+                """);
+
+        var result = analyzer.analyze(tempDir, configuration(), webBuild(), WebStack.SERVLET_MVC);
+
+        assertThat(result.httpSurfaceAnalysis().outboundEndpoints())
+                .extracting(endpoint -> endpoint.urlOrTemplate())
+                .containsExactly("https://api.example.com/sync");
+    }
+
+    @Test
+    void doesNotReportPlainHttpToPrivateNetworkHosts() {
+        var result =
+                analyzer.analyze(
+                        tempDir,
+                        configuration(
+                                property("orders.url", "http://orders-service:8080/api"),
+                                property("ledger.url", "http://10.0.4.12/ledger"),
+                                property("payments.url", "http://payments.internal/api"),
+                                property("cluster.url", "http://billing.default.svc.cluster.local"),
+                                property("gateway.url", "http://${GATEWAY_HOST}/api"),
+                                property("self.url", "http://localhost:${server.port}/actuator"),
+                                property("app.cors.allowed-origins", "http://localhost:[*]"),
+                                property("partner.url", "http://partner.example.com/api")),
+                        webBuild(),
+                        WebStack.SERVLET_MVC);
+
+        assertThat(result.findings())
+                .filteredOn(finding -> "SPRING_HTTP_PLAIN_URL".equals(finding.ruleId()))
+                .singleElement()
+                .satisfies(
+                        finding -> {
+                            String reported =
+                                    finding.message()
+                                            + finding.evidence()
+                                            + finding.occurrences().toString();
+                            assertThat(reported).contains("partner.example.com");
+                            assertThat(reported)
+                                    .doesNotContain(
+                                            "orders-service",
+                                            "10.0.4.12",
+                                            "payments.internal",
+                                            "svc.cluster.local",
+                                            "GATEWAY_HOST");
+                        });
+    }
 }

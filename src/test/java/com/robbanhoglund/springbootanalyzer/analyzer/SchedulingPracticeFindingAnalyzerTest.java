@@ -577,4 +577,196 @@ class SchedulingPracticeFindingAnalyzerTest {
 
         assertThat(byRule(findings(), "SPRING_ASYNC_SELF_INVOCATION")).isNull();
     }
+
+    private static List<Finding> allByRule(List<Finding> findings, String ruleId) {
+        return findings.stream().filter(f -> ruleId.equals(f.ruleId())).toList();
+    }
+
+    // ── SPRING_EVENT_LISTENER_INVALID_SIGNATURE ───────────────────────────────
+
+    @Test
+    void flagsEventListenersSpringCannotRegister() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/Listeners.java",
+                """
+                package com.example;
+                import org.springframework.context.event.ContextRefreshedEvent;
+                import org.springframework.context.event.EventListener;
+                import org.springframework.stereotype.Component;
+                import org.springframework.transaction.event.TransactionPhase;
+                import org.springframework.transaction.event.TransactionalEventListener;
+                @Component
+                public class Listeners {
+                    @EventListener
+                    public void twoParameters(OrderPlaced event, String extra) {}
+
+                    @EventListener(condition = "#root.args.length == 0")
+                    public void noEvent() {}
+
+                    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+                    public void noTransactionalEvent() {}
+
+                    @EventListener(ContextRefreshedEvent.class)
+                    public void refreshed() {}
+
+                    @EventListener(classes = {OrderPlaced.class, OrderCancelled.class})
+                    public void orderChanged() {}
+
+                    @EventListener
+                    public void placed(OrderPlaced event) {}
+                }
+                record OrderPlaced(String id) {}
+                record OrderCancelled(String id) {}
+                """);
+
+        List<Finding> invalid = allByRule(findings(), "SPRING_EVENT_LISTENER_INVALID_SIGNATURE");
+
+        assertThat(invalid)
+                .extracting(Finding::target)
+                .containsExactly(
+                        "Listeners#twoParameters",
+                        "Listeners#noEvent",
+                        "Listeners#noTransactionalEvent");
+        assertThat(invalid.get(0).message()).contains("declares 2 parameters");
+        assertThat(invalid.get(1).message()).contains("names no event type");
+        assertThat(invalid.get(2).message()).startsWith("@TransactionalEventListener");
+    }
+
+    // ── SPRING_TASK_EXECUTOR_MAX_POOL_IGNORED ─────────────────────────────────
+
+    @Test
+    void flagsMaxPoolSizeWithUnboundedQueue() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ExecutorConfig.java",
+                """
+                package com.example;
+                import java.util.concurrent.LinkedBlockingQueue;
+                import java.util.concurrent.ThreadPoolExecutor;
+                import java.util.concurrent.TimeUnit;
+                import org.springframework.context.annotation.Bean;
+                import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+                public class ExecutorConfig {
+                    @Bean
+                    ThreadPoolTaskExecutor taskExecutor() {
+                        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+                        executor.setCorePoolSize(2);
+                        executor.setMaxPoolSize(20);
+                        return executor;
+                    }
+
+                    @Bean
+                    ThreadPoolExecutor rawExecutor() {
+                        return new ThreadPoolExecutor(2, 10, 60, TimeUnit.SECONDS, new LinkedBlockingQueue<>());
+                    }
+                }
+                """);
+
+        List<Finding> ignored = allByRule(findings(), "SPRING_TASK_EXECUTOR_MAX_POOL_IGNORED");
+
+        assertThat(ignored)
+                .extracting(Finding::message)
+                .anyMatch(
+                        message ->
+                                message.startsWith("setMaxPoolSize(...) without a queue capacity"))
+                .anyMatch(
+                        message ->
+                                message.startsWith(
+                                        "new ThreadPoolExecutor(core, max, ..., new"
+                                                + " LinkedBlockingQueue<>())"));
+        assertThat(ignored)
+                .extracting(finding -> finding.primaryLocation().startLine())
+                .containsExactlyInAnyOrder(12, 18);
+    }
+
+    @Test
+    void doesNotFlagBoundedQueuesOrEqualCoreAndMaxSizes() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/ExecutorConfig.java",
+                """
+                package com.example;
+                import java.util.concurrent.LinkedBlockingQueue;
+                import java.util.concurrent.ThreadPoolExecutor;
+                import java.util.concurrent.TimeUnit;
+                import org.springframework.context.annotation.Bean;
+                import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+                public class ExecutorConfig {
+                    @Bean
+                    ThreadPoolTaskExecutor bounded() {
+                        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+                        executor.setMaxPoolSize(20);
+                        executor.setQueueCapacity(100);
+                        return executor;
+                    }
+
+                    @Bean
+                    ThreadPoolTaskExecutor fixed() {
+                        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+                        executor.setCorePoolSize(10);
+                        executor.setMaxPoolSize(10);
+                        return executor;
+                    }
+
+                    @Bean
+                    ThreadPoolExecutor boundedRaw() {
+                        return new ThreadPoolExecutor(2, 10, 60, TimeUnit.SECONDS, new LinkedBlockingQueue<>(500));
+                    }
+
+                    @Bean
+                    ThreadPoolExecutor fixedRaw() {
+                        return new ThreadPoolExecutor(4, 4, 0, TimeUnit.SECONDS, new LinkedBlockingQueue<>());
+                    }
+                }
+                """);
+
+        assertThat(allByRule(findings(), "SPRING_TASK_EXECUTOR_MAX_POOL_IGNORED")).isEmpty();
+    }
+
+    // ── SPRING_RETRYABLE_WITHOUT_ENABLE_RETRY (Spring Framework 7 resilience) ─
+
+    @Test
+    void flagsFrameworkResilienceAnnotationsWithoutEnableResilientMethods() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/PaymentClient.java",
+                """
+                package com.example;
+                import org.springframework.resilience.annotation.ConcurrencyLimit;
+                import org.springframework.resilience.annotation.Retryable;
+                import org.springframework.stereotype.Component;
+                @Component
+                public class PaymentClient {
+                    @Retryable(maxRetries = 3)
+                    public void charge() {}
+
+                    @ConcurrencyLimit(4)
+                    public void refund() {}
+                }
+                """);
+
+        Finding finding = byRule(findingsOnBoot("4.0.6"), "SPRING_RETRYABLE_WITHOUT_ENABLE_RETRY");
+
+        assertThat(finding).isNotNull();
+        assertThat(finding.target()).isEqualTo("PaymentClient#charge");
+        assertThat(finding.message()).contains("@EnableResilientMethods");
+    }
+
+    @Test
+    void doesNotFlagFrameworkResilienceAnnotationsWhenEnabled() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/PaymentClient.java",
+                """
+                package com.example;
+                import org.springframework.resilience.annotation.EnableResilientMethods;
+                import org.springframework.resilience.annotation.Retryable;
+                import org.springframework.stereotype.Component;
+                @Component
+                @EnableResilientMethods
+                public class PaymentClient {
+                    @Retryable
+                    public void charge() {}
+                }
+                """);
+
+        assertThat(byRule(findingsOnBoot("4.0.6"), "SPRING_RETRYABLE_WITHOUT_ENABLE_RETRY"))
+                .isNull();
+    }
 }

@@ -73,12 +73,19 @@ HttpSurfaceAnalyzer        maps @RequestMapping endpoints + outbound HTTP calls 
 SchedulingAnalyzer         finds @Scheduled / @Async methods
 MessagingAnalyzer          finds @KafkaListener / @RabbitListener / @JmsListener / @SqsListener
         │
-StaticPracticeFindingAnalyzer    source-code rule findings (transactions, async, exceptions …)
-ConfigurationFindingAnalyzer     configuration + Gradle model rule findings
-ObservabilityFindingAnalyzer     observability gap findings (@Timed vs @Observed, etc.)
-TestingPracticeFindingAnalyzer   testing practice rule findings
-CachingPracticeFindingAnalyzer   caching practice rule findings
-ObservabilityGapFindingAnalyzer  observability coverage gap findings
+StaticPracticeFindingAnalyzer      source-code rule findings (transactions, async, exceptions …)
+ConfigurationFindingAnalyzer       configuration + Gradle model rule findings
+ObservabilityFindingAnalyzer       observability gap findings (@Timed vs @Observed, etc.)
+TestingPracticeFindingAnalyzer     testing practice rule findings
+CachingPracticeFindingAnalyzer     caching practice rule findings
+ObservabilityGapFindingAnalyzer    observability coverage gap findings
+TransactionPracticeFindingAnalyzer transaction boundary findings
+SecurityPracticeFindingAnalyzer    security findings (filter chains, injection, crypto …)
+ScalabilityPracticeFindingAnalyzer scalability and bean-lifecycle findings
+SchedulingPracticeFindingAnalyzer  scheduling, async, retry and event-listener findings
+ContainerPracticeFindingAnalyzer   bean-definition findings the container rejects
+WebHandlerFindingAnalyzer          handler-method findings Spring MVC rejects
+MigrationPracticeFindingAnalyzer   Spring Boot upgrade findings
         │
         └──► AnalysisResult (all findings + all sub-analyses combined)
 ```
@@ -121,6 +128,14 @@ com.robbanhoglund.springbootanalyzer
 │   ├── TestingPracticeFindingAnalyzer.java testing practice rules
 │   ├── CachingPracticeFindingAnalyzer.java caching practice rules
 │   ├── ObservabilityGapFindingAnalyzer.java observability coverage gap rules
+│   ├── TransactionPracticeFindingAnalyzer.java transaction boundary rules
+│   ├── SecurityPracticeFindingAnalyzer.java security rules
+│   ├── ScalabilityPracticeFindingAnalyzer.java scalability and bean-lifecycle rules
+│   ├── SchedulingPracticeFindingAnalyzer.java scheduling, async, retry and event-listener rules
+│   ├── ContainerPracticeFindingAnalyzer.java bean-definition rules
+│   ├── WebHandlerFindingAnalyzer.java      handler-method rules
+│   ├── MigrationPracticeFindingAnalyzer.java Spring Boot upgrade rules (+ BootUpgradeChecks)
+│   ├── ComponentScanModel.java             scan roots and explicit registrations
 │   │
 │   ├── configuration/                      application.properties / YAML parsing
 │   │   ├── ConfigurationAnalyzer.java
@@ -295,10 +310,20 @@ analyze()
 | 9 | `ConfigurationFindingAnalyzer` | root + `BuildInfo` + `ConfigurationAnalysis` + `GradleModelAnalysis` | findings |
 | 10 | `ObservabilityFindingAnalyzer` | root + `RuntimeStackAnalysis` | findings |
 | 11 | `TestingPracticeFindingAnalyzer` | root + classes | findings |
-| 12 | `CachingPracticeFindingAnalyzer` | root + classes | findings |
-| 13 | `ObservabilityGapFindingAnalyzer` | root + `RuntimeStackAnalysis` + classes | findings |
-| 14 | `SchedulingAnalyzer` | repository root | `SchedulingAnalysis` |
-| 15 | `MessagingAnalyzer` | repository root | `MessagingAnalysis` |
+| 12 | `CachingPracticeFindingAnalyzer` | parsed sources + `BuildInfo` + `ConfigurationAnalysis` | findings |
+| 13 | `ObservabilityGapFindingAnalyzer` | parsed sources + `BuildInfo` | findings |
+| 14 | `TransactionPracticeFindingAnalyzer` | parsed sources | findings |
+| 15 | `SecurityPracticeFindingAnalyzer` | parsed sources + `BuildInfo` | findings |
+| 16 | `ScalabilityPracticeFindingAnalyzer` | parsed sources + `RuntimeStackAnalysis` | findings |
+| 17 | `SchedulingPracticeFindingAnalyzer` | parsed sources + `BuildInfo` | findings |
+| 18 | `ContainerPracticeFindingAnalyzer` | parsed sources + `BuildInfo` | findings |
+| 19 | `WebHandlerFindingAnalyzer` | parsed sources | findings |
+| 20 | `MigrationPracticeFindingAnalyzer` | parsed sources + `RuntimeStackAnalysis` + `BuildInfo` + `ConfigurationAnalysis` | findings |
+| 21 | `SchedulingAnalyzer` | parsed sources | `SchedulingAnalysis` |
+| 22 | `MessagingAnalyzer` | parsed sources | `MessagingAnalysis` |
+
+Stages 8–20 each run inside a containment boundary: a failing stage is logged and skipped so the
+other stages still contribute their findings.
 
 All collected findings are assembled into an `AnalysisResult` record and returned. No deduplication happens inside the analyzer — that is done by `FindingNormalizer` in the application layer.
 
@@ -381,6 +406,34 @@ Detects testing anti-patterns: `@SpringBootTest` overuse where a slice test woul
 ### CachingPracticeFindingAnalyzer
 
 Detects caching anti-patterns: `@Cacheable` on `void` methods, `@Cacheable`/`@CachePut` returning mutable collections, cache annotations on private methods (silently ignored by Spring AOP), cache self-invocation, and `@CacheEvict` without `allEntries = true` on no-arg methods.
+
+### TransactionPracticeFindingAnalyzer
+
+Transaction boundary rules that need the whole source tree: `@Async` combined with `@Transactional`, `@Transactional` on `@PostConstruct`, `synchronized` transactional methods, and transactional events published outside a transaction.
+
+### SecurityPracticeFindingAnalyzer
+
+Security rules: filter chains without authorization, invalid authorization rules, unreachable chains, catch-all `permitAll()`, method security without `@EnableMethodSecurity`, insecure TLS and deserialization, injection sinks (command, SpEL, path, SSRF, open redirect), weak crypto, and credentials in logs.
+
+### ScalabilityPracticeFindingAnalyzer
+
+Scalability and bean-lifecycle rules such as hardcoded file paths, prototype beans in singletons, HTTP clients without timeouts and unbounded executors.
+
+### SchedulingPracticeFindingAnalyzer
+
+Scheduling, async and retry rules: `@Scheduled`/`@Async`/`@Retryable` without their `@Enable...` annotation (spring-retry and Spring Framework 7 resilience), invalid `@Scheduled` signatures, triggers and cron expressions, `@Async` self-invocation, invalid `@EventListener` signatures, and executors whose maximum pool size is never used.
+
+### ContainerPracticeFindingAnalyzer
+
+Bean-definition rules the container rejects or silently ignores: `@Enable...` annotations on classes Spring never registers, invalid `@Bean` methods and `@Configuration` classes, non-canonical `@ConfigurationProperties` prefixes, constructor-bound properties classes that are also components, unproxied request/session-scoped beans in singletons, and non-static `BeanFactoryPostProcessor` bean methods.
+
+### WebHandlerFindingAnalyzer
+
+Handler-method rules for Spring MVC: optional primitive request values, several `@RequestBody` parameters, and ambiguous mappings across controllers.
+
+### MigrationPracticeFindingAnalyzer
+
+Spring Boot upgrade rules: removed Spring Security 5 APIs, legacy `javax.*` imports on Boot 3, and the version-aware checks in `BootUpgradeChecks` — parameter names without `-parameters` on Boot 3.2+, and on Boot 4 Jackson 2 `ObjectMapper` beans and test clients without their auto-configure annotation. Configuration keys are judged against the metadata of the project's Spring Boot line (bundled 4.0 metadata for Boot 4 projects).
 
 ### ObservabilityGapFindingAnalyzer
 

@@ -114,16 +114,28 @@ public class CachingPracticeFindingAnalyzer {
             JavaSources sources, BuildInfo buildInfo, ConfigurationAnalysis configurationAnalysis) {
         List<Finding> findings = new ArrayList<>();
         boolean cacheableFound = false;
+        boolean cachingEnabled = false;
+        CacheUsage firstUsage = null;
         for (JavaSources.JavaFile file : sources.files()) {
             if (file.compilationUnit() != null) {
                 analyzeSourceFile(file.compilationUnit(), file.relativePath(), findings);
+                if (firstUsage == null
+                        && file.content().contains("org.springframework.cache.annotation")) {
+                    firstUsage = firstCacheAnnotationUsage(file);
+                }
             }
             if (!cacheableFound && file.content().contains("@Cacheable")) {
                 cacheableFound = true;
             }
+            if (file.content().contains("@EnableCaching")) {
+                cachingEnabled = true;
+            }
         }
         if (cacheableFound) {
             detectCacheableNoTtlProvider(sources, buildInfo, configurationAnalysis, findings);
+        }
+        if (firstUsage != null && !cachingEnabled) {
+            addCachingNotEnabledFinding(firstUsage, findings);
         }
         return findings;
     }
@@ -156,9 +168,212 @@ public class CachingPracticeFindingAnalyzer {
             detectCacheSelfInvocation(cls, method, cachedMethodNames, relativePath, findings);
             detectCacheableSyncIncompatible(cls, method, relativePath, findings);
             detectCachePutAndCacheableSameMethod(cls, method, relativePath, findings);
+            detectCacheAnnotationConflicts(cls, method, relativePath, findings);
+            detectCacheableConditionUsesResult(cls, method, relativePath, findings);
         }
 
         detectCacheableNoEviction(cls, relativePath, findings);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rule: SPRING_CACHEABLE_WITHOUT_ENABLE_CACHING
+    // ---------------------------------------------------------------------------
+
+    private record CacheUsage(String relativePath, Integer line, String target) {}
+
+    private CacheUsage firstCacheAnnotationUsage(JavaSources.JavaFile file) {
+        for (ClassOrInterfaceDeclaration cls :
+                file.compilationUnit().findAll(ClassOrInterfaceDeclaration.class)) {
+            if (cls.getAnnotations().stream()
+                    .anyMatch(
+                            a -> ALL_CACHE_ANNOTATIONS.contains(simpleName(a.getNameAsString())))) {
+                return new CacheUsage(
+                        file.relativePath(),
+                        cls.getBegin().map(p -> p.line).orElse(null),
+                        cls.getNameAsString());
+            }
+            for (MethodDeclaration method : cls.getMethods()) {
+                if (hasCacheAnnotation(method, ALL_CACHE_ANNOTATIONS)) {
+                    return new CacheUsage(
+                            file.relativePath(),
+                            method.getBegin().map(p -> p.line).orElse(null),
+                            cls.getNameAsString() + "#" + method.getNameAsString());
+                }
+            }
+        }
+        return null;
+    }
+
+    private void addCachingNotEnabledFinding(CacheUsage usage, List<Finding> findings) {
+        findings.add(
+                FindingFactory.builder(
+                                FindingRules.SPRING_CACHEABLE_WITHOUT_ENABLE_CACHING,
+                                FindingConfidence.MEDIUM)
+                        .shortMessage(
+                                "Cache annotations are used (first seen on "
+                                        + usage.target()
+                                        + ") but no @EnableCaching was found — nothing is cached.")
+                        .whyBadPractice(
+                                "Spring only intercepts @Cacheable, @CachePut, @CacheEvict and"
+                                    + " @Caching once caching is enabled with @EnableCaching."
+                                    + " Spring Boot's cache auto-configuration also waits for it"
+                                    + " (it requires the CacheInterceptor that @EnableCaching"
+                                    + " registers), so without it the annotations are ignored.")
+                        .possibleImpact(
+                                "Every call executes the method: the load the cache was meant to"
+                                        + " remove stays, and @CacheEvict never clears anything.")
+                        .recommendation(
+                                "Add @EnableCaching to a @Configuration class (or the main"
+                                        + " application class) and verify with a test that a"
+                                        + " second call is served from the cache.")
+                        .evidence(
+                                "Cache annotations are used (first seen on "
+                                        + usage.target()
+                                        + " in "
+                                        + usage.relativePath()
+                                        + ") but no @EnableCaching annotation was found in"
+                                        + " src/main/java.")
+                        .limitations(
+                                "Caching enabled through an imported library configuration is not"
+                                        + " visible and would make this a false positive.")
+                        .source(usage.relativePath(), usage.line())
+                        .target(usage.target())
+                        .build());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Rules: SPRING_CACHE_ANNOTATION_CONFLICTING_ATTRIBUTES, SPRING_CACHEABLE_CONDITION_USES_RESULT
+    // ---------------------------------------------------------------------------
+
+    /** Cache operation annotations on the method, including those nested in @Caching. */
+    private List<AnnotationExpr> cacheOperations(MethodDeclaration method) {
+        List<AnnotationExpr> operations = new ArrayList<>();
+        for (AnnotationExpr annotation : method.getAnnotations()) {
+            String name = simpleName(annotation.getNameAsString());
+            if (Set.of("Cacheable", "CachePut", "CacheEvict").contains(name)) {
+                operations.add(annotation);
+            } else if ("Caching".equals(name)) {
+                annotation.findAll(AnnotationExpr.class).stream()
+                        .filter(nested -> nested != annotation)
+                        .filter(
+                                nested ->
+                                        Set.of("Cacheable", "CachePut", "CacheEvict")
+                                                .contains(simpleName(nested.getNameAsString())))
+                        .forEach(operations::add);
+            }
+        }
+        return operations;
+    }
+
+    private static String attribute(AnnotationExpr annotation, String name) {
+        if (!annotation.isNormalAnnotationExpr()) {
+            return null;
+        }
+        return annotation.asNormalAnnotationExpr().getPairs().stream()
+                .filter(pair -> name.equals(pair.getNameAsString()))
+                .map(pair -> pair.getValue())
+                .filter(Expression::isStringLiteralExpr)
+                .map(value -> value.asStringLiteralExpr().asString())
+                .filter(value -> !value.isBlank())
+                .findFirst()
+                .orElse(null);
+    }
+
+    private void detectCacheAnnotationConflicts(
+            ClassOrInterfaceDeclaration cls,
+            MethodDeclaration method,
+            String relativePath,
+            List<Finding> findings) {
+        for (AnnotationExpr operation : cacheOperations(method)) {
+            String conflict = null;
+            if (attribute(operation, "key") != null
+                    && attribute(operation, "keyGenerator") != null) {
+                conflict = "key and keyGenerator";
+            } else if (attribute(operation, "cacheManager") != null
+                    && attribute(operation, "cacheResolver") != null) {
+                conflict = "cacheManager and cacheResolver";
+            }
+            if (conflict == null) {
+                continue;
+            }
+            String annotation = "@" + simpleName(operation.getNameAsString());
+            String target = cls.getNameAsString() + "#" + method.getNameAsString();
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_CACHE_ANNOTATION_CONFLICTING_ATTRIBUTES,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    annotation
+                                            + " on "
+                                            + target
+                                            + " sets both "
+                                            + conflict
+                                            + " — startup fails.")
+                            .whyBadPractice(
+                                    "Spring's cache annotation parser treats "
+                                            + conflict
+                                            + " as mutually exclusive and throws"
+                                            + " IllegalStateException (\"Invalid cache annotation"
+                                            + " configuration\") while it proxies the bean.")
+                            .possibleImpact("The application context fails to start.")
+                            .recommendation(
+                                    conflict.startsWith("key")
+                                            ? "Keep either the SpEL key or the KeyGenerator bean,"
+                                                    + " not both."
+                                            : "Keep either the CacheManager or the CacheResolver,"
+                                                  + " not both — a resolver replaces the manager.")
+                            .evidence(annotation + " on " + target + " sets " + conflict + ".")
+                            .source(relativePath, method.getBegin().map(p -> p.line).orElse(null))
+                            .target(target)
+                            .build());
+        }
+    }
+
+    private void detectCacheableConditionUsesResult(
+            ClassOrInterfaceDeclaration cls,
+            MethodDeclaration method,
+            String relativePath,
+            List<Finding> findings) {
+        for (AnnotationExpr operation : cacheOperations(method)) {
+            String condition = attribute(operation, "condition");
+            if (!"Cacheable".equals(simpleName(operation.getNameAsString()))
+                    || condition == null
+                    || !condition.contains("#result")) {
+                continue;
+            }
+            String target = cls.getNameAsString() + "#" + method.getNameAsString();
+            findings.add(
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_CACHEABLE_CONDITION_USES_RESULT,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    "@Cacheable on "
+                                            + target
+                                            + " checks #result in condition — the result is not"
+                                            + " known yet, so the method is never cached.")
+                            .whyBadPractice(
+                                    "condition is evaluated before the method runs, to decide"
+                                            + " whether the cache is consulted at all; #result is"
+                                            + " always null there. unless is evaluated after the"
+                                            + " method and is the attribute that can see the"
+                                            + " result.")
+                            .possibleImpact(
+                                    "A check such as #result != null is never true, so every call"
+                                            + " executes the method; dereferencing #result fails"
+                                            + " every call instead.")
+                            .recommendation(
+                                    "Move the result check to unless and invert it, for example"
+                                            + " unless = \"#result == null\".")
+                            .evidence(
+                                    "condition = \""
+                                            + condition
+                                            + "\" on @Cacheable of "
+                                            + target
+                                            + ".")
+                            .source(relativePath, method.getBegin().map(p -> p.line).orElse(null))
+                            .target(target)
+                            .build());
+        }
     }
 
     // ---------------------------------------------------------------------------

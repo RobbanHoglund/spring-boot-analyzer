@@ -511,4 +511,82 @@ class TestingPracticeFindingAnalyzerTest {
 
         assertThat(byRule(findings(), "SPRING_TEST_SPRINGBOOTTEST_WEBENV_NONE_MISSING")).isNull();
     }
+
+    @Test
+    void doesNotFlagIntegrationTestsThatCleanTheDatabaseThemselves() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/RepositoryCleanupIT.java",
+                """
+                package com.example;
+                import org.junit.jupiter.api.AfterEach;
+                import org.springframework.beans.factory.annotation.Autowired;
+                import org.springframework.boot.test.context.SpringBootTest;
+                @SpringBootTest
+                class RepositoryCleanupIT {
+                    @Autowired UserRepository userRepository;
+
+                    @AfterEach
+                    void cleanUp() {
+                        userRepository.deleteAll();
+                    }
+                }
+                """);
+        writeTestFile(
+                "src/test/java/com/example/JdbcCleanupIT.java",
+                """
+                package com.example;
+                import org.junit.jupiter.api.BeforeEach;
+                import org.springframework.beans.factory.annotation.Autowired;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import org.springframework.jdbc.core.JdbcTemplate;
+                @SpringBootTest
+                class JdbcCleanupIT {
+                    @Autowired OrderRepository orderRepository;
+                    @Autowired JdbcTemplate jdbcTemplate;
+
+                    @BeforeEach
+                    void reset() {
+                        jdbcTemplate.execute("TRUNCATE TABLE orders");
+                    }
+                }
+                """);
+        writeTestFile(
+                "src/test/java/com/example/ScriptCleanupIT.java",
+                """
+                package com.example;
+                import org.springframework.beans.factory.annotation.Autowired;
+                import org.springframework.boot.test.context.SpringBootTest;
+                import org.springframework.test.context.jdbc.Sql;
+                @SpringBootTest
+                @Sql(scripts = "/cleanup.sql", executionPhase = Sql.ExecutionPhase.AFTER_TEST_METHOD)
+                class ScriptCleanupIT {
+                    @Autowired InvoiceRepository invoiceRepository;
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_TEST_NO_TRANSACTIONAL_ROLLBACK")).isNull();
+    }
+
+    @Test
+    void stillFlagsLifecycleMethodsThatDoNotCleanUp() throws IOException {
+        writeTestFile(
+                "src/test/java/com/example/SeedingIT.java",
+                """
+                package com.example;
+                import org.junit.jupiter.api.BeforeEach;
+                import org.springframework.beans.factory.annotation.Autowired;
+                import org.springframework.boot.test.context.SpringBootTest;
+                @SpringBootTest
+                class SeedingIT {
+                    @Autowired UserRepository userRepository;
+
+                    @BeforeEach
+                    void seed() {
+                        userRepository.save(new User("ada"));
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_TEST_NO_TRANSACTIONAL_ROLLBACK")).isNotNull();
+    }
 }

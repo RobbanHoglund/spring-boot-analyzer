@@ -10,9 +10,11 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingOccurrence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.SourceLocation;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ApplicationProperty;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ConfigurationAnalysis;
+import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertyKind;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertyReference;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleModelAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleResolvedDependencyModel;
@@ -56,19 +58,34 @@ public class ConfigurationFindingAnalyzer {
                     "development",
                     "qa",
                     "uat");
-    private static final Set<String> SECURITY_AUTO_CONFIG_CLASSES =
+
+    /** Excluding this one means the Spring Security filter is never registered. */
+    private static final String SECURITY_FILTER_AUTO_CONFIGURATION =
+            "SecurityFilterAutoConfiguration";
+
+    /**
+     * Auto-configurations that create the default web security chain and enable web security
+     * (Spring Boot 3: SecurityAutoConfiguration; Spring Boot 4: ServletWebSecurityAutoConfiguration,
+     * plus the reactive variants). Excluding UserDetailsServiceAutoConfiguration only removes the
+     * generated default user and is harmless.
+     */
+    private static final Set<String> SECURITY_CHAIN_AUTO_CONFIGURATIONS =
             Set.of(
                     "SecurityAutoConfiguration",
-                    "UserDetailsServiceAutoConfiguration",
-                    "ManagementWebSecurityAutoConfiguration");
+                    "ServletWebSecurityAutoConfiguration",
+                    "ReactiveSecurityAutoConfiguration",
+                    "ReactiveWebSecurityAutoConfiguration");
+
+    private static final Set<String> PROFILE_SPECIFIC_INVALID_PROPERTIES =
+            Set.of("spring.profiles.active", "spring.profiles.include", "spring.profiles.default");
     private static final Set<String> SCHEDULING_DISABLE_PROPERTIES =
             Set.of("spring.task.scheduling.enabled", "spring.quartz.auto-startup");
     // Flyway versioned migration filename: V<version>__<description>.sql, where <version> is one or
     // more numeric segments separated by '.' or '_' (e.g. V1, V1.0, V2_1, V20230101). The version
     // is intentionally allowed to be a single digit — the common V1__init.sql form.
+    // Flyway matches the "V" prefix case-sensitively but the ".sql" suffix case-insensitively.
     private static final Pattern FLYWAY_MIGRATION_PATTERN =
-            Pattern.compile(
-                    "V(?<version>[0-9]+(?:[._][0-9]+)*)__.+\\.sql", Pattern.CASE_INSENSITIVE);
+            Pattern.compile("V(?<version>[0-9]+(?:[._][0-9]+)*)__.+\\.(?i:sql)");
 
     private final SensitivePropertyValueRedactor sensitivePropertyValueRedactor;
 
@@ -122,8 +139,8 @@ public class ConfigurationFindingAnalyzer {
         detectAdditionalRiskyConfiguration(configurationAnalysis, findings);
         detectCrossProfileDrift(configurationAnalysis, findings);
         detectHibernateVersionMismatch(buildInfo, gradleModelAnalysis, findings);
-        detectSecurityAutoconfigureExcluded(configurationAnalysis, findings);
-        detectDatasourceNoTestOverride(configurationAnalysis, findings);
+        detectSecurityAutoconfigureExcluded(configurationAnalysis, javaSources, findings);
+        detectDatasourceNoTestOverride(repositoryRoot, configurationAnalysis, findings);
         detectH2InNonTestProfile(configurationAnalysis, findings);
         detectFlywayDisabledInTest(configurationAnalysis, findings);
         detectSchedulingDisabledInTest(configurationAnalysis, findings);
@@ -141,14 +158,354 @@ public class ConfigurationFindingAnalyzer {
         detectMultipartUnlimitedSize(configurationAnalysis, findings);
         detectJdbcUrlEmbeddedCredentials(configurationAnalysis, findings);
         detectDefaultUserPasswordLiteral(configurationAnalysis, findings);
-        detectDeprecatedSpringProfiles(configurationAnalysis, findings);
+        detectDeprecatedSpringProfiles(configurationAnalysis, buildInfo, findings);
         detectProfilesActiveInProfileSpecificFile(configurationAnalysis, buildInfo, findings);
         detectSqlInitAlwaysProd(configurationAnalysis, findings);
         detectActuatorShowValuesAlways(configurationAnalysis, findings);
         detectActuatorHttptraceRenamed(configurationAnalysis, findings);
+        detectRemovedConfigurationProperties(configurationAnalysis, buildInfo, findings);
+        detectTaskExecutionMaxPoolIgnored(configurationAnalysis, findings);
         detectDataRestExposedRepositories(
                 buildInfo, configurationAnalysis, gradleModelAnalysis, findings);
         return findings;
+    }
+
+    /**
+     * A configuration key Spring Boot no longer reads. {@code prefix} entries cover a whole
+     * namespace; {@code replacement} is null when there is no direct successor, and
+     * {@code removedIn} is the Spring Boot line ({@code major.minor}) that stopped reading it.
+     */
+    private record RemovedProperty(
+            String key, boolean prefix, String replacement, String note, String removedIn) {
+
+        /**
+         * Whether the key is gone on {@code bootVersion}. For an unknown version only keys
+         * removed by Spring Boot 2.5 count; later removals may still be valid on Boot 2.
+         */
+        boolean removedFor(String bootVersion) {
+            String[] parts = removedIn.split("\\.");
+            int major = Integer.parseInt(parts[0]);
+            int minor = Integer.parseInt(parts[1]);
+            if (SpringBootVersions.major(bootVersion) < 0) {
+                return major < 3;
+            }
+            return SpringBootVersions.isAtLeast(bootVersion, major, minor);
+        }
+    }
+
+    /**
+     * Keys that Spring Boot removed without keeping a deprecation entry in its metadata. Renamed
+     * keys that Spring Boot still describes as deprecated are reported by
+     * SPRING_DEPRECATED_CONFIGURATION_PROPERTY instead.
+     */
+    private static final List<RemovedProperty> REMOVED_PROPERTIES =
+            List.of(
+                    new RemovedProperty(
+                            "server.tomcat.max-threads",
+                            false,
+                            "server.tomcat.threads.max",
+                            null,
+                            "2.5"),
+                    new RemovedProperty(
+                            "server.tomcat.min-spare-threads",
+                            false,
+                            "server.tomcat.threads.min-spare",
+                            null,
+                            "2.5"),
+                    new RemovedProperty(
+                            "server.jetty.max-threads",
+                            false,
+                            "server.jetty.threads.max",
+                            null,
+                            "2.5"),
+                    new RemovedProperty(
+                            "server.jetty.min-threads",
+                            false,
+                            "server.jetty.threads.min",
+                            null,
+                            "2.5"),
+                    new RemovedProperty(
+                            "server.jetty.selectors",
+                            false,
+                            "server.jetty.threads.selectors",
+                            null,
+                            "2.5"),
+                    new RemovedProperty(
+                            "server.jetty.acceptors",
+                            false,
+                            "server.jetty.threads.acceptors",
+                            null,
+                            "2.5"),
+                    new RemovedProperty(
+                            "server.undertow.io-threads",
+                            false,
+                            "server.undertow.threads.io",
+                            null,
+                            "2.5"),
+                    new RemovedProperty(
+                            "server.undertow.worker-threads",
+                            false,
+                            "server.undertow.threads.worker",
+                            null,
+                            "2.5"),
+                    new RemovedProperty(
+                            "spring.elasticsearch.rest.read-timeout",
+                            false,
+                            "spring.elasticsearch.socket-timeout",
+                            null,
+                            "3.0"),
+                    new RemovedProperty(
+                            "spring.elasticsearch.rest.",
+                            true,
+                            "spring.elasticsearch.",
+                            null,
+                            "3.0"),
+                    new RemovedProperty(
+                            "spring.mvc.pathmatch.use-suffix-pattern",
+                            false,
+                            null,
+                            "suffix pattern matching was removed in Spring Framework 6",
+                            "3.0"),
+                    new RemovedProperty(
+                            "spring.mvc.pathmatch.use-registered-suffix-pattern",
+                            false,
+                            null,
+                            "suffix pattern matching was removed in Spring Framework 6",
+                            "3.0"),
+                    new RemovedProperty(
+                            "spring.mvc.contentnegotiation.favor-path-extension",
+                            false,
+                            null,
+                            "path-extension content negotiation was removed in Spring Framework 6",
+                            "3.0"),
+                    new RemovedProperty(
+                            "spring.jpa.hibernate.naming.strategy",
+                            false,
+                            "spring.jpa.hibernate.naming.physical-strategy",
+                            null,
+                            "2.0"),
+                    new RemovedProperty(
+                            "spring.jackson.serialization-inclusion",
+                            false,
+                            "spring.jackson.default-property-inclusion",
+                            null,
+                            "2.0"),
+                    new RemovedProperty(
+                            "security.basic.enabled",
+                            false,
+                            null,
+                            "configure a SecurityFilterChain instead",
+                            "2.0"),
+                    new RemovedProperty(
+                            "security.user.", true, "spring.security.user.", null, "2.0"),
+                    new RemovedProperty(
+                            "management.security.enabled",
+                            false,
+                            null,
+                            "secure actuator endpoints through Spring Security instead",
+                            "2.0"),
+                    new RemovedProperty(
+                            "server.context-path",
+                            false,
+                            "server.servlet.context-path",
+                            null,
+                            "2.0"),
+                    new RemovedProperty(
+                            "server.servlet-path", false, "spring.mvc.servlet.path", null, "2.0"),
+                    new RemovedProperty(
+                            "server.session.", true, "server.servlet.session.", null, "2.0"),
+                    new RemovedProperty(
+                            "spring.http.multipart.",
+                            true,
+                            "spring.servlet.multipart.",
+                            null,
+                            "2.0"),
+                    new RemovedProperty(
+                            "management.port", false, "management.server.port", null, "2.0"),
+                    new RemovedProperty(
+                            "management.address", false, "management.server.address", null, "2.0"),
+                    new RemovedProperty(
+                            "management.context-path",
+                            false,
+                            "management.endpoints.web.base-path",
+                            null,
+                            "2.0"),
+                    new RemovedProperty("flyway.", true, "spring.flyway.", null, "2.0"),
+                    new RemovedProperty("liquibase.", true, "spring.liquibase.", null, "2.0"),
+                    new RemovedProperty(
+                            "endpoints.",
+                            true,
+                            null,
+                            "actuator endpoints are configured under management.endpoint(s).*",
+                            "2.0"),
+                    new RemovedProperty(
+                            "spring.sleuth.",
+                            true,
+                            null,
+                            "Spring Cloud Sleuth does not support Spring Boot 3; tracing is"
+                                    + " configured under management.tracing.*",
+                            "3.0"),
+                    new RemovedProperty(
+                            "spring.zipkin.base-url",
+                            false,
+                            "management.zipkin.tracing.endpoint",
+                            null,
+                            "3.0"));
+
+    private void detectRemovedConfigurationProperties(
+            ConfigurationAnalysis configurationAnalysis,
+            BuildInfo buildInfo,
+            List<Finding> findings) {
+        if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
+            return;
+        }
+        String bootVersion = buildInfo == null ? null : buildInfo.springBootVersion();
+        Set<String> reported = new LinkedHashSet<>();
+        for (ApplicationProperty property : configurationAnalysis.properties()) {
+            // A key the project binds or references itself is its own property, not Boot's.
+            if (property.name() == null
+                    || property.kind() != PropertyKind.UNKNOWN
+                    || !reported.add(property.name() + "@" + property.sourceFile())) {
+                continue;
+            }
+            String name = property.name();
+            RemovedProperty removed =
+                    REMOVED_PROPERTIES.stream()
+                            .filter(
+                                    candidate ->
+                                            candidate.prefix()
+                                                    ? name.startsWith(candidate.key())
+                                                    : name.equals(candidate.key()))
+                            .filter(candidate -> candidate.removedFor(bootVersion))
+                            .findFirst()
+                            .orElse(null);
+            if (removed == null) {
+                continue;
+            }
+            String replacement =
+                    removed.replacement() == null
+                            ? null
+                            : removed.prefix()
+                                    ? removed.replacement() + name.substring(removed.key().length())
+                                    : removed.replacement();
+            String advice =
+                    replacement != null
+                            ? "use " + replacement
+                            : removed.note() != null ? removed.note() : "remove the setting";
+            FindingFactory.Builder builder =
+                    FindingFactory.builder(
+                                    FindingRules.SPRING_REMOVED_CONFIGURATION_PROPERTY,
+                                    FindingConfidence.HIGH)
+                            .shortMessage(
+                                    name
+                                            + " no longer exists in Spring Boot — the setting is"
+                                            + " ignored; "
+                                            + advice
+                                            + ".")
+                            .whyBadPractice(
+                                    "Spring Boot binds configuration by name. A key it no longer"
+                                            + " declares is simply never read, so the value in "
+                                            + property.sourceFile()
+                                            + " has no effect and no error tells you so.")
+                            .possibleImpact(
+                                    "The application runs with the default instead of the"
+                                            + " configured value — for example the default thread"
+                                            + " pool size or timeout.")
+                            .recommendation(
+                                    replacement != null
+                                            ? "Rename the key to "
+                                                    + replacement
+                                                    + " and check that the value still has the same"
+                                                    + " meaning."
+                                            : "Remove the key; " + advice + ".")
+                            .evidence(name + " is set in " + property.sourceFile() + ".")
+                            .limitations(
+                                    "Covers keys Spring Boot removed without a deprecation entry;"
+                                            + " renamed keys that the metadata still lists are"
+                                            + " reported as deprecated properties.")
+                            .target(name);
+            if (property.sourceFile() != null) {
+                builder.source(property.sourceFile(), property.line());
+            } else {
+                builder.location("Configuration");
+            }
+            findings.add(builder.build());
+        }
+    }
+
+    private void detectTaskExecutionMaxPoolIgnored(
+            ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {
+        ApplicationProperty maxSize =
+                findProperty(configurationAnalysis, "spring.task.execution.pool.max-size");
+        if (maxSize == null
+                || hasProperty(
+                        configurationAnalysis, "spring.task.execution.pool.queue-capacity")) {
+            return;
+        }
+        // The pool settings do not apply when virtual threads run the executor.
+        ApplicationProperty virtualThreads =
+                findProperty(configurationAnalysis, "spring.threads.virtual.enabled");
+        if (virtualThreads != null
+                && virtualThreads.value() != null
+                && "true".equalsIgnoreCase(virtualThreads.value().trim())) {
+            return;
+        }
+        // A maximum no larger than the core size (8 by default) loses nothing.
+        ApplicationProperty coreSize =
+                findProperty(configurationAnalysis, "spring.task.execution.pool.core-size");
+        Integer core = coreSize == null ? Integer.valueOf(8) : parseInteger(coreSize.value());
+        Integer max = parseInteger(maxSize.value());
+        if (core != null && max != null && max <= core) {
+            return;
+        }
+        FindingFactory.Builder builder =
+                FindingFactory.builder(
+                                FindingRules.SPRING_TASK_EXECUTOR_MAX_POOL_IGNORED,
+                                FindingConfidence.HIGH)
+                        .shortMessage(
+                                "spring.task.execution.pool.max-size is set without"
+                                        + " queue-capacity — the pool never grows beyond its core"
+                                        + " size.")
+                        .whyBadPractice(
+                                "A ThreadPoolExecutor only adds threads beyond the core size when"
+                                    + " its queue is full. Spring Boot's default queue capacity is"
+                                    + " unbounded, so the queue never fills and max-size is"
+                                    + " ignored, as the property's own documentation notes.")
+                        .possibleImpact(
+                                "Under load, @Async and executor tasks queue up behind the core"
+                                        + " threads instead of running in parallel, and the queue"
+                                        + " can grow without limit.")
+                        .recommendation(
+                                "Set spring.task.execution.pool.queue-capacity to a bounded value"
+                                        + " (and decide what happens when it is full), or drop"
+                                        + " max-size and size the core pool instead.")
+                        .evidence(
+                                "spring.task.execution.pool.max-size="
+                                        + maxSize.value()
+                                        + " is set in "
+                                        + maxSize.sourceFile()
+                                        + " and no queue-capacity is configured.")
+                        .limitations(
+                                "An executor bean defined in code replaces the auto-configured one;"
+                                        + " its own settings are not visible here.")
+                        .target("spring.task.execution.pool.max-size");
+        if (maxSize.sourceFile() != null) {
+            builder.source(maxSize.sourceFile(), maxSize.line());
+        } else {
+            builder.location("Configuration");
+        }
+        findings.add(builder.build());
+    }
+
+    private static Integer parseInteger(String value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(value.trim());
+        } catch (NumberFormatException exception) {
+            return null;
+        }
     }
 
     private void detectDataRestExposedRepositories(
@@ -321,40 +678,102 @@ public class ConfigurationFindingAnalyzer {
     }
 
     private void detectDeprecatedSpringProfiles(
-            ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {
+            ConfigurationAnalysis configurationAnalysis,
+            BuildInfo buildInfo,
+            List<Finding> findings) {
         if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
             return;
         }
+        // Before Spring Boot 2.4 spring.profiles was the supported document guard.
+        if (isBootVersionBefore24(buildInfo)) {
+            return;
+        }
+        String bootVersion = buildInfo == null ? null : buildInfo.springBootVersion();
+        boolean legacyProcessing =
+                SpringBootVersions.isBefore(bootVersion, 3, 0)
+                        && configurationAnalysis.properties().stream()
+                                .anyMatch(
+                                        p ->
+                                                p != null
+                                                        && "spring.config.use-legacy-processing"
+                                                                .equals(p.name())
+                                                        && p.value() != null
+                                                        && "true"
+                                                                .equalsIgnoreCase(
+                                                                        p.value().trim()));
         for (ApplicationProperty property : configurationAnalysis.properties()) {
-            if (property == null || !"spring.profiles".equals(property.name())) {
+            if (property == null || property.name() == null) {
                 continue;
             }
-            findings.add(
+            String baseName = property.name().replaceAll("\\[\\d+]$", "");
+            if (!"spring.profiles".equals(baseName)) {
+                continue;
+            }
+            FindingFactory.Builder builder =
                     FindingFactory.builder(
-                                    FindingRules.SPRING_PROFILES_PROPERTY_DEPRECATED,
-                                    FindingConfidence.HIGH)
-                            .shortMessage(
-                                    "The deprecated spring.profiles property is used in "
-                                            + property.sourceFile()
-                                            + ".")
-                            .whyBadPractice(
-                                    "spring.profiles (used to bind a document to a profile) was"
-                                        + " deprecated in Spring Boot 2.4 and removed in Spring"
-                                        + " Boot 3. It is silently ignored there, so the document"
-                                        + " is applied unconditionally instead of only for the"
-                                        + " intended profile.")
-                            .possibleImpact(
-                                    "After upgrading to Spring Boot 3 the profile guard no longer"
-                                        + " applies, which can activate the wrong configuration in"
-                                        + " every environment.")
-                            .recommendation(
+                            FindingRules.SPRING_PROFILES_PROPERTY_DEPRECATED,
+                            FindingConfidence.HIGH);
+            if (legacyProcessing) {
+                builder.severity(FindingSeverity.INFO)
+                        .shortMessage(
+                                "spring.profiles in "
+                                        + property.sourceFile()
+                                        + " only works because"
+                                        + " spring.config.use-legacy-processing=true — it fails on"
+                                        + " Spring Boot 3.")
+                        .whyBadPractice(
+                                "spring.config.use-legacy-processing keeps the pre-2.4 profile"
+                                    + " handling alive on Spring Boot 2.4-2.7. Spring Boot 3"
+                                    + " removed the switch, and its config-data loader rejects"
+                                    + " spring.profiles with InvalidConfigDataPropertyException.")
+                        .possibleImpact(
+                                "The application stops starting as soon as it is upgraded to"
+                                        + " Spring Boot 3.");
+            } else if (SpringBootVersions.isBefore(bootVersion, 3, 0)) {
+                // Spring Boot 2.4-2.7 still honours the key and only logs a deprecation warning.
+                builder.severity(FindingSeverity.WARNING)
+                        .shortMessage(
+                                "spring.profiles in "
+                                        + property.sourceFile()
+                                        + " is deprecated and makes Spring Boot 3 fail at"
+                                        + " startup — use spring.config.activate.on-profile.")
+                        .whyBadPractice(
+                                "Spring Boot 2.4 replaced the spring.profiles document guard with"
+                                    + " spring.config.activate.on-profile. Spring Boot 2.4-2.7"
+                                    + " still apply the old key and log a deprecation warning;"
+                                    + " Spring Boot 3 rejects it with"
+                                    + " InvalidConfigDataPropertyException before the application"
+                                    + " context starts.")
+                        .possibleImpact(
+                                "The application stops starting as soon as it is upgraded to"
+                                        + " Spring Boot 3.");
+            } else {
+                builder.shortMessage(
+                                "spring.profiles in "
+                                        + property.sourceFile()
+                                        + " makes Spring Boot fail at startup — use"
+                                        + " spring.config.activate.on-profile.")
+                        .whyBadPractice(
+                                "Spring Boot 2.4 replaced the spring.profiles document guard with"
+                                    + " spring.config.activate.on-profile. The config-data loader"
+                                    + " rejects the old key with InvalidConfigDataPropertyException"
+                                    + " (\"Property 'spring.profiles' ... is invalid and should be"
+                                    + " replaced with 'spring.config.activate.on-profile'\") before"
+                                    + " the application context starts.")
+                        .possibleImpact(
+                                "The application does not start while this file is on the"
+                                        + " classpath.");
+            }
+            findings.add(
+                    builder.recommendation(
                                     "Replace spring.profiles with spring.config.activate.on-profile"
-                                            + " (to guard a document) or spring.profiles.group (to"
-                                            + " compose profiles).")
-                            .evidence("spring.profiles found in " + property.sourceFile() + ".")
+                                            + " to guard a document, or use spring.profiles.group"
+                                            + " to compose profiles.")
+                            .evidence(property.name() + " found in " + property.sourceFile() + ".")
                             .limitations(
-                                    "Does not apply to spring.profiles.active/include/group, which"
-                                            + " remain valid.")
+                                    "spring.profiles.active, spring.profiles.include and"
+                                            + " spring.profiles.group are different keys and stay"
+                                            + " valid in the default configuration.")
                             .source(property.sourceFile(), property.line())
                             .target("spring.profiles")
                             .build());
@@ -381,12 +800,21 @@ public class ConfigurationFindingAnalyzer {
                                                 && "true".equalsIgnoreCase(p.value().trim()))) {
             return;
         }
+        Set<String> reported = new LinkedHashSet<>();
         for (ApplicationProperty property : configurationAnalysis.properties()) {
             if (property == null || property.name() == null) {
                 continue;
             }
             String name = property.name();
-            if (!"spring.profiles.active".equals(name) && !"spring.profiles.include".equals(name)) {
+            // Also the list forms (spring.profiles.include[0]) a YAML sequence produces.
+            String baseName = name.replaceAll("\\[\\d+]$", "");
+            if (!PROFILE_SPECIFIC_INVALID_PROPERTIES.contains(baseName)) {
+                continue;
+            }
+            // A test-classpath application.properties replaces the main one on the test classpath;
+            // it is not a profile-specific file.
+            if (isTestResource(property)
+                    && "default".equals(normalizedProfile(property.profile()))) {
                 continue;
             }
             // Only invalid when the property lives in a profile-specific file
@@ -395,7 +823,9 @@ public class ConfigurationFindingAnalyzer {
             // not profile-specific — activating profiles there is the standard legacy-bootstrap
             // idiom.
             String profile = normalizedProfile(property.profile());
-            if ("default".equals(profile) || "bootstrap".equals(profile)) {
+            if ("default".equals(profile)
+                    || "bootstrap".equals(profile)
+                    || !reported.add(property.sourceFile() + "|" + profile + "|" + baseName)) {
                 continue;
             }
             findings.add(
@@ -409,8 +839,9 @@ public class ConfigurationFindingAnalyzer {
                                             + profile
                                             + "') — Spring Boot fails at startup.")
                             .whyBadPractice(
-                                    "Since the Spring Boot 2.4 config-data model (all of Boot 3.x),"
-                                        + " spring.profiles.active and spring.profiles.include are"
+                                    "Since the Spring Boot 2.4 config-data model (all of Boot 3.x"
+                                        + " and 4.x), spring.profiles.active,"
+                                        + " spring.profiles.include and spring.profiles.default are"
                                         + " invalid inside profile-specific files and"
                                         + " spring.config.activate.on-profile documents. Boot"
                                         + " throws InvalidConfigDataPropertyException while loading"
@@ -1168,7 +1599,14 @@ public class ConfigurationFindingAnalyzer {
                         || expectedValues.isEmpty()) {
                     continue;
                 }
-                if (!expectedValues.contains(property.value())) {
+                String value = property.value().trim();
+                // Spring compares havingValue case-insensitively, and setting a boolean switch to
+                // its other value is how a conditional bean is turned off on purpose.
+                boolean matches = expectedValues.stream().anyMatch(value::equalsIgnoreCase);
+                boolean booleanToggle =
+                        isBooleanLiteral(value)
+                                && expectedValues.stream().allMatch(this::isBooleanLiteral);
+                if (!matches && !booleanToggle) {
                     findings.add(
                             FindingFactory.builder(
                                             FindingRules.SPRING_CONDITIONAL_VALUE_MISMATCH,
@@ -1208,6 +1646,10 @@ public class ConfigurationFindingAnalyzer {
                 }
             }
         }
+    }
+
+    private boolean isBooleanLiteral(String value) {
+        return "true".equalsIgnoreCase(value) || "false".equalsIgnoreCase(value);
     }
 
     private void detectFlywaySchemaRisks(
@@ -1275,6 +1717,9 @@ public class ConfigurationFindingAnalyzer {
         }
         String scannedLocations = describeRoots(repositoryRoot, migrationRoots);
         List<Path> migrations = migrationFiles(migrationRoots);
+        if (!customFlywayNaming(configurationAnalysis)) {
+            detectFlywayMigrationNamesIgnored(repositoryRoot, migrationRoots, findings);
+        }
         if (migrations.isEmpty()) {
             findings.add(
                     FindingFactory.builder(
@@ -1310,15 +1755,8 @@ public class ConfigurationFindingAnalyzer {
                             .build());
         } else {
             Map<String, List<Path>> byVersion =
-                    migrations.stream()
-                            .map(path -> Map.entry(migrationVersion(path), path))
-                            .filter(entry -> entry.getKey() != null)
-                            .collect(
-                                    Collectors.groupingBy(
-                                            Map.Entry::getKey,
-                                            LinkedHashMap::new,
-                                            Collectors.mapping(
-                                                    Map.Entry::getValue, Collectors.toList())));
+                    duplicateVersions(
+                            migrations, vendorSplitRoots(repositoryRoot, configurationAnalysis));
             byVersion.forEach(
                     (version, paths) -> {
                         if (paths.size() > 1) {
@@ -1358,7 +1796,15 @@ public class ConfigurationFindingAnalyzer {
                                             .limitations(
                                                     "Static analysis checks file naming only and"
                                                             + " cannot validate migrations stored"
-                                                            + " outside the repository.")
+                                                            + " outside the repository. With a"
+                                                            + " {vendor} location, versions are"
+                                                            + " compared per database folder.")
+                                            .source(
+                                                    repositoryRoot
+                                                            .relativize(paths.get(1))
+                                                            .toString()
+                                                            .replace('\\', '/'),
+                                                    1)
                                             .target("Flyway migration version " + version)
                                             .build());
                         }
@@ -1778,6 +2224,174 @@ public class ConfigurationFindingAnalyzer {
         return inBuildInfo || inGradleModel;
     }
 
+    /** A file that starts like a versioned, undo or repeatable migration. */
+    private static final Pattern FLYWAY_ATTEMPTED_MIGRATION =
+            Pattern.compile("^[VvUuRr](?:\\d|_).*");
+
+    /** Flyway's default naming: V1__x.sql, U1__x.sql, R__x.sql (prefix case-sensitive). */
+    private static final Pattern FLYWAY_VALID_NAME =
+            Pattern.compile("^(?:[VU]\\d+(?:[._]\\d+)*__.*|R__.+)\\.(?i:sql)$");
+
+    private static final Pattern FLYWAY_SINGLE_UNDERSCORE =
+            Pattern.compile("^([VUR])(\\d+(?:[._]\\d+)*)?_(?!_)(.+)$");
+
+    private boolean customFlywayNaming(ConfigurationAnalysis configurationAnalysis) {
+        return hasProperty(configurationAnalysis, "spring.flyway.sql-migration-prefix")
+                || hasProperty(
+                        configurationAnalysis, "spring.flyway.repeatable-sql-migration-prefix")
+                || hasProperty(configurationAnalysis, "spring.flyway.sql-migration-separator")
+                || hasProperty(configurationAnalysis, "spring.flyway.sql-migration-suffixes");
+    }
+
+    private void detectFlywayMigrationNamesIgnored(
+            Path repositoryRoot, List<Path> migrationRoots, List<Finding> findings) {
+        Set<Path> reported = new java.util.HashSet<>();
+        for (Path root : migrationRoots) {
+            if (Files.notExists(root)) {
+                continue;
+            }
+            List<Path> files;
+            try (Stream<Path> stream = Files.walk(root)) {
+                files = stream.filter(Files::isRegularFile).sorted().toList();
+            } catch (IOException exception) {
+                continue;
+            }
+            for (Path file : files) {
+                String name = file.getFileName().toString();
+                if (!name.toLowerCase(Locale.ROOT).endsWith(".sql")
+                        || !FLYWAY_ATTEMPTED_MIGRATION.matcher(name).matches()
+                        || FLYWAY_VALID_NAME.matcher(name).matches()
+                        || !reported.add(file)) {
+                    continue;
+                }
+                String relative = repositoryRoot.relativize(file).toString().replace('\\', '/');
+                findings.add(
+                        FindingFactory.builder(
+                                        FindingRules.SPRING_FLYWAY_MIGRATION_NAME_IGNORED,
+                                        FindingConfidence.HIGH)
+                                .shortMessage(
+                                        name
+                                                + " does not follow Flyway's naming convention —"
+                                                + " Flyway skips it and the migration never runs.")
+                                .whyBadPractice(
+                                        "Flyway only recognizes V<version>__<description>.sql"
+                                            + " (versioned) and R__<description>.sql (repeatable)"
+                                            + " files: the prefix is case-sensitive and the version"
+                                            + " is followed by two underscores. Other files in a"
+                                            + " migration location are skipped without an error,"
+                                            + " because validateMigrationNaming defaults to false.")
+                                .possibleImpact(
+                                        "The schema change in this file is never applied; code"
+                                                + " that relies on it fails at runtime, or an"
+                                                + " environment silently lags behind.")
+                                .recommendation(
+                                        "Rename the file to "
+                                                + suggestedMigrationName(name)
+                                                + ", and consider"
+                                                + " spring.flyway.validate-migration-naming=true so"
+                                                + " a bad name fails fast.")
+                                .evidence(
+                                        relative
+                                                + " is in a Flyway migration location but matches"
+                                                + " neither V<version>__<description>.sql nor"
+                                                + " R__<description>.sql.")
+                                .limitations(
+                                        "Assumes Flyway's default prefixes and separator; custom"
+                                                + " spring.flyway.sql-migration-* settings disable"
+                                                + " this check.")
+                                .source(relative, 1)
+                                .target(name)
+                                .build());
+            }
+        }
+    }
+
+    private static String suggestedMigrationName(String name) {
+        String fixed = Character.toUpperCase(name.charAt(0)) + name.substring(1);
+        Matcher singleUnderscore = FLYWAY_SINGLE_UNDERSCORE.matcher(fixed);
+        if (singleUnderscore.matches()) {
+            String version = singleUnderscore.group(2) == null ? "" : singleUnderscore.group(2);
+            fixed = singleUnderscore.group(1) + version + "__" + singleUnderscore.group(3);
+        }
+        return fixed;
+    }
+
+    /** Roots configured with a {vendor} placeholder: each subfolder is one database's set. */
+    private Set<Path> vendorSplitRoots(
+            Path repositoryRoot, ConfigurationAnalysis configurationAnalysis) {
+        String configured = flywayLocationsValue(configurationAnalysis);
+        if (configured == null) {
+            return Set.of();
+        }
+        Path boundary = repositoryRoot.normalize();
+        Set<Path> roots = new LinkedHashSet<>();
+        for (String rawLocation : configured.split(",")) {
+            if (!rawLocation.contains("{vendor}")) {
+                continue;
+            }
+            Path resolved = resolveFlywayLocation(repositoryRoot, boundary, rawLocation);
+            if (resolved != null) {
+                roots.add(resolved);
+            }
+        }
+        return roots;
+    }
+
+    /**
+     * Migration versions that occur more than once in a set Flyway loads together. With a
+     * {vendor} location only one database folder is active at a time, so each folder is compared
+     * with the shared locations but not with the other databases' folders.
+     */
+    private Map<String, List<Path>> duplicateVersions(
+            List<Path> migrations, Set<Path> vendorRoots) {
+        Map<String, List<Path>> byVendor = new LinkedHashMap<>();
+        for (Path migration : migrations) {
+            String vendor = "";
+            for (Path root : vendorRoots) {
+                if (migration.startsWith(root) && root.relativize(migration).getNameCount() > 1) {
+                    vendor = root.relativize(migration).getName(0).toString();
+                    break;
+                }
+            }
+            byVendor.computeIfAbsent(vendor, key -> new ArrayList<>()).add(migration);
+        }
+        List<Path> shared = byVendor.getOrDefault("", List.of());
+        List<List<Path>> loadedTogether = new ArrayList<>();
+        if (byVendor.keySet().stream().allMatch(String::isEmpty)) {
+            loadedTogether.add(shared);
+        } else {
+            byVendor.forEach(
+                    (vendor, files) -> {
+                        if (!vendor.isEmpty()) {
+                            List<Path> set = new ArrayList<>(shared);
+                            set.addAll(files);
+                            loadedTogether.add(set);
+                        }
+                    });
+        }
+        Map<String, List<Path>> duplicates = new LinkedHashMap<>();
+        for (List<Path> set : loadedTogether) {
+            Map<String, List<Path>> byVersion = new LinkedHashMap<>();
+            for (Path migration : set) {
+                String version = migrationVersion(migration);
+                if (version != null) {
+                    byVersion.computeIfAbsent(version, key -> new ArrayList<>()).add(migration);
+                }
+            }
+            byVersion.forEach(
+                    (version, paths) -> {
+                        if (paths.size() > 1) {
+                            List<Path> merged =
+                                    duplicates.computeIfAbsent(version, key -> new ArrayList<>());
+                            paths.stream()
+                                    .filter(path -> !merged.contains(path))
+                                    .forEach(merged::add);
+                        }
+                    });
+        }
+        return duplicates;
+    }
+
     private List<Path> migrationFiles(List<Path> migrationRoots) {
         List<Path> migrations = new ArrayList<>();
         for (Path migrationRoot : migrationRoots) {
@@ -2063,58 +2677,102 @@ public class ConfigurationFindingAnalyzer {
     }
 
     private void detectSecurityAutoconfigureExcluded(
-            ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {
+            ConfigurationAnalysis configurationAnalysis,
+            JavaSources javaSources,
+            List<Finding> findings) {
         if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
             return;
         }
+        // An application that enables web security itself still builds its chain when the
+        // default-chain auto-configuration is excluded.
+        boolean ownWebSecurity =
+                javaSources != null
+                        && javaSources.files().stream()
+                                .anyMatch(
+                                        file ->
+                                                file.content().contains("@EnableWebSecurity")
+                                                        || file.content()
+                                                                .contains(
+                                                                        "@EnableWebFluxSecurity"));
         for (ApplicationProperty property : configurationAnalysis.properties()) {
-            if (!"spring.autoconfigure.exclude".equals(property.name())) {
+            if (property.name() == null
+                    || property.value() == null
+                    || !"spring.autoconfigure.exclude"
+                            .equals(property.name().replaceAll("\\[\\d+]$", ""))) {
                 continue;
             }
-            if (property.value() == null) {
+            List<String> excluded =
+                    java.util.Arrays.stream(property.value().split("[,\\s]+"))
+                            .map(String::trim)
+                            .filter(value -> !value.isEmpty())
+                            .toList();
+            String filterExclusion =
+                    excluded.stream()
+                            .filter(
+                                    name ->
+                                            simpleClassName(name)
+                                                    .equals(SECURITY_FILTER_AUTO_CONFIGURATION))
+                            .findFirst()
+                            .orElse(null);
+            String chainExclusion =
+                    excluded.stream()
+                            .filter(this::createsDefaultSecurityChain)
+                            .findFirst()
+                            .orElse(null);
+            if (filterExclusion == null && (chainExclusion == null || ownWebSecurity)) {
                 continue;
             }
-            String excluded =
-                    SECURITY_AUTO_CONFIG_CLASSES.stream()
-                            .filter(property.value()::contains)
-                            .collect(Collectors.joining(", "));
-            if (excluded.isBlank()) {
-                continue;
-            }
+            String removed =
+                    simpleClassName(filterExclusion != null ? filterExclusion : chainExclusion);
             String profile = normalizedProfile(property.profile());
+            String where =
+                    profile.equals("default")
+                            ? " in the default profile"
+                            : " in the \"" + profile + "\" profile";
             FindingFactory.Builder builder =
                     FindingFactory.builder(
                                     FindingRules.SPRING_SECURITY_AUTOCONFIGURE_EXCLUDED,
                                     FindingConfidence.HIGH)
                             .shortMessage(
                                     "spring.autoconfigure.exclude removes "
-                                            + excluded
-                                            + " — Spring Security is not loaded"
-                                            + (profile.equals("default")
-                                                    ? " in the default profile"
-                                                    : " in the \"" + profile + "\" profile"))
+                                            + removed
+                                            + " — requests are not secured"
+                                            + where
+                                            + ".")
                             .whyBadPractice(
-                                    "Excluding security auto-configuration removes Spring"
-                                        + " Security's default filter chain, user-details wiring,"
-                                        + " and security headers for this profile.")
+                                    filterExclusion != null
+                                            ? "SecurityFilterAutoConfiguration registers Spring"
+                                                    + " Security's filter with the servlet"
+                                                    + " container. Without it no"
+                                                    + " SecurityFilterChain — not even the"
+                                                    + " application's own — sees a request."
+                                            : removed
+                                                    + " creates the default security filter chain"
+                                                    + " and enables web security. The project"
+                                                    + " declares no @EnableWebSecurity"
+                                                    + " configuration of its own, so no chain is"
+                                                    + " built.")
                             .possibleImpact(
-                                    "All endpoints become unprotected, CSRF protection is absent,"
-                                        + " and tests running under this profile do not exercise"
-                                        + " the real security configuration at all.")
+                                    "Every endpoint is reachable without authentication in this"
+                                            + " profile, and tests running under it do not"
+                                            + " exercise the real security configuration.")
                             .recommendation(
-                                    "Prefer @WithMockUser, SecurityMockMvcConfigurer, or a"
-                                            + " dedicated test security configuration instead of"
-                                            + " excluding auto-configuration classes.")
+                                    "Keep the auto-configuration and adjust security with your own"
+                                        + " SecurityFilterChain; in tests prefer @WithMockUser or a"
+                                        + " test security configuration over excluding it.")
                             .evidence(
-                                    "spring.autoconfigure.exclude contains: "
-                                            + excluded
+                                    "spring.autoconfigure.exclude contains "
+                                            + (filterExclusion != null
+                                                    ? filterExclusion
+                                                    : chainExclusion)
                                             + " in profile \""
                                             + profile
                                             + "\".")
                             .limitations(
-                                    "Static analysis cannot determine whether a replacement"
-                                        + " security configuration is loaded through an alternative"
-                                        + " import or @Configuration class.")
+                                    "Excluding UserDetailsServiceAutoConfiguration or"
+                                        + " ManagementWebSecurityAutoConfiguration is not reported:"
+                                        + " it removes the generated default user or the actuator"
+                                        + " defaults, not the filter chain.")
                             .target(property.name());
             if (property.sourceFile() != null) {
                 builder.source(property.sourceFile(), property.line());
@@ -2125,8 +2783,81 @@ public class ConfigurationFindingAnalyzer {
         }
     }
 
+    /**
+     * Whether an excluded auto-configuration builds the default web security chain. Spring Boot 3
+     * does that in {@code ...autoconfigure.security.servlet.SecurityAutoConfiguration}; Spring Boot 4
+     * moved it to {@code ServletWebSecurityAutoConfiguration}, and its
+     * {@code org.springframework.boot.security.autoconfigure.SecurityAutoConfiguration} only wires
+     * core beans.
+     */
+    private boolean createsDefaultSecurityChain(String className) {
+        String simpleName = simpleClassName(className);
+        if (!SECURITY_CHAIN_AUTO_CONFIGURATIONS.contains(simpleName)) {
+            return false;
+        }
+        if (simpleName.equals("SecurityAutoConfiguration")
+                || simpleName.equals("ReactiveSecurityAutoConfiguration")) {
+            return !className.contains(".") || className.contains(".autoconfigure.security.");
+        }
+        return true;
+    }
+
+    private static String simpleClassName(String className) {
+        int dot = className.lastIndexOf('.');
+        return dot >= 0 ? className.substring(dot + 1) : className;
+    }
+
+    /** A property read from a file under src/test — configuration only tests ever load. */
+    private static boolean isTestResource(ApplicationProperty property) {
+        String sourceFile = property.sourceFile();
+        return sourceFile != null
+                && (sourceFile.startsWith("src/test/") || sourceFile.contains("/src/test/"));
+    }
+
+    /** What the test sources reveal about how Spring contexts get their datasource. */
+    private record TestSourceSignals(boolean loadsSpringContext, boolean suppliesDatasource) {
+
+        private static final List<String> DATASOURCE_MARKERS =
+                List.of(
+                        "@ServiceConnection",
+                        "@DynamicPropertySource",
+                        "jdbc:tc:",
+                        "spring.datasource.url",
+                        "@AutoConfigureTestDatabase",
+                        "@Testcontainers");
+
+        static TestSourceSignals scan(Path repositoryRoot) {
+            Path testRoot = repositoryRoot == null ? null : repositoryRoot.resolve("src/test/java");
+            if (testRoot == null || Files.notExists(testRoot)) {
+                return new TestSourceSignals(false, false);
+            }
+            boolean loadsContext = false;
+            boolean suppliesDatasource = false;
+            try (Stream<Path> files = Files.walk(testRoot)) {
+                for (Path file :
+                        files.filter(Files::isRegularFile)
+                                .filter(path -> path.toString().endsWith(".java"))
+                                .toList()) {
+                    String content;
+                    try {
+                        content = Files.readString(file, StandardCharsets.UTF_8);
+                    } catch (IOException exception) {
+                        continue;
+                    }
+                    loadsContext |= content.contains("@SpringBootTest");
+                    suppliesDatasource |= DATASOURCE_MARKERS.stream().anyMatch(content::contains);
+                }
+            } catch (IOException exception) {
+                return new TestSourceSignals(false, false);
+            }
+            return new TestSourceSignals(loadsContext, suppliesDatasource);
+        }
+    }
+
     private void detectDatasourceNoTestOverride(
-            ConfigurationAnalysis configurationAnalysis, List<Finding> findings) {
+            Path repositoryRoot,
+            ConfigurationAnalysis configurationAnalysis,
+            List<Finding> findings) {
         if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
             return;
         }
@@ -2138,16 +2869,28 @@ public class ConfigurationFindingAnalyzer {
         ApplicationProperty defaultEntry =
                 datasourceUrls.stream()
                         .filter(p -> "default".equals(normalizedProfile(p.profile())))
+                        .filter(p -> !isTestResource(p))
                         .filter(p -> !isEmbeddedDatabase(p.value()))
                         .findFirst()
                         .orElse(null);
         if (defaultEntry == null) {
             return;
         }
+        // A test profile file, or a test-classpath application.properties that replaces the main
+        // one, both override the datasource for tests.
         boolean hasTestOverride =
                 datasourceUrls.stream()
-                        .anyMatch(p -> isTestProfile(normalizedProfile(p.profile())));
+                        .anyMatch(
+                                p ->
+                                        isTestProfile(normalizedProfile(p.profile()))
+                                                || isTestResource(p));
         if (hasTestOverride) {
+            return;
+        }
+        // Only a @SpringBootTest without Testcontainers or a replaced datasource reaches the
+        // configured database; without one nothing connects to it.
+        TestSourceSignals tests = TestSourceSignals.scan(repositoryRoot);
+        if (!tests.loadsSpringContext() || tests.suppliesDatasource()) {
             return;
         }
         FindingFactory.Builder builder =
@@ -2156,28 +2899,29 @@ public class ConfigurationFindingAnalyzer {
                                 FindingConfidence.MEDIUM)
                         .shortMessage(
                                 "spring.datasource.url points to a real database in the default"
-                                        + " profile but no test profile overrides it")
+                                        + " profile, and the @SpringBootTest tests do not"
+                                        + " override it")
                         .whyBadPractice(
-                                "Without a test-profile datasource override, any Spring context"
-                                        + " integration test loads the default profile and connects"
-                                        + " to the production-adjacent database.")
+                                "@SpringBootTest loads the default configuration. Without a test"
+                                        + " profile, a test-classpath application.properties or"
+                                        + " Testcontainers, integration tests connect to the"
+                                        + " configured database.")
                         .possibleImpact(
                                 "Integration tests may read from or write to shared or"
                                         + " production data, causing data corruption, flaky tests,"
                                         + " and misleading test results.")
                         .recommendation(
-                                "Add spring.datasource.url, spring.datasource.username, and"
-                                        + " spring.datasource.password in"
-                                        + " src/test/resources/application-test.properties pointing"
-                                        + " to an embedded or containerised test database.")
+                                "Point tests at a disposable database: a @ServiceConnection"
+                                        + " Testcontainers container, or spring.datasource.url in"
+                                        + " src/test/resources/application-test.properties.")
                         .evidence(
                                 "Default datasource URL: "
                                         + renderedValue(defaultEntry)
-                                        + ". No test-profile datasource URL was detected.")
+                                        + ". The test sources start Spring contexts, but no test"
+                                        + " datasource was detected.")
                         .limitations(
-                                "Static analysis cannot confirm whether @DataJpaTest,"
-                                        + " Testcontainers, or another mechanism supplies a test"
-                                        + " datasource at runtime.")
+                                "Test datasources supplied through environment variables or CI"
+                                        + " configuration are not visible.")
                         .target(defaultEntry.name());
         if (defaultEntry.sourceFile() != null) {
             builder.source(defaultEntry.sourceFile(), defaultEntry.line());
@@ -2201,7 +2945,7 @@ public class ConfigurationFindingAnalyzer {
                 continue;
             }
             String profile = normalizedProfile(property.profile());
-            if (isTestOrLocalProfile(profile)) {
+            if (isTestOrLocalProfile(profile) || isTestResource(property)) {
                 continue;
             }
             FindingFactory.Builder builder =

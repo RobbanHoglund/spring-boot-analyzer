@@ -631,4 +631,169 @@ class CachingPracticeFindingAnalyzerTest {
 
         assertThat(byRule(findings(), "SPRING_CACHEPUT_AND_CACHEABLE_SAME_METHOD")).isNull();
     }
+
+    // ── SPRING_CACHEABLE_WITHOUT_ENABLE_CACHING ───────────────────────────────
+
+    private static List<Finding> byRuleId(List<Finding> findings, String ruleId) {
+        return findings.stream().filter(finding -> ruleId.equals(finding.ruleId())).toList();
+    }
+
+    @Test
+    void flagsCacheAnnotationsWithoutEnableCaching() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/PriceService.java",
+                """
+                package com.example;
+
+                import org.springframework.cache.annotation.CacheEvict;
+                import org.springframework.cache.annotation.Cacheable;
+                import org.springframework.stereotype.Service;
+
+                @Service
+                class PriceService {
+                    @Cacheable("prices")
+                    String price(String sku) {
+                        return sku;
+                    }
+
+                    @CacheEvict(cacheNames = "prices", allEntries = true)
+                    void clear() {
+                    }
+                }
+                """);
+
+        assertThat(byRuleId(findings(), "SPRING_CACHEABLE_WITHOUT_ENABLE_CACHING"))
+                .singleElement()
+                .satisfies(
+                        finding -> {
+                            assertThat(finding.target()).isEqualTo("PriceService#price");
+                            assertThat(finding.primaryLocation().startLine()).isEqualTo(9);
+                        });
+    }
+
+    @Test
+    void doesNotFlagCacheAnnotationsWhenCachingIsEnabled() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/PriceService.java",
+                """
+                package com.example;
+
+                import org.springframework.cache.annotation.Cacheable;
+                import org.springframework.stereotype.Service;
+
+                @Service
+                class PriceService {
+                    @Cacheable("prices")
+                    String price(String sku) {
+                        return sku;
+                    }
+                }
+                """);
+        writeSourceFile(
+                "src/main/java/com/example/CacheConfig.java",
+                """
+                package com.example;
+
+                import org.springframework.cache.annotation.EnableCaching;
+                import org.springframework.context.annotation.Configuration;
+
+                @Configuration
+                @EnableCaching
+                class CacheConfig {
+                }
+                """);
+
+        assertThat(byRuleId(findings(), "SPRING_CACHEABLE_WITHOUT_ENABLE_CACHING")).isEmpty();
+    }
+
+    // ── SPRING_CACHE_ANNOTATION_CONFLICTING_ATTRIBUTES ────────────────────────
+
+    @Test
+    void flagsKeyWithKeyGeneratorAndCacheManagerWithCacheResolver() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/CatalogService.java",
+                """
+                package com.example;
+
+                import org.springframework.cache.annotation.CacheEvict;
+                import org.springframework.cache.annotation.Cacheable;
+                import org.springframework.cache.annotation.Caching;
+                import org.springframework.cache.annotation.EnableCaching;
+                import org.springframework.stereotype.Service;
+
+                @Service
+                @EnableCaching
+                class CatalogService {
+                    @Cacheable(cacheNames = "products", key = "#sku", keyGenerator = "skuKeys")
+                    String product(String sku) {
+                        return sku;
+                    }
+
+                    @Caching(evict = {
+                        @CacheEvict(cacheNames = "products", cacheManager = "redis", cacheResolver = "resolver")
+                    })
+                    void evict(String sku) {
+                    }
+
+                    @Cacheable(cacheNames = "prices", key = "#sku", cacheManager = "redis")
+                    String price(String sku) {
+                        return sku;
+                    }
+                }
+                """);
+
+        List<Finding> conflicts =
+                byRuleId(findings(), "SPRING_CACHE_ANNOTATION_CONFLICTING_ATTRIBUTES");
+
+        assertThat(conflicts)
+                .extracting(Finding::message)
+                .containsExactlyInAnyOrder(
+                        "@Cacheable on CatalogService#product sets both key and keyGenerator —"
+                                + " startup fails.",
+                        "@CacheEvict on CatalogService#evict sets both cacheManager and"
+                                + " cacheResolver — startup fails.");
+    }
+
+    // ── SPRING_CACHEABLE_CONDITION_USES_RESULT ────────────────────────────────
+
+    @Test
+    void flagsResultInCacheableConditionButNotInUnless() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/UserService.java",
+                """
+                package com.example;
+
+                import org.springframework.cache.annotation.CachePut;
+                import org.springframework.cache.annotation.Cacheable;
+                import org.springframework.cache.annotation.EnableCaching;
+                import org.springframework.stereotype.Service;
+
+                @Service
+                @EnableCaching
+                class UserService {
+                    @Cacheable(cacheNames = "users", condition = "#result != null")
+                    String find(String id) {
+                        return id;
+                    }
+
+                    @Cacheable(cacheNames = "profiles", unless = "#result == null")
+                    String profile(String id) {
+                        return id;
+                    }
+
+                    @CachePut(cacheNames = "users", condition = "#result != null")
+                    String save(String id) {
+                        return id;
+                    }
+                }
+                """);
+
+        assertThat(byRuleId(findings(), "SPRING_CACHEABLE_CONDITION_USES_RESULT"))
+                .singleElement()
+                .satisfies(
+                        finding -> {
+                            assertThat(finding.target()).isEqualTo("UserService#find");
+                            assertThat(finding.recommendation()).contains("unless");
+                        });
+    }
 }

@@ -53,4 +53,10 @@ describe('finding category parity with the backend enum', () => {
       expect(label.trim()).not.toBe('');
     }
   });
+
+  it('labels the migration category for every Spring Boot upgrade, not only Boot 3', () => {
+    // The category also holds the Spring Boot 4 upgrade rules.
+    expect(findingCategoryLabel('MIGRATION')).toBe('Spring Boot migration');
+    expect(categoryDisplayName('MIGRATION')).toBe('Spring Boot migration');
+  });
 });
