@@ -10,6 +10,7 @@ import com.github.javaparser.ast.body.Parameter;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
+import com.github.javaparser.ast.expr.LambdaExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
@@ -717,9 +718,7 @@ public class ScalabilityPracticeFindingAnalyzer {
 
     private void detectLombokDataOnEntity(
             ClassOrInterfaceDeclaration cls, String relativePath, List<Finding> findings) {
-        boolean hasEntity =
-                cls.getAnnotations().stream()
-                        .anyMatch(a -> simpleName(a.getNameAsString()).equals("Entity"));
+        boolean hasEntity = JpaAnnotations.isJpaEntity(cls);
         boolean hasData =
                 cls.getAnnotations().stream()
                         .anyMatch(a -> simpleName(a.getNameAsString()).equals("Data"));
@@ -1097,6 +1096,21 @@ public class ScalabilityPracticeFindingAnalyzer {
                     || (webStack != WebStack.REACTIVE_WEBFLUX && webStack != WebStack.UNKNOWN)) {
                 continue;
             }
+            // A @Scheduled job runs on the task scheduler's thread and a startup callback on the
+            // main thread, so blocking there holds no event-loop worker. A lambda inside them may
+            // still run on a Reactor thread, so only calls made directly in the method count.
+            boolean insideLambda =
+                    call.findAncestor(LambdaExpr.class)
+                            .map(
+                                    lambda ->
+                                            enclosingMethod != null
+                                                    && enclosingMethod.isAncestorOf(lambda))
+                            .orElse(false);
+            if (enclosingMethod != null
+                    && !insideLambda
+                    && runsOutsideEventLoop(enclosingClass, enclosingMethod)) {
+                continue;
+            }
 
             Integer line = call.getBegin().map(p -> p.line).orElse(null);
             String callDescription = "." + name + "()";
@@ -1132,8 +1146,10 @@ public class ScalabilityPracticeFindingAnalyzer {
                                             + " blocking boundary.")
                             .limitations(
                                     "Requires Reactor types in the same source file and an active"
-                                            + " or unresolved WebFlux stack. Static analysis cannot"
-                                            + " prove which Scheduler executes this exact call.")
+                                        + " or unresolved WebFlux stack. Calls made directly in"
+                                        + " @Scheduled methods and startup callbacks are not"
+                                        + " reported. Static analysis cannot prove which Scheduler"
+                                        + " executes this exact call.")
                             .evidence(callDescription + " found in " + relativePath + ".")
                             .source(relativePath, line)
                             .target(target)
@@ -1270,6 +1286,42 @@ public class ScalabilityPracticeFindingAnalyzer {
                         .build());
     }
 
+    private static final Set<String> STARTUP_EVENTS =
+            Set.of("ApplicationReadyEvent", "ApplicationStartedEvent", "ContextRefreshedEvent");
+
+    /**
+     * Whether the method runs on a thread of its own rather than a request's: a {@code
+     * @Scheduled} job, or a startup callback (CommandLineRunner/ApplicationRunner run, an
+     * {@code @EventListener} for a startup event).
+     */
+    private boolean runsOutsideEventLoop(
+            ClassOrInterfaceDeclaration declaration, MethodDeclaration method) {
+        if (hasAnyMethodAnnotation(method, "Scheduled", "Schedules")) {
+            return true;
+        }
+        boolean runner =
+                declaration.getImplementedTypes().stream()
+                        .map(type -> type.getNameAsString())
+                        .anyMatch(
+                                type ->
+                                        type.equals("CommandLineRunner")
+                                                || type.equals("ApplicationRunner"));
+        if (runner && method.getNameAsString().equals("run")) {
+            return true;
+        }
+        return hasAnyMethodAnnotation(method, "EventListener")
+                && STARTUP_EVENTS.stream()
+                        .anyMatch(
+                                event ->
+                                        method.getAnnotations().toString().contains(event)
+                                                || method.getParameters().stream()
+                                                        .anyMatch(
+                                                                parameter ->
+                                                                        parameter
+                                                                                .getTypeAsString()
+                                                                                .endsWith(event)));
+    }
+
     private boolean usesReactorTypes(CompilationUnit compilationUnit) {
         return compilationUnit.getImports().stream()
                 .map(importDeclaration -> importDeclaration.getNameAsString())
@@ -1400,6 +1452,26 @@ public class ScalabilityPracticeFindingAnalyzer {
     // Rule: SPRING_UNBOUNDED_FINDALL
     // ---------------------------------------------------------------------------
 
+    /** Repository names of small, bounded reference tables. */
+    private static final List<String> REFERENCE_DATA_HINTS =
+            List.of(
+                    "authority",
+                    "role",
+                    "permission",
+                    "privilege",
+                    "tag",
+                    "type",
+                    "category",
+                    "status",
+                    "country",
+                    "currency",
+                    "language",
+                    "locale",
+                    "specialty",
+                    "speciality",
+                    "setting",
+                    "lookup");
+
     private void detectUnboundedFindAll(
             CompilationUnit cu, String relativePath, List<Finding> findings) {
         for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
@@ -1414,6 +1486,11 @@ public class ScalabilityPracticeFindingAnalyzer {
             if (!lower.contains("repository")
                     && !lower.contains("repo")
                     && !lower.contains("dao")) {
+                continue;
+            }
+            // Reading a small lookup table (authorities, roles, tags, types) in full is the
+            // intended use; only tables that grow with usage are worth paging.
+            if (REFERENCE_DATA_HINTS.stream().anyMatch(lower::contains)) {
                 continue;
             }
             Integer line = call.getBegin().map(p -> p.line).orElse(null);
@@ -1441,8 +1518,10 @@ public class ScalabilityPracticeFindingAnalyzer {
                                         + " bounded reference tables only.")
                             .limitations(
                                     "Medium confidence — flagged by the receiver name containing"
-                                        + " 'repository'/'repo'/'dao'. Small fixed lookup tables"
-                                        + " are a legitimate exception.")
+                                        + " 'repository'/'repo'/'dao'. Repositories named for"
+                                        + " reference data (authority, role, tag, type, status,"
+                                        + " ...) are not reported; other small lookup tables are a"
+                                        + " legitimate exception too.")
                             .evidence(receiver + ".findAll() found in " + relativePath + ".")
                             .source(relativePath, line)
                             .build());
@@ -1479,9 +1558,8 @@ public class ScalabilityPracticeFindingAnalyzer {
     private void detectEntityNoArgConstructor(
             ClassOrInterfaceDeclaration cls, String relativePath, List<Finding> findings) {
         boolean entityLike =
-                cls.getAnnotations().stream()
-                        .map(a -> simpleName(a.getNameAsString()))
-                        .anyMatch(name -> "Entity".equals(name) || "Embeddable".equals(name));
+                JpaAnnotations.isJpaEntity(cls)
+                        || JpaAnnotations.hasJpaAnnotation(cls, "Embeddable");
         if (!entityLike) {
             return;
         }
@@ -1565,9 +1643,7 @@ public class ScalabilityPracticeFindingAnalyzer {
 
     private void detectFinalEntity(
             ClassOrInterfaceDeclaration cls, String relativePath, List<Finding> findings) {
-        boolean isEntity =
-                cls.getAnnotations().stream()
-                        .anyMatch(a -> "Entity".equals(simpleName(a.getNameAsString())));
+        boolean isEntity = JpaAnnotations.isJpaEntity(cls);
         if (!isEntity || !cls.isFinal()) {
             return;
         }
@@ -1613,9 +1689,7 @@ public class ScalabilityPracticeFindingAnalyzer {
 
     private void detectEntityMissingId(
             ClassOrInterfaceDeclaration cls, String relativePath, List<Finding> findings) {
-        boolean hasEntity =
-                cls.getAnnotations().stream()
-                        .anyMatch(a -> "Entity".equals(simpleName(a.getNameAsString())));
+        boolean hasEntity = JpaAnnotations.isJpaEntity(cls);
         if (!hasEntity) {
             return;
         }

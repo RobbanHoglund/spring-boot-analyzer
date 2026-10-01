@@ -114,7 +114,9 @@ class StaticPracticeFindingAnalyzerTest {
         assertRichFinding(
                 findings,
                 FindingRules.SPRING_SECRET_MULTI_PROFILE.ruleId(),
-                FindingCategory.SECURITY,
+                // A literal value is reported by SPRING_SECRET_LITERAL, so the duplication
+                // itself stays a profile-drift finding.
+                FindingCategory.PROFILE_DRIFT,
                 FindingRuntimeDetection.ACTIVE_PROFILE_RUNTIME_MAY_DETECT);
         assertRichFinding(
                 findings,
@@ -625,6 +627,128 @@ record CreateRequest(@NotBlank String symbol, int quantity) {
     }
 
     @Test
+    void doesNotRequireValidOnModelAttributesThatAreNotTheForm() throws IOException {
+        // PetClinic's VisitController: the Owner is the context of the validated Visit form.
+        // A form bound onto an attribute that a @ModelAttribute method loads is still a form.
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("VisitController.java"),
+                """
+                package com.example.demo;
+
+                import jakarta.validation.Valid;
+                import jakarta.validation.constraints.NotBlank;
+                import org.springframework.stereotype.Controller;
+                import org.springframework.web.bind.annotation.ModelAttribute;
+                import org.springframework.web.bind.annotation.PostMapping;
+
+                @Controller
+                class VisitController {
+                    @ModelAttribute("pet")
+                    Pet loadPet() {
+                        return new Pet();
+                    }
+
+                    @PostMapping("/visits")
+                    String book(@ModelAttribute Owner owner, @Valid Visit visit) {
+                        return "ok";
+                    }
+
+                    @PostMapping("/pets")
+                    String rename(@ModelAttribute Pet pet) {
+                        return "ok";
+                    }
+
+                    @PostMapping("/owners")
+                    String create(@ModelAttribute Owner owner) {
+                        return "ok";
+                    }
+                }
+
+                class Owner {
+                    @NotBlank String lastName;
+                }
+
+                class Pet {
+                    @NotBlank String name;
+                }
+
+                class Visit {
+                    @NotBlank String description;
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .filteredOn(
+                        finding ->
+                                FindingRules.SPRING_MODEL_ATTRIBUTE_NO_VALID
+                                        .ruleId()
+                                        .equals(finding.ruleId()))
+                .extracting(Finding::target)
+                .containsExactlyInAnyOrder("VisitController#rename", "VisitController#create");
+    }
+
+    @Test
+    void doesNotRequireValidOnPartialUpdates() throws IOException {
+        // JHipster's partialUpdate* handlers: validating the whole entity would reject a PATCH
+        // that leaves @NotNull fields out.
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("LabelResource.java"),
+                """
+                package com.example.demo;
+
+                import jakarta.validation.constraints.NotNull;
+                import org.springframework.web.bind.annotation.PatchMapping;
+                import org.springframework.web.bind.annotation.PutMapping;
+                import org.springframework.web.bind.annotation.RequestBody;
+                import org.springframework.web.bind.annotation.RequestMapping;
+                import org.springframework.web.bind.annotation.RequestMethod;
+                import org.springframework.web.bind.annotation.RestController;
+
+                @RestController
+                class LabelResource {
+                    @PatchMapping("/labels/{id}")
+                    void partialUpdate(@NotNull @RequestBody Label label) {
+                    }
+
+                    @RequestMapping(value = "/labels", method = RequestMethod.PATCH)
+                    void partialUpdateAll(@RequestBody Label label) {
+                    }
+
+                    @PutMapping("/labels/{id}")
+                    void update(@RequestBody Label label) {
+                    }
+                }
+
+                class Label {
+                    @NotNull String name;
+                }
+                """);
+
+        List<Finding> findings =
+                analyzeStaticPractice(
+                        tempDir,
+                        emptyBuildInfo(
+                                List.of("org.springframework.boot:spring-boot-starter-web")));
+
+        assertThat(findings)
+                .filteredOn(
+                        finding ->
+                                FindingRules.SPRING_REQUEST_BODY_NO_VALID
+                                        .ruleId()
+                                        .equals(finding.ruleId()))
+                .extracting(Finding::target)
+                .containsExactly("LabelResource#update");
+    }
+
+    @Test
     void doesNotTreatRegexCompilationAsConstructorSideEffect() throws IOException {
         Files.createDirectories(tempDir.resolve("src/main/resources"));
         Path sourceRoot =
@@ -724,6 +848,84 @@ record CreateRequest(@NotBlank String symbol, int quantity) {
                             assertThat(finding.confidence()).isEqualTo(FindingConfidence.MEDIUM);
                             assertThat(finding.evidence()).contains("Catch block for IOException");
                         });
+    }
+
+    @Test
+    void reportsExplainedEmptyCatchAsInfo() throws IOException {
+        // JHipster's main class: the comment documents why the exception is ignored.
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("Application.java"),
+                """
+                package com.example.demo;
+
+                class Application {
+                    void disableDevtoolsRestart() {
+                        try {
+                            Class.forName("org.springframework.boot.devtools.autoconfigure.DevToolsProperties");
+                        } catch (Exception e) {
+                            // Devtools not found, ignore
+                        }
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .filteredOn(
+                        finding ->
+                                FindingRules.JAVA_EMPTY_CATCH_BLOCK
+                                        .ruleId()
+                                        .equals(finding.ruleId()))
+                .singleElement()
+                .extracting(Finding::severity)
+                .isEqualTo(FindingSeverity.INFO);
+    }
+
+    @Test
+    void reportsThrowableCatchThatRethrowsItAsInfo() throws IOException {
+        // JHipster's LoggingAspect logs through a helper and rethrows what proceed() threw.
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("LoggingAspect.java"),
+                """
+                package com.example.demo;
+
+                import org.aspectj.lang.ProceedingJoinPoint;
+                import org.springframework.stereotype.Component;
+
+                @Component
+                class LoggingAspect {
+                    public Object logAround(ProceedingJoinPoint joinPoint) throws Throwable {
+                        try {
+                            return joinPoint.proceed();
+                        } catch (Throwable e) {
+                            logError(e);
+                            throw e;
+                        }
+                    }
+
+                    void logError(Throwable t) {
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .filteredOn(
+                        finding ->
+                                FindingRules.SPRING_BROAD_FATAL_ERROR_CATCH
+                                        .ruleId()
+                                        .equals(finding.ruleId()))
+                .singleElement()
+                .extracting(Finding::severity)
+                .isEqualTo(FindingSeverity.INFO);
     }
 
     @Test
@@ -1147,6 +1349,63 @@ record CreateRequest(@NotBlank String symbol, int quantity) {
                                         && finding.evidence().contains("return \"\"")
                                         && "com.example.demo.Worker#loadValue"
                                                 .equals(finding.target()));
+    }
+
+    @Test
+    void doesNotReportNotFoundExceptionsTranslatedToAnEmptyResult() throws IOException {
+        // PetClinic REST's ClinicServiceImpl#findEntityById.
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("ClinicService.java"),
+                """
+                package com.example.demo;
+
+                import java.util.Optional;
+                import java.util.function.Supplier;
+                import org.springframework.dao.EmptyResultDataAccessException;
+                import org.springframework.orm.ObjectRetrievalFailureException;
+                import org.springframework.stereotype.Service;
+
+                @Service
+                class ClinicService {
+                    <T> T findEntityById(Supplier<T> supplier) {
+                        try {
+                            return supplier.get();
+                        } catch (ObjectRetrievalFailureException | EmptyResultDataAccessException e) {
+                            return null;
+                        }
+                    }
+
+                    <T> Optional<T> findOptional(Supplier<T> supplier) {
+                        try {
+                            return Optional.of(supplier.get());
+                        } catch (java.util.NoSuchElementException e) {
+                            return Optional.empty();
+                        }
+                    }
+
+                    <T> T findAny(Supplier<T> supplier) {
+                        try {
+                            return supplier.get();
+                        } catch (IllegalStateException e) {
+                            return null;
+                        }
+                    }
+                }
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .filteredOn(
+                        finding ->
+                                FindingRules.SPRING_SWALLOWED_EXCEPTION_FALLBACK
+                                        .ruleId()
+                                        .equals(finding.ruleId()))
+                .extracting(Finding::target)
+                .containsExactly("com.example.demo.ClinicService#findAny");
     }
 
     @Test
@@ -4002,6 +4261,29 @@ class ParserC {
                                         .equals(finding.ruleId()));
     }
 
+    @Test
+    void doesNotFlagSingleConnectionPoolInTestConfiguration() throws IOException {
+        // JHipster's src/test/resources/config/application-testprod.yml uses one connection.
+        Path testResources = Files.createDirectories(tempDir.resolve("src/test/resources/config"));
+        Path resources = Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                testResources.resolve("application-testprod.yml"),
+                "spring:\n  datasource:\n    hikari:\n      maximum-pool-size: 1\n");
+        Files.writeString(
+                resources.resolve("application-local.properties"),
+                "spring.datasource.hikari.maximum-pool-size=1\n");
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .noneMatch(
+                        finding ->
+                                FindingRules.SPRING_CONNECTION_POOL_MISCONFIGURED
+                                        .ruleId()
+                                        .equals(finding.ruleId()));
+    }
+
     // -------------------------------------------------------------------------
     // SPRING_SQL_INJECTION_QUERY_CONCATENATION
     // -------------------------------------------------------------------------
@@ -4072,6 +4354,89 @@ class UserRepository {
                                 FindingRules.SPRING_SQL_INJECTION_QUERY_CONCATENATION
                                         .ruleId()
                                         .equals(finding.ruleId()));
+    }
+
+    @Test
+    void doesNotFlagQueriesThatConcatenateOnlyNumbersEnumsAndUuids() throws IOException {
+        // PetClinic REST's JPA repositories delete by a numeric id read through a getter that
+        // a superclass declares. Only the String name can carry SQL.
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("PetRepository.java"),
+                """
+                package com.example.demo;
+
+                import jakarta.persistence.EntityManager;
+                import java.util.UUID;
+                import org.springframework.stereotype.Repository;
+
+                @Repository
+                class PetRepository {
+                    private static final String TABLE = "pets";
+                    private EntityManager entityManager;
+
+                    void deletePet(Pet pet) {
+                        entityManager.createQuery("DELETE FROM Pet pet WHERE id=" + pet.getId()).executeUpdate();
+                    }
+
+                    Object byOwner(long ownerId) {
+                        int limit = 10;
+                        return entityManager.createNativeQuery(
+                                "SELECT * FROM " + TABLE + " WHERE owner_id = " + ownerId + " LIMIT " + limit);
+                    }
+
+                    Object byStatus(Status status) {
+                        return entityManager.createNativeQuery(
+                                "SELECT * FROM pets WHERE status = '" + status.name() + "'");
+                    }
+
+                    Object byKey(PetKey key) {
+                        return entityManager.createNativeQuery(
+                                "SELECT * FROM pets WHERE uuid = '" + key.uuid() + "'");
+                    }
+
+                    Object byName(Pet pet) {
+                        return entityManager.createNativeQuery(
+                                "SELECT * FROM pets WHERE name = '" + pet.getName() + "'");
+                    }
+                }
+
+                class BaseEntity {
+                    protected Integer id;
+
+                    Integer getId() {
+                        return id;
+                    }
+                }
+
+                class Pet extends BaseEntity {
+                    private String name;
+
+                    String getName() {
+                        return name;
+                    }
+                }
+
+                enum Status {
+                    ACTIVE,
+                    SOLD
+                }
+
+                record PetKey(UUID uuid) {}
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .filteredOn(
+                        finding ->
+                                FindingRules.SPRING_SQL_INJECTION_QUERY_CONCATENATION
+                                        .ruleId()
+                                        .equals(finding.ruleId()))
+                .extracting(Finding::target)
+                .containsExactly("PetRepository#byName");
     }
 
     // -------------------------------------------------------------------------
@@ -6018,6 +6383,59 @@ interface InventoryClient {
                 .extracting(Finding::ruleId)
                 .doesNotContain(
                         FindingRules.SPRING_TRANSACTIONAL_CHECKED_EXCEPTION_NO_ROLLBACK.ruleId());
+    }
+
+    @Test
+    void treatsSpringAndProjectRuntimeExceptionsAsUnchecked() throws IOException {
+        // UsernameNotFoundException is a RuntimeException, as are project exceptions that
+        // extend one; only the IOException-based one is checked.
+        Files.createDirectories(tempDir.resolve("src/main/resources"));
+        Path sourceRoot =
+                Files.createDirectories(tempDir.resolve("src/main/java/com/example/demo"));
+        Files.writeString(
+                sourceRoot.resolve("UserService.java"),
+                """
+                package com.example.demo;
+
+                import org.springframework.security.core.userdetails.UsernameNotFoundException;
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+
+                @Service
+                public class UserService {
+                    @Transactional
+                    public Object loadUserByUsername(String username) throws UsernameNotFoundException {
+                        return null;
+                    }
+
+                    @Transactional
+                    public Object order(long id) throws OrderNotFoundException {
+                        return null;
+                    }
+
+                    @Transactional
+                    public Object export(long id) throws ExportFailedException {
+                        return null;
+                    }
+                }
+
+                class ResourceNotFoundException extends RuntimeException {}
+
+                class OrderNotFoundException extends ResourceNotFoundException {}
+
+                class ExportFailedException extends java.io.IOException {}
+                """);
+
+        List<Finding> findings = analyzeStaticPractice(tempDir, emptyBuildInfo(List.of()));
+
+        assertThat(findings)
+                .filteredOn(
+                        finding ->
+                                FindingRules.SPRING_TRANSACTIONAL_CHECKED_EXCEPTION_NO_ROLLBACK
+                                        .ruleId()
+                                        .equals(finding.ruleId()))
+                .extracting(Finding::target)
+                .containsExactly("UserService#export");
     }
 
     // ── SPRING_PATH_VARIABLE_TEMPLATE_MISMATCH ────────────────────────────────

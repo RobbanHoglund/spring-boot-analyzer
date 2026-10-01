@@ -371,6 +371,15 @@ class ConfigurationFindingAnalyzerProfileDriftTest {
     }
 
     @Test
+    void doesNotFlagH2InAProfileNamedAfterIt() {
+        // PetClinic REST selects its database with the h2, mysql and postgres profiles.
+        ConfigurationAnalysis cfg =
+                config(prop("spring.datasource.url", "jdbc:h2:mem:petclinic", "h2"));
+
+        assertThat(byRule(findings(cfg), "SPRING_H2_IN_NON_TEST_PROFILE")).isNull();
+    }
+
+    @Test
     void doesNotFlagPostgresInDefaultProfile() {
         ConfigurationAnalysis cfg =
                 config(prop("spring.datasource.url", "jdbc:postgresql://localhost:5432/db", null));

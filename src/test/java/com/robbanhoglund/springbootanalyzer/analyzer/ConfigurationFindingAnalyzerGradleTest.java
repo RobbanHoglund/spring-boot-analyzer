@@ -713,6 +713,36 @@ class ConfigurationFindingAnalyzerGradleTest {
     }
 
     @Test
+    void doesNotFlagLiquibaseWhenTheProjectDefinesItsOwnSpringLiquibaseBean() throws IOException {
+        // JHipster declares an AsyncSpringLiquibase bean with its own change log location, so
+        // Boot's LiquibaseAutoConfiguration (and its default change log) backs off.
+        Path config = Files.createDirectories(repoRoot.resolve("src/main/java/com/example"));
+        Files.writeString(
+                config.resolve("LiquibaseConfiguration.java"),
+                """
+                package com.example;
+
+                import liquibase.integration.spring.SpringLiquibase;
+                import org.springframework.context.annotation.Bean;
+                import org.springframework.context.annotation.Configuration;
+
+                @Configuration
+                class LiquibaseConfiguration {
+                    @Bean
+                    public SpringLiquibase liquibase() {
+                        SpringLiquibase liquibase = new SpringLiquibase();
+                        liquibase.setChangeLog("classpath:config/liquibase/master.xml");
+                        return liquibase;
+                    }
+                }
+                """);
+
+        List<Finding> result =
+                analyzer.analyze(repoRoot, liquibaseBuild(), emptyConfig(), buildGradleNone());
+        assertThat(byRule(result, "SPRING_LIQUIBASE_MISSING_CHANGELOG")).isNull();
+    }
+
+    @Test
     void doesNotFlagLiquibaseWhenDependencyAbsent() {
         List<Finding> result =
                 analyzer.analyze(repoRoot, buildInfoBoot3, emptyConfig(), buildGradleNone());

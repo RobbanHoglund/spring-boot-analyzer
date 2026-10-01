@@ -1,7 +1,5 @@
 package com.robbanhoglund.springbootanalyzer.analyzer.configuration;
 
-import com.github.javaparser.JavaParser;
-import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
@@ -11,17 +9,13 @@ import com.github.javaparser.ast.expr.MemberValuePair;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.NameExpr;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertyReference;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -39,47 +33,27 @@ public class PropertyReferenceAnalyzer {
     }
 
     public List<PropertyReference> analyze(Path repositoryRoot) {
-        Path sourceRoot = repositoryRoot.resolve("src/main/java");
-        if (Files.notExists(sourceRoot)) {
-            return List.of();
-        }
+        return analyze(JavaSources.from(repositoryRoot));
+    }
 
+    /** Collects the property references in the shared source tree. */
+    public List<PropertyReference> analyze(JavaSources sources) {
         List<PropertyReference> references = new ArrayList<>();
-        JavaParser javaParser = newJavaParser();
-        try (Stream<Path> files = Files.walk(sourceRoot)) {
-            files.filter(Files::isRegularFile)
-                    .filter(path -> path.toString().endsWith(".java"))
-                    .sorted(Comparator.naturalOrder())
-                    .forEach(
-                            path ->
-                                    analyzeSourceFile(
-                                            javaParser, repositoryRoot, path, references));
-        } catch (IOException exception) {
-            LOGGER.warn(
-                    "Failed to fully scan property references under {}; returning partial results",
-                    sourceRoot,
-                    exception);
+        for (JavaSources.JavaFile file : sources.files()) {
+            if (file.compilationUnit() != null) {
+                analyzeSourceFile(
+                        file.compilationUnit(), file.relativePath(), file.path(), references);
+            }
         }
         return List.copyOf(references);
     }
 
     private void analyzeSourceFile(
-            JavaParser javaParser,
-            Path repositoryRoot,
+            CompilationUnit compilationUnit,
+            String relativePath,
             Path sourceFile,
             List<PropertyReference> references) {
         try {
-            var parseResult = javaParser.parse(sourceFile);
-            if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
-                LOGGER.warn(
-                        "Failed to parse Java source {}; skipping property reference analysis for"
-                                + " this file (problems: {})",
-                        sourceFile,
-                        parseResult.getProblems());
-                return;
-            }
-
-            CompilationUnit compilationUnit = parseResult.getResult().orElseThrow();
             String packageName =
                     compilationUnit
                             .getPackageDeclaration()
@@ -94,19 +68,16 @@ public class PropertyReferenceAnalyzer {
                                 : packageName + "." + typeDeclaration.getNameAsString();
 
                 for (AnnotationExpr annotation : typeDeclaration.findAll(AnnotationExpr.class)) {
-                    collectAnnotationReference(repositoryRoot, sourceFile, className, annotation)
+                    collectAnnotationReference(relativePath, className, annotation)
                             .ifPresent(references::addAll);
                 }
 
                 for (MethodCallExpr methodCallExpr :
                         typeDeclaration.findAll(MethodCallExpr.class)) {
-                    collectMethodReference(repositoryRoot, sourceFile, className, methodCallExpr)
+                    collectMethodReference(relativePath, className, methodCallExpr)
                             .ifPresent(references::add);
                 }
             }
-        } catch (IOException exception) {
-            // Skip an individual unreadable file rather than aborting the scan.
-            LOGGER.warn("Failed to read source file {}; skipping", sourceFile, exception);
         } catch (RuntimeException | StackOverflowError failure) {
             // A pathologically nested expression overflows JavaParser's recursive descent; one
             // such file must not cost the whole scan.
@@ -114,15 +85,8 @@ public class PropertyReferenceAnalyzer {
         }
     }
 
-    private JavaParser newJavaParser() {
-        return new JavaParser(
-                new ParserConfiguration()
-                        .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                        .setCharacterEncoding(StandardCharsets.UTF_8));
-    }
-
     private Optional<List<PropertyReference>> collectAnnotationReference(
-            Path repositoryRoot, Path sourceFile, String className, AnnotationExpr annotation) {
+            String relativePath, String className, AnnotationExpr annotation) {
         String annotationName = simpleName(annotation.getNameAsString());
         if ("Value".equals(annotationName)) {
             String rawValue =
@@ -146,7 +110,7 @@ public class PropertyReferenceAnalyzer {
                             new PropertyReference(
                                     propertyNameNormalizer.normalize(matcher.group(1)),
                                     "@Value",
-                                    normalizePath(repositoryRoot, sourceFile),
+                                    relativePath,
                                     annotation
                                             .getBegin()
                                             .map(position -> position.line)
@@ -159,7 +123,7 @@ public class PropertyReferenceAnalyzer {
         }
 
         if ("Scheduled".equals(annotationName) && annotation.isNormalAnnotationExpr()) {
-            return collectScheduledReferences(repositoryRoot, sourceFile, className, annotation);
+            return collectScheduledReferences(relativePath, className, annotation);
         }
 
         if (!"ConditionalOnProperty".equals(annotationName)
@@ -196,7 +160,7 @@ public class PropertyReferenceAnalyzer {
                     new PropertyReference(
                             propertyNameNormalizer.normalize(propertyName),
                             "@ConditionalOnProperty",
-                            normalizePath(repositoryRoot, sourceFile),
+                            relativePath,
                             annotation.getBegin().map(position -> position.line).orElse(null),
                             className,
                             null,
@@ -208,7 +172,7 @@ public class PropertyReferenceAnalyzer {
     }
 
     private Optional<PropertyReference> collectMethodReference(
-            Path repositoryRoot, Path sourceFile, String className, MethodCallExpr methodCallExpr) {
+            String relativePath, String className, MethodCallExpr methodCallExpr) {
         String methodName = methodCallExpr.getNameAsString();
         if (!methodName.equals("getProperty")
                 && !methodName.equals("getRequiredProperty")
@@ -236,7 +200,7 @@ public class PropertyReferenceAnalyzer {
                 new PropertyReference(
                         propertyNameNormalizer.normalize(propertyName.get()),
                         "Environment#" + methodName,
-                        normalizePath(repositoryRoot, sourceFile),
+                        relativePath,
                         methodCallExpr.getBegin().map(position -> position.line).orElse(null),
                         className,
                         defaultValue,
@@ -269,7 +233,7 @@ public class PropertyReferenceAnalyzer {
     }
 
     private Optional<List<PropertyReference>> collectScheduledReferences(
-            Path repositoryRoot, Path sourceFile, String className, AnnotationExpr annotation) {
+            String relativePath, String className, AnnotationExpr annotation) {
         List<PropertyReference> references = new ArrayList<>();
         for (MemberValuePair pair : annotation.asNormalAnnotationExpr().getPairs()) {
             String pairName = pair.getNameAsString();
@@ -292,7 +256,7 @@ public class PropertyReferenceAnalyzer {
                     new PropertyReference(
                             propertyNameNormalizer.normalize(matcher.group(1)),
                             "@Scheduled",
-                            normalizePath(repositoryRoot, sourceFile),
+                            relativePath,
                             annotation.getBegin().map(position -> position.line).orElse(null),
                             className,
                             matcher.group(2),
@@ -326,9 +290,5 @@ public class PropertyReferenceAnalyzer {
     private String simpleName(String name) {
         int separatorIndex = name.lastIndexOf('.');
         return separatorIndex < 0 ? name : name.substring(separatorIndex + 1);
-    }
-
-    private String normalizePath(Path repositoryRoot, Path sourceFile) {
-        return repositoryRoot.relativize(sourceFile).toString().replace('\\', '/');
     }
 }

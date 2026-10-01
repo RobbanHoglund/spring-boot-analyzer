@@ -18,6 +18,7 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.CustomP
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertyDocumentation;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertyKind;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.PropertyReference;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -122,13 +123,22 @@ public class ConfigurationAnalyzer {
     }
 
     public Result analyze(Path repositoryRoot, BuildInfo buildInfo) {
+        return analyze(JavaSources.from(repositoryRoot), buildInfo);
+    }
+
+    /**
+     * Analyzes the configuration files of {@code sources.repositoryRoot()}, reading the
+     * {@code @ConfigurationProperties} classes and property references from the shared parse.
+     */
+    public Result analyze(JavaSources sources, BuildInfo buildInfo) {
+        Path repositoryRoot = sources.repositoryRoot();
         SpringConfigurationMetadataCatalog.MetadataCatalog metadataCatalog =
                 springConfigurationMetadataCatalog.load(
                         repositoryRoot, buildInfo == null ? null : buildInfo.springBootVersion());
         List<ConfigurationPropertiesClass> customConfigurationClasses =
-                configurationPropertiesClassAnalyzer.analyze(repositoryRoot);
+                configurationPropertiesClassAnalyzer.analyze(sources);
         List<PropertyReference> propertyReferences =
-                propertyReferenceAnalyzer.analyze(repositoryRoot).stream()
+                propertyReferenceAnalyzer.analyze(sources).stream()
                         .filter(reference -> !isIgnoredSystemPropertyReference(reference))
                         .toList();
 
@@ -961,7 +971,10 @@ public class ConfigurationAnalyzer {
                     "dev",
                     "development");
 
-    /** Local, development or test configuration: a committed credential there is a lesser risk. */
+    /**
+     * Local, development, test or sample configuration (JHipster's {@code secret-samples}
+     * profile, for example): a committed credential there is a lesser risk.
+     */
     private static boolean nonProductionConfiguration(ApplicationProperty property) {
         String profile =
                 property.profile() == null ? "" : property.profile().toLowerCase(Locale.ROOT);
@@ -969,6 +982,8 @@ public class ConfigurationAnalyzer {
         return NON_PRODUCTION_PROFILES.contains(profile)
                 || profile.startsWith("local-")
                 || profile.startsWith("dev-")
+                || profile.contains("sample")
+                || profile.contains("example")
                 || sourceFile.startsWith("src/test/")
                 || sourceFile.contains("/src/test/");
     }
@@ -1120,7 +1135,7 @@ public class ConfigurationAnalyzer {
                                     "Static analysis cannot prove whether the value is real,"
                                             + " already rotated, or only used in a private"
                                             + " environment. Reported as INFO in local,"
-                                            + " development and test configuration.")
+                                            + " development, test and sample configuration.")
                             .source(property.sourceFile(), property.line())
                             .target(name)
                             .build());

@@ -295,21 +295,24 @@ analyze()
 
 ## Analysis pipeline
 
-`SpringBootProjectAnalyzer` implements `StaticAnalyzer` and runs each sub-analyzer in a fixed sequence, threading the outputs of earlier stages into the inputs of later ones:
+`SpringBootProjectAnalyzer` implements `StaticAnalyzer` and runs each sub-analyzer in a fixed sequence, threading the outputs of earlier stages into the inputs of later ones.
+
+Before the first stage, `JavaSources` reads and parses `src/main/java` exactly once; every stage that reads Java sources ("parsed sources" below) shares those ASTs. Only `TestingPracticeFindingAnalyzer` parses a tree of its own, `src/test/java`. The shared ASTs keep every node's position and comments but release JavaParser's token chain, which cuts the memory they retain by about 60%. Files are decoded leniently, like JavaParser does, so a source saved as ISO-8859-1 is still analyzed.
+
 
 | Stage | Analyzer | Input | Output |
 |-------|----------|-------|--------|
 | 1 | `BuildFileAnalyzer` | repository root | `BuildInfo` |
-| 2 | `JavaSourceAnalyzer` | repository root | `SourceAnalysis` (classes + findings) |
-| 3 | `ConfigurationAnalyzer` | repository root + `BuildInfo` | `ConfigurationAnalysis` + findings |
+| 2 | `JavaSourceAnalyzer` | parsed sources | `SourceAnalysis` (classes + findings) |
+| 3 | `ConfigurationAnalyzer` | parsed sources + configuration files + `BuildInfo` | `ConfigurationAnalysis` + findings |
 | 4 | `GradleModelAnalyzer` | repository root + `BuildInfo` + `AnalyzerProperties` | `GradleModelAnalysis` + findings |
 | 5 | structure check | `DetectedClass` list | component-scan findings |
-| 6 | `RuntimeStackAnalyzer` | root + `BuildInfo` + `GradleModelAnalysis` + `ConfigurationAnalysis` + classes | `RuntimeStackAnalysis` + findings |
-| 7 | `HttpSurfaceAnalyzer` | root + `ConfigurationAnalysis` + `BuildInfo` + `WebStack` | `HttpSurfaceAnalysis` + findings |
-| 8 | `StaticPracticeFindingAnalyzer` | root + all prior analyses + classes | findings |
-| 9 | `ConfigurationFindingAnalyzer` | root + `BuildInfo` + `ConfigurationAnalysis` + `GradleModelAnalysis` | findings |
-| 10 | `ObservabilityFindingAnalyzer` | root + `RuntimeStackAnalysis` | findings |
-| 11 | `TestingPracticeFindingAnalyzer` | root + classes | findings |
+| 6 | `RuntimeStackAnalyzer` | parsed sources + `BuildInfo` + `GradleModelAnalysis` + `ConfigurationAnalysis` + classes | `RuntimeStackAnalysis` + findings |
+| 7 | `HttpSurfaceAnalyzer` | parsed sources + `ConfigurationAnalysis` + `BuildInfo` + `WebStack` | `HttpSurfaceAnalysis` + findings |
+| 8 | `StaticPracticeFindingAnalyzer` | parsed sources + all prior analyses + classes | findings |
+| 9 | `ConfigurationFindingAnalyzer` | parsed sources + repository files + `BuildInfo` + `ConfigurationAnalysis` + `GradleModelAnalysis` | findings |
+| 10 | `ObservabilityFindingAnalyzer` | parsed sources + `RuntimeStackAnalysis` + `BuildInfo` | findings |
+| 11 | `TestingPracticeFindingAnalyzer` | `src/test/java` (parsed separately) + `BuildInfo` | findings |
 | 12 | `CachingPracticeFindingAnalyzer` | parsed sources + `BuildInfo` + `ConfigurationAnalysis` | findings |
 | 13 | `ObservabilityGapFindingAnalyzer` | parsed sources + `BuildInfo` | findings |
 | 14 | `TransactionPracticeFindingAnalyzer` | parsed sources | findings |
@@ -354,7 +357,7 @@ Scans `src/main/resources` for:
 - `application.properties`, `application.yml`
 - Profile-specific variants: `application-{profile}.properties`, `application-{profile}.yml`
 
-Delegates to `PropertiesFileParser` and `YamlConfigurationParser` to extract key-value pairs as `ApplicationProperty` records. `ConfigurationPropertiesClassAnalyzer` cross-references `@ConfigurationProperties`-annotated classes found by `JavaSourceAnalyzer`. `SensitivePropertyValueRedactor` strips plain-text secret values before they reach the API response.
+Delegates to `PropertiesFileParser` and `YamlConfigurationParser` to extract key-value pairs, with their 1-based line, as `ApplicationProperty` records. The YAML parser reads the values through Jackson and takes each key's line from a second pass over the same token stream, one map per `---` document. `ConfigurationPropertiesClassAnalyzer` cross-references `@ConfigurationProperties`-annotated classes found by `JavaSourceAnalyzer`. `SensitivePropertyValueRedactor` strips plain-text secret values before they reach the API response.
 
 ### GradleModelAnalyzer
 

@@ -108,6 +108,35 @@ class MigrationPracticeFindingAnalyzerTest {
     }
 
     @Test
+    void reportsAChainOfAntMatchersOnceAtTheFirstCall() throws IOException {
+        // The RealWorld example app: six antMatchers(...) calls in one chain.
+        writeSourceFile(
+                "src/main/java/com/example/SecurityConfig.java",
+                """
+                package com.example;
+                import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+                public class SecurityConfig {
+                    void configure(HttpSecurity http) throws Exception {
+                        http.authorizeRequests()
+                                .antMatchers("/graphiql").permitAll()
+                                .antMatchers("/graphql").permitAll()
+                                .antMatchers("/articles/feed").authenticated()
+                                .anyRequest().authenticated();
+                    }
+                }
+                """);
+
+        assertThat(findings("2.7.18"))
+                .filteredOn(f -> "SPRING_SECURITY_ANTMATCHERS_REMOVED".equals(f.ruleId()))
+                .singleElement()
+                .satisfies(
+                        f -> {
+                            assertThat(f.line()).isEqualTo(6);
+                            assertThat(f.evidence()).contains("3 calls, lines 6, 7, 8");
+                        });
+    }
+
+    @Test
     void flagsMvcMatchersCall() throws IOException {
         writeSourceFile(
                 "src/main/java/com/example/SecurityConfig.java",

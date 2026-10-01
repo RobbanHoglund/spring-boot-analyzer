@@ -1,7 +1,5 @@
 package com.robbanhoglund.springbootanalyzer.analyzer.configuration;
 
-import com.github.javaparser.JavaParser;
-import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.NodeList;
 import com.github.javaparser.ast.body.FieldDeclaration;
@@ -14,19 +12,15 @@ import com.github.javaparser.ast.expr.MemberValuePair;
 import com.github.javaparser.ast.type.Type;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.ConfigurationPropertiesClass;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.configuration.CustomPropertyDefinition;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -57,45 +51,27 @@ public class ConfigurationPropertiesClassAnalyzer {
     }
 
     public List<ConfigurationPropertiesClass> analyze(Path repositoryRoot) {
-        Path sourceRoot = repositoryRoot.resolve("src/main/java");
-        if (Files.notExists(sourceRoot)) {
-            return List.of();
-        }
+        return analyze(JavaSources.from(repositoryRoot));
+    }
 
+    /** Finds the {@code @ConfigurationProperties} classes in the shared source tree. */
+    public List<ConfigurationPropertiesClass> analyze(JavaSources sources) {
         List<ConfigurationPropertiesClass> classes = new ArrayList<>();
-        JavaParser javaParser = newJavaParser();
-        try (Stream<Path> files = Files.walk(sourceRoot)) {
-            files.filter(Files::isRegularFile)
-                    .filter(path -> path.toString().endsWith(".java"))
-                    .sorted(Comparator.naturalOrder())
-                    .forEach(path -> analyzeSourceFile(javaParser, repositoryRoot, path, classes));
-        } catch (IOException exception) {
-            LOGGER.warn(
-                    "Failed to fully scan @ConfigurationProperties classes under {};"
-                            + " returning partial results",
-                    sourceRoot,
-                    exception);
+        for (JavaSources.JavaFile file : sources.files()) {
+            if (file.compilationUnit() != null) {
+                analyzeSourceFile(
+                        file.compilationUnit(), file.relativePath(), file.path(), classes);
+            }
         }
         return List.copyOf(classes);
     }
 
     private void analyzeSourceFile(
-            JavaParser javaParser,
-            Path repositoryRoot,
+            CompilationUnit compilationUnit,
+            String relativePath,
             Path sourceFile,
             List<ConfigurationPropertiesClass> classes) {
         try {
-            var parseResult = javaParser.parse(sourceFile);
-            if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
-                LOGGER.warn(
-                        "Failed to parse Java source {}; skipping @ConfigurationProperties"
-                                + " analysis for this file (problems: {})",
-                        sourceFile,
-                        parseResult.getProblems());
-                return;
-            }
-
-            CompilationUnit compilationUnit = parseResult.getResult().orElseThrow();
             String packageName =
                     compilationUnit
                             .getPackageDeclaration()
@@ -106,16 +82,9 @@ public class ConfigurationPropertiesClassAnalyzer {
             for (TypeDeclaration<?> typeDeclaration :
                     compilationUnit.findAll(TypeDeclaration.class)) {
                 findConfigurationPropertiesClass(
-                                repositoryRoot,
-                                sourceFile,
-                                packageName,
-                                typeDeclaration,
-                                localTypes)
+                                relativePath, packageName, typeDeclaration, localTypes)
                         .ifPresent(classes::add);
             }
-        } catch (IOException exception) {
-            // Skip an individual unreadable file rather than aborting the scan.
-            LOGGER.warn("Failed to read source file {}; skipping", sourceFile, exception);
         } catch (RuntimeException | StackOverflowError failure) {
             // A pathologically nested expression overflows JavaParser's recursive descent; one
             // such file must not cost the whole scan.
@@ -123,16 +92,8 @@ public class ConfigurationPropertiesClassAnalyzer {
         }
     }
 
-    private JavaParser newJavaParser() {
-        return new JavaParser(
-                new ParserConfiguration()
-                        .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                        .setCharacterEncoding(StandardCharsets.UTF_8));
-    }
-
     private Optional<ConfigurationPropertiesClass> findConfigurationPropertiesClass(
-            Path repositoryRoot,
-            Path sourceFile,
+            String relativePath,
             String packageName,
             TypeDeclaration<?> typeDeclaration,
             Map<String, TypeDeclaration<?>> localTypes) {
@@ -161,7 +122,7 @@ public class ConfigurationPropertiesClassAnalyzer {
                 new ConfigurationPropertiesClass(
                         prefix,
                         qualifiedClassName,
-                        normalizePath(repositoryRoot, sourceFile),
+                        relativePath,
                         cleanJavadoc(
                                 typeDeclaration
                                         .getJavadocComment()
@@ -316,9 +277,5 @@ public class ConfigurationPropertiesClassAnalyzer {
     private String simpleName(String name) {
         int separatorIndex = name.lastIndexOf('.');
         return separatorIndex < 0 ? name : name.substring(separatorIndex + 1);
-    }
-
-    private String normalizePath(Path repositoryRoot, Path sourceFile) {
-        return repositoryRoot.relativize(sourceFile).toString().replace('\\', '/');
     }
 }

@@ -1626,15 +1626,15 @@ public final class FindingRules {
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
     /** A {@code @Transactional} annotation is placed directly on a {@code @RestController}
-     *  or {@code @Controller} class or one of its handler methods. Controllers are
-     *  responsible for HTTP concerns (parsing, routing, serialisation); managing database
-     *  transactions in the same layer holds a connection open for the entire HTTP processing
-     *  time, including Jackson serialisation, which is outside the intended transaction scope. */
+     *  or {@code @Controller} class or one of its handler methods. The handler method becomes
+     *  the transaction boundary: the connection is held while it runs, including any
+     *  non-database work it does, and transaction boundaries spread into the web layer. A
+     *  design hint: thin CRUD controllers without a service layer do this deliberately. */
     public static final FindingRule SPRING_TRANSACTIONAL_ON_CONTROLLER =
             rule(
                     "SPRING_TRANSACTIONAL_ON_CONTROLLER",
                     "@Transactional placed on a controller class or handler method",
-                    FindingSeverity.WARNING,
+                    FindingSeverity.INFO,
                     FindingCategory.TRANSACTION,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 
@@ -1647,7 +1647,7 @@ public final class FindingRules {
             rule(
                     "SPRING_REPOSITORY_IN_CONTROLLER",
                     "Repository injected directly into controller — service layer bypassed",
-                    FindingSeverity.WARNING,
+                    FindingSeverity.INFO,
                     FindingCategory.MAINTAINABILITY,
                     FindingRuntimeDetection.NOT_NORMALLY_DETECTED);
 

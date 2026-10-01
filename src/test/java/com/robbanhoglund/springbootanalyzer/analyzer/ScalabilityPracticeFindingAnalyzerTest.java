@@ -882,6 +882,46 @@ class ScalabilityPracticeFindingAnalyzerTest {
     }
 
     @Test
+    void doesNotFlagBlockingInScheduledJobsAndStartupCallbacks() throws IOException {
+        // JHipster's reactive UserService: a nightly @Scheduled job calls blockLast() on the
+        // scheduler thread. A lambda inside it may run on a Reactor thread and stays reported.
+        writeSourceFile(
+                "src/main/java/com/example/UserService.java",
+                """
+                package com.example;
+                import org.springframework.boot.context.event.ApplicationReadyEvent;
+                import org.springframework.context.event.EventListener;
+                import org.springframework.scheduling.annotation.Scheduled;
+                import org.springframework.stereotype.Service;
+                import reactor.core.publisher.Flux;
+                import reactor.core.publisher.Mono;
+                @Service
+                public class UserService {
+                    @Scheduled(cron = "0 0 1 * * ?")
+                    public void removeNotActivatedUsers() {
+                        removeNotActivatedUsersReactively().blockLast();
+                    }
+                    @EventListener(ApplicationReadyEvent.class)
+                    public void warmUp() {
+                        Mono.just("cache").block();
+                    }
+                    @Scheduled(fixedDelay = 1000)
+                    public void nested() {
+                        Flux.just(1).flatMap(i -> Mono.just(Mono.just(i).block())).subscribe();
+                    }
+                    public Flux<String> removeNotActivatedUsersReactively() {
+                        return Flux.empty();
+                    }
+                }
+                """);
+
+        assertThat(findings())
+                .filteredOn(finding -> "SPRING_WEBFLUX_BLOCKING_CALL".equals(finding.ruleId()))
+                .extracting(Finding::target)
+                .containsExactly("UserService#nested");
+    }
+
+    @Test
     void flagsBlockWithTimeoutArgument() throws IOException {
         writeSourceFile(
                 "src/main/java/com/example/ReactiveService.java",
@@ -1203,6 +1243,95 @@ class ScalabilityPracticeFindingAnalyzerTest {
                 """);
 
         assertThat(byRule(findings(), "SPRING_UNBOUNDED_FINDALL")).isNull();
+    }
+
+    @Test
+    void doesNotFlagFindAllOnReferenceDataRepositories() throws IOException {
+        // Authorities, pet types and specialties are small lookup tables read in full on
+        // purpose (JHipster, PetClinic); users grow with usage.
+        writeSourceFile(
+                "src/main/java/com/example/UserService.java",
+                """
+                package com.example;
+                import java.util.List;
+                import org.springframework.stereotype.Service;
+                @Service
+                public class UserService {
+                    private final AuthorityRepository authorityRepository = null;
+                    private final PetTypeRepository petTypeRepository = null;
+                    private final SpecialtyRepository specialtyRepository = null;
+                    private final UserRepository userRepository = null;
+                    public void load() {
+                        authorityRepository.findAll();
+                        petTypeRepository.findAll();
+                        specialtyRepository.findAll();
+                        userRepository.findAll();
+                    }
+                }
+                interface AuthorityRepository { List<?> findAll(); }
+                interface PetTypeRepository { List<?> findAll(); }
+                interface SpecialtyRepository { List<?> findAll(); }
+                interface UserRepository { List<?> findAll(); }
+                """);
+
+        assertThat(findings())
+                .filteredOn(finding -> "SPRING_UNBOUNDED_FINDALL".equals(finding.ruleId()))
+                .extracting(Finding::line)
+                .containsExactly(14);
+    }
+
+    @Test
+    void doesNotApplyJpaRulesToEntitiesOfOtherMappers() throws IOException {
+        // JHipster's Cassandra variant maps User with the DataStax driver's @Entity: no
+        // proxies, no @Id, no JPA no-arg constructor requirement.
+        writeSourceFile(
+                "src/main/java/com/example/User.java",
+                """
+                package com.example;
+                import com.datastax.oss.driver.api.mapper.annotations.Entity;
+                import lombok.Data;
+                @Entity
+                @Data
+                public final class User {
+                    private String login;
+                    public User(String login) {
+                        this.login = login;
+                    }
+                }
+                """);
+
+        assertThat(findings())
+                .extracting(Finding::ruleId)
+                .doesNotContain(
+                        "SPRING_ENTITY_MISSING_ID",
+                        "SPRING_LOMBOK_DATA_ON_ENTITY",
+                        "SPRING_JPA_ENTITY_NO_NOARG_CONSTRUCTOR",
+                        "SPRING_JPA_FINAL_ENTITY");
+    }
+
+    @Test
+    void stillAppliesJpaRulesToJpaEntitiesWithoutImports() throws IOException {
+        // A wildcard import (or none) keeps the simple @Entity counted as JPA.
+        writeSourceFile(
+                "src/main/java/com/example/Order.java",
+                """
+                package com.example;
+                import jakarta.persistence.*;
+                @Entity
+                public final class Order {
+                    private String description;
+                    public Order(String description) {
+                        this.description = description;
+                    }
+                }
+                """);
+
+        assertThat(findings())
+                .extracting(Finding::ruleId)
+                .contains(
+                        "SPRING_ENTITY_MISSING_ID",
+                        "SPRING_JPA_ENTITY_NO_NOARG_CONSTRUCTOR",
+                        "SPRING_JPA_FINAL_ENTITY");
     }
 
     // ── SPRING_ENTITY_MISSING_ID ──────────────────────────────────────────────

@@ -346,6 +346,56 @@ class StaticPracticeRulesTest {
                                 + " BillingService#record");
     }
 
+    @Test
+    void ignoresSettingsThatAJoiningTransactionWouldIgnoreAnyway() throws IOException {
+        // Through the proxy, readOnly, isolation and timeout of a callee that joins the
+        // caller's transaction are ignored too, so the self-call loses nothing.
+        write(
+                "ArticleService.java",
+                """
+                package com.example;
+
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Isolation;
+                import org.springframework.transaction.annotation.Propagation;
+                import org.springframework.transaction.annotation.Transactional;
+
+                @Service
+                class ArticleService {
+                    @Transactional
+                    public void favorite() {
+                        find();
+                        lock();
+                        retry();
+                        other();
+                    }
+
+                    @Transactional(readOnly = true)
+                    public void find() {
+                    }
+
+                    @Transactional(
+                            propagation = Propagation.REQUIRED,
+                            isolation = Isolation.SERIALIZABLE,
+                            timeout = 5)
+                    public void lock() {
+                    }
+
+                    @Transactional(rollbackFor = Exception.class)
+                    public void retry() {
+                    }
+
+                    @Transactional("otherTransactionManager")
+                    public void other() {
+                    }
+                }
+                """);
+
+        assertThat(findings("SPRING_TRANSACTIONAL_SELF_INVOCATION"))
+                .extracting(Finding::target)
+                .containsExactlyInAnyOrder("ArticleService#retry", "ArticleService#other");
+    }
+
     // ── SPRING_TRANSACTIONAL_READONLY_WITH_WRITES ─────────────────────────────
 
     @Test
@@ -391,6 +441,42 @@ class StaticPracticeRulesTest {
                 .extracting(Finding::target)
                 .asString()
                 .contains("touch");
+    }
+
+    // ── SPRING_SCHEDULED_SIDE_EFFECT ──────────────────────────────────────────
+
+    @Test
+    void doesNotReportScheduledSideEffectsCoordinatedByShedLock() throws IOException {
+        write(
+                "PriceJob.java",
+                """
+                package com.example;
+
+                import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
+                import org.springframework.scheduling.annotation.Scheduled;
+                import org.springframework.stereotype.Component;
+                import org.springframework.web.client.RestTemplate;
+
+                @Component
+                class PriceJob {
+                    private final RestTemplate restTemplate = new RestTemplate();
+
+                    @Scheduled(fixedRate = 60000)
+                    @SchedulerLock(name = "refreshPrices")
+                    public void locked() {
+                        restTemplate.postForObject("https://api.example.com/prices", null, String.class);
+                    }
+
+                    @Scheduled(fixedRate = 60000)
+                    public void unlocked() {
+                        restTemplate.postForObject("https://api.example.com/rates", null, String.class);
+                    }
+                }
+                """);
+
+        assertThat(findings("SPRING_SCHEDULED_SIDE_EFFECT"))
+                .extracting(Finding::target)
+                .containsExactly("PriceJob#unlocked");
     }
 
     // ── SPRING_CSRF_DISABLED ──────────────────────────────────────────────────
@@ -443,6 +529,78 @@ class StaticPracticeRulesTest {
                 .singleElement()
                 .extracting(Finding::target)
                 .isEqualTo("SecurityConfig#web");
+    }
+
+    @Test
+    void skipsHeaderTokenFilterChainsOnceTheContextIsNoLongerSavedToTheSession()
+            throws IOException {
+        // The RealWorld app: a JWT filter reads the Authorization header, no browser login and
+        // no STATELESS policy. Since Spring Security 6 no session carries the authentication.
+        write(
+                "SecurityConfig.java",
+                """
+                package com.example;
+
+                import org.springframework.context.annotation.Bean;
+                import org.springframework.context.annotation.Configuration;
+                import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+                import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+                import org.springframework.security.web.SecurityFilterChain;
+                import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
+                @Configuration
+                class SecurityConfig {
+                    @Bean
+                    SecurityFilterChain api(HttpSecurity http, JwtDeserializer deserializer) throws Exception {
+                        http.csrf(AbstractHttpConfigurer::disable);
+                        http.formLogin(AbstractHttpConfigurer::disable);
+                        http.addFilterBefore(new JwtAuthenticationFilter(deserializer), UsernamePasswordAuthenticationFilter.class);
+                        http.authorizeHttpRequests(a -> a.anyRequest().authenticated());
+                        return http.build();
+                    }
+
+                    @Bean
+                    SecurityFilterChain cookies(HttpSecurity http) throws Exception {
+                        http.csrf(AbstractHttpConfigurer::disable);
+                        http.addFilterBefore(cookieTokenFilter(), UsernamePasswordAuthenticationFilter.class);
+                        http.authorizeHttpRequests(a -> a.anyRequest().authenticated());
+                        return http.build();
+                    }
+
+                    @Bean
+                    CookieTokenFilter cookieTokenFilter() {
+                        return new CookieTokenFilter();
+                    }
+                }
+                """);
+        write(
+                "CookieTokenFilter.java",
+                """
+                package com.example;
+
+                import jakarta.servlet.http.Cookie;
+                import jakarta.servlet.http.HttpServletRequest;
+
+                class CookieTokenFilter {
+                    String token(HttpServletRequest request) {
+                        for (Cookie cookie : request.getCookies()) {
+                            if (cookie.getName().equals("jwt")) {
+                                return cookie.getValue();
+                            }
+                        }
+                        return null;
+                    }
+                }
+                """);
+
+        assertThat(findings("SPRING_CSRF_DISABLED", "3.5.0"))
+                .extracting(Finding::target)
+                .containsExactly("SecurityConfig#cookies");
+        // Spring Security 5 saves the context to the session, so the header chain is reported
+        // (the rule reports the first affected chain of a class).
+        assertThat(findings("SPRING_CSRF_DISABLED", "2.7.18"))
+                .extracting(Finding::target)
+                .containsExactly("SecurityConfig#api");
     }
 
     // ── SPRING_LOGGING_PII_EXPOSURE ───────────────────────────────────────────

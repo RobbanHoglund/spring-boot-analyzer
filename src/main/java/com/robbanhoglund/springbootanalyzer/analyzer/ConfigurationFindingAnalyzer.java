@@ -47,6 +47,11 @@ public class ConfigurationFindingAnalyzer {
 
     private static final Set<String> PROD_PROFILES = Set.of("prod", "production", "staging");
     private static final Set<String> TEST_PROFILES = Set.of("test", "ci", "it", "integration-test");
+
+    /** Profiles that select an embedded database by name. */
+    private static final Set<String> EMBEDDED_DATABASE_PROFILES =
+            Set.of("h2", "hsql", "hsqldb", "embedded", "in-memory", "inmemory");
+
     private static final Set<String> TEST_OR_LOCAL_PROFILES =
             Set.of(
                     "test",
@@ -148,7 +153,12 @@ public class ConfigurationFindingAnalyzer {
         detectFlywaySchemaRisks(
                 repositoryRoot, buildInfo, configurationAnalysis, gradleModelAnalysis, findings);
         detectLiquibaseMissingChangelog(
-                repositoryRoot, buildInfo, configurationAnalysis, gradleModelAnalysis, findings);
+                javaSources,
+                repositoryRoot,
+                buildInfo,
+                configurationAnalysis,
+                gradleModelAnalysis,
+                findings);
         detectMissingSecurityStarter(buildInfo, findings);
         detectOpenInViewNotDisabled(configurationAnalysis, buildInfo, findings);
         detectActuatorExposure(configurationAnalysis, findings);
@@ -1063,31 +1073,17 @@ public class ConfigurationFindingAnalyzer {
                                                             ? ""
                                                             : " [" + property.profile() + "]"))
                             .collect(Collectors.joining(", "));
-            boolean anyLiteralOrWeakDefault =
-                    configured.stream()
-                            .anyMatch(
-                                    property ->
-                                            property.valueRedacted()
-                                                    && !property.placeholderValue());
             ApplicationProperty primary =
                     configured.stream()
                             .filter(p -> p.valueRedacted() && !p.placeholderValue())
                             .findFirst()
                             .orElse(configured.get(0));
+            // Always INFO: a literal value is already reported once per file by
+            // SPRING_SECRET_LITERAL, and one key per profile is how per-environment
+            // configuration normally looks.
             FindingFactory.Builder builder =
                     FindingFactory.builder(
-                                    FindingRules.SPRING_SECRET_MULTI_PROFILE.ruleId(),
-                                    FindingRules.SPRING_SECRET_MULTI_PROFILE.title(),
-                                    anyLiteralOrWeakDefault
-                                            ? com.robbanhoglund.springbootanalyzer.analyzer.model
-                                                    .FindingSeverity.WARNING
-                                            : FindingRules.SPRING_SECRET_MULTI_PROFILE
-                                                    .defaultSeverity(),
-                                    anyLiteralOrWeakDefault
-                                            ? com.robbanhoglund.springbootanalyzer.analyzer.model
-                                                    .FindingCategory.SECURITY
-                                            : FindingRules.SPRING_SECRET_MULTI_PROFILE.category(),
-                                    FindingRules.SPRING_SECRET_MULTI_PROFILE.runtimeDetection(),
+                                    FindingRules.SPRING_SECRET_MULTI_PROFILE,
                                     FindingConfidence.MEDIUM)
                             .shortMessage(
                                     "Sensitive property is configured in multiple profiles: "
@@ -1112,7 +1108,8 @@ public class ConfigurationFindingAnalyzer {
                             .limitations(
                                     "Static analysis cannot prove whether the values are identical"
                                             + " because sensitive values are redacted before"
-                                            + " presentation.")
+                                            + " presentation. Literal values are reported by"
+                                            + " SPRING_SECRET_LITERAL, so this finding stays INFO.")
                             .target(entry.getKey())
                             .source(primary.sourceFile(), primary.line());
             for (ApplicationProperty prop : configured) {
@@ -2012,6 +2009,11 @@ public class ConfigurationFindingAnalyzer {
             if (!"spring.datasource.hikari.maximum-pool-size".equals(property.name())) {
                 continue;
             }
+            // A one-connection pool is a deliberate choice for tests and local runs.
+            if (isTestResource(property)
+                    || isTestOrLocalProfile(normalizedProfile(property.profile()))) {
+                continue;
+            }
             try {
                 int size = Integer.parseInt(property.value().trim());
                 if (size < 2) {
@@ -2044,7 +2046,9 @@ public class ConfigurationFindingAnalyzer {
                                                     + ".")
                                     .limitations(
                                             "Static analysis cannot determine the application's"
-                                                    + " actual concurrency requirements.")
+                                                    + " actual concurrency requirements. Test"
+                                                    + " resources and test or local profiles are"
+                                                    + " not reported.")
                                     .source(property.sourceFile(), property.line())
                                     .target("spring.datasource.hikari.maximum-pool-size")
                                     .build());
@@ -2442,7 +2446,33 @@ public class ConfigurationFindingAnalyzer {
     private static final String LIQUIBASE_DEFAULT_CHANGELOG =
             "db/changelog/db.changelog-master.yaml";
 
+    private static boolean declaresSpringLiquibaseBean(JavaSources javaSources) {
+        if (javaSources == null) {
+            return false;
+        }
+        for (JavaSources.JavaFile file : javaSources.files()) {
+            if (file.compilationUnit() == null || !file.content().contains("SpringLiquibase")) {
+                continue;
+            }
+            boolean beanMethod =
+                    file
+                            .compilationUnit()
+                            .findAll(com.github.javaparser.ast.body.MethodDeclaration.class)
+                            .stream()
+                            .anyMatch(
+                                    method ->
+                                            method.getAnnotationByName("Bean").isPresent()
+                                                    && simpleClassName(method.getTypeAsString())
+                                                            .endsWith("SpringLiquibase"));
+            if (beanMethod) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void detectLiquibaseMissingChangelog(
+            JavaSources javaSources,
             Path repositoryRoot,
             BuildInfo buildInfo,
             ConfigurationAnalysis configurationAnalysis,
@@ -2451,7 +2481,9 @@ public class ConfigurationFindingAnalyzer {
         boolean liquibasePresent =
                 dependencyPresent(
                         buildInfo, gradleModelAnalysis, "org.liquibase", "liquibase-core");
-        if (!liquibasePresent) {
+        // A SpringLiquibase bean of the project's own (JHipster's LiquibaseConfiguration) makes
+        // Spring Boot's auto-configuration back off; that bean names its own changelog.
+        if (!liquibasePresent || declaresSpringLiquibaseBean(javaSources)) {
             return;
         }
         if (configurationAnalysis == null || configurationAnalysis.properties() == null) {
@@ -2945,7 +2977,11 @@ public class ConfigurationFindingAnalyzer {
                 continue;
             }
             String profile = normalizedProfile(property.profile());
-            if (isTestOrLocalProfile(profile) || isTestResource(property)) {
+            // A profile named after the embedded database (PetClinic's "h2") is the explicit
+            // opt-in to it, alongside its "mysql" and "postgres" siblings.
+            if (isTestOrLocalProfile(profile)
+                    || isTestResource(property)
+                    || EMBEDDED_DATABASE_PROFILES.contains(profile)) {
                 continue;
             }
             FindingFactory.Builder builder =

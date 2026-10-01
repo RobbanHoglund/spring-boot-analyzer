@@ -1,7 +1,5 @@
 package com.robbanhoglund.springbootanalyzer.analyzer.runtime;
 
-import com.github.javaparser.JavaParser;
-import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
@@ -18,17 +16,13 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleResolved
 import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.RuntimeStackAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.VirtualThreadAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.WebStack;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
-import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -40,6 +34,23 @@ public class RuntimeStackAnalyzer {
 
     public Result analyze(
             Path repositoryRoot,
+            BuildInfo buildInfo,
+            GradleModelAnalysis gradleModelAnalysis,
+            ConfigurationAnalysis configurationAnalysis,
+            List<DetectedClass> detectedComponents,
+            List<String> mainApplicationClasses) {
+        return analyze(
+                JavaSources.from(repositoryRoot),
+                buildInfo,
+                gradleModelAnalysis,
+                configurationAnalysis,
+                detectedComponents,
+                mainApplicationClasses);
+    }
+
+    /** Classifies the runtime stack of the source tree parsed once for this analysis. */
+    public Result analyze(
+            JavaSources sources,
             BuildInfo buildInfo,
             GradleModelAnalysis gradleModelAnalysis,
             ConfigurationAnalysis configurationAnalysis,
@@ -61,7 +72,7 @@ public class RuntimeStackAnalyzer {
             javaVersion = buildInfo.javaVersionHint();
         }
 
-        RuntimeEvidence evidence = collectRuntimeEvidence(repositoryRoot, detectedComponents);
+        RuntimeEvidence evidence = collectRuntimeEvidence(sources, detectedComponents);
         List<String> dependencyCoordinates = runtimeDependencies(buildInfo, gradleModelAnalysis);
         // A job-only profile (spring.main.web-application-type=none in application-migrate.yml)
         // does not make the application non-web; only the default configuration decides.
@@ -109,9 +120,8 @@ public class RuntimeStackAnalyzer {
     }
 
     private RuntimeEvidence collectRuntimeEvidence(
-            Path repositoryRoot, List<DetectedClass> detectedComponents) {
-        Path sourceRoot = repositoryRoot.resolve("src/main/java");
-        if (Files.notExists(sourceRoot)) {
+            JavaSources sources, List<DetectedClass> detectedComponents) {
+        if (sources.isEmpty()) {
             return new RuntimeEvidence(false, false, false, false, false, false, List.of());
         }
 
@@ -121,49 +131,37 @@ public class RuntimeStackAnalyzer {
         boolean reactiveSignalDetected = false;
         boolean webFluxRoutingDetected = false;
         Set<String> evidence = new LinkedHashSet<>();
-        JavaParser javaParser = newJavaParser();
 
-        try (Stream<Path> files = Files.walk(sourceRoot)) {
-            for (Path file :
-                    files.filter(Files::isRegularFile)
-                            .filter(path -> path.toString().endsWith(".java"))
-                            .sorted(Comparator.naturalOrder())
-                            .toList()) {
-                String content = Files.readString(file, StandardCharsets.UTF_8);
-                String relativePath = repositoryRoot.relativize(file).toString().replace('\\', '/');
+        for (JavaSources.JavaFile file : sources.files()) {
+            String content = file.content();
+            String relativePath = file.relativePath();
 
-                CompilationUnit compilationUnit = parseCompilationUnit(javaParser, file);
-                if (hasAnnotation(compilationUnit, "Scheduled")) {
-                    scheduledDetected = true;
-                    evidence.add("@Scheduled in " + relativePath);
-                }
-                if (hasAnnotation(compilationUnit, "EnableScheduling")) {
-                    enableSchedulingDetected = true;
-                    evidence.add("@EnableScheduling in " + relativePath);
-                }
-                if (content.contains("Thread.ofVirtual(")
-                        || content.contains("Thread.startVirtualThread(")
-                        || content.contains("Executors.newVirtualThreadPerTaskExecutor(")) {
-                    directVirtualThreadUsage = true;
-                    evidence.add("Virtual thread API usage in " + relativePath);
-                }
-                if (content.contains("reactor.core.publisher.Mono")
-                        || content.contains("reactor.core.publisher.Flux")
-                        || content.contains("Mono<")
-                        || content.contains("Flux<")) {
-                    reactiveSignalDetected = true;
-                    evidence.add("Reactive types in " + relativePath);
-                }
-                if (usesWebFluxServerApi(compilationUnit)) {
-                    webFluxRoutingDetected = true;
-                    evidence.add("WebFlux routing API in " + relativePath);
-                }
+            CompilationUnit compilationUnit = file.compilationUnit();
+            if (hasAnnotation(compilationUnit, "Scheduled")) {
+                scheduledDetected = true;
+                evidence.add("@Scheduled in " + relativePath);
             }
-        } catch (IOException exception) {
-            LOGGER.warn(
-                    "Failed to fully scan source files for runtime stack analysis;"
-                            + " using partial evidence",
-                    exception);
+            if (hasAnnotation(compilationUnit, "EnableScheduling")) {
+                enableSchedulingDetected = true;
+                evidence.add("@EnableScheduling in " + relativePath);
+            }
+            if (content.contains("Thread.ofVirtual(")
+                    || content.contains("Thread.startVirtualThread(")
+                    || content.contains("Executors.newVirtualThreadPerTaskExecutor(")) {
+                directVirtualThreadUsage = true;
+                evidence.add("Virtual thread API usage in " + relativePath);
+            }
+            if (content.contains("reactor.core.publisher.Mono")
+                    || content.contains("reactor.core.publisher.Flux")
+                    || content.contains("Mono<")
+                    || content.contains("Flux<")) {
+                reactiveSignalDetected = true;
+                evidence.add("Reactive types in " + relativePath);
+            }
+            if (usesWebFluxServerApi(compilationUnit)) {
+                webFluxRoutingDetected = true;
+                evidence.add("WebFlux routing API in " + relativePath);
+            }
         }
 
         boolean controllerDetected =
@@ -185,37 +183,6 @@ public class RuntimeStackAnalyzer {
                 webFluxRoutingDetected,
                 controllerDetected,
                 List.copyOf(evidence));
-    }
-
-    private CompilationUnit parseCompilationUnit(JavaParser javaParser, Path file) {
-        try {
-            var parseResult = javaParser.parse(file);
-            if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
-                LOGGER.warn(
-                        "Failed to parse Java source {}; skipping runtime stack source evidence for"
-                                + " this file (problems: {})",
-                        file,
-                        parseResult.getProblems());
-                return null;
-            }
-            return parseResult.getResult().orElseThrow();
-        } catch (IOException exception) {
-            // Skip an individual unreadable file rather than aborting runtime stack analysis.
-            LOGGER.warn("Failed to parse {} for runtime stack analysis; skipping", file, exception);
-            return null;
-        } catch (RuntimeException | StackOverflowError failure) {
-            // A pathologically nested expression overflows JavaParser's recursive descent; one
-            // such file must not cost the whole runtime stack analysis.
-            LOGGER.warn("Failed to parse {} for runtime stack analysis; skipping", file, failure);
-            return null;
-        }
-    }
-
-    private JavaParser newJavaParser() {
-        return new JavaParser(
-                new ParserConfiguration()
-                        .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                        .setCharacterEncoding(StandardCharsets.UTF_8));
     }
 
     private boolean hasAnnotation(CompilationUnit compilationUnit, String annotationSimpleName) {

@@ -96,4 +96,65 @@ class JavaSourcesTest {
                 .singleElement()
                 .satisfies(file -> assertThat(file.compilationUnit()).isNotNull());
     }
+
+    @Test
+    void readsSourcesThatAreNotValidUtf8LikeJavaParserDoes() throws IOException {
+        Path file = repoRoot.resolve("src/main/java/com/example/Legacy.java");
+        Files.createDirectories(file.getParent());
+        // Saved as ISO-8859-1: the byte for "\u00e4" is not valid UTF-8 on its own.
+        Files.write(
+                file,
+                "package com.example;\n// H\u00e4mtar data\nclass Legacy {}\n"
+                        .getBytes(java.nio.charset.StandardCharsets.ISO_8859_1));
+
+        JavaSources sources = JavaSources.from(repoRoot);
+
+        assertThat(sources.files())
+                .singleElement()
+                .satisfies(
+                        source -> {
+                            assertThat(source.compilationUnit()).isNotNull();
+                            assertThat(source.content())
+                                    .contains("class Legacy")
+                                    .contains("\uFFFD");
+                        });
+    }
+
+    @Test
+    void keepsPositionsAndCommentsAfterReleasingTheTokenChain() throws IOException {
+        writeSource(
+                "src/main/java/com/example/Service.java",
+                """
+                package com.example;
+
+                /** Handles orders. */
+                class Service {
+                    // the main entry point
+                    void handle() {
+                        // nothing yet
+                        int count = 1;
+                    }
+                }
+                """);
+
+        var unit = JavaSources.from(repoRoot).files().get(0).compilationUnit();
+        var method =
+                unit.findFirst(com.github.javaparser.ast.body.MethodDeclaration.class)
+                        .orElseThrow();
+        var type =
+                unit.findFirst(com.github.javaparser.ast.body.ClassOrInterfaceDeclaration.class)
+                        .orElseThrow();
+
+        assertThat(method.getBegin()).map(position -> position.line).contains(6);
+        assertThat(method.getEnd()).map(position -> position.line).contains(9);
+        assertThat(method.getName().getBegin()).map(position -> position.column).contains(10);
+        assertThat(method.getComment())
+                .map(comment -> comment.getContent().strip())
+                .contains("the main entry point");
+        assertThat(method.getBody().orElseThrow().getAllContainedComments()).hasSize(1);
+        assertThat(type.getJavadocComment()).isPresent();
+        assertThat(unit.getAllComments()).allMatch(comment -> comment.getRange().isPresent());
+        // The token chain itself is gone: nothing may rely on it.
+        assertThat(method.getTokenRange()).isEmpty();
+    }
 }

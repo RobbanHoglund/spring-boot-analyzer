@@ -2,11 +2,14 @@ package com.robbanhoglund.springbootanalyzer.analyzer;
 
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
+import com.github.javaparser.ast.body.CallableDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.ArrayCreationExpr;
 import com.github.javaparser.ast.expr.ArrayInitializerExpr;
+import com.github.javaparser.ast.expr.AssignExpr;
 import com.github.javaparser.ast.expr.BinaryExpr;
 import com.github.javaparser.ast.expr.BooleanLiteralExpr;
 import com.github.javaparser.ast.expr.ConditionalExpr;
@@ -19,6 +22,7 @@ import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.StringLiteralExpr;
 import com.github.javaparser.ast.stmt.BlockStmt;
+import com.github.javaparser.ast.stmt.ForEachStmt;
 import com.github.javaparser.ast.stmt.IfStmt;
 import com.github.javaparser.ast.stmt.ReturnStmt;
 import com.github.javaparser.ast.stmt.Statement;
@@ -33,6 +37,7 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingSeverity;
 import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -2040,15 +2045,22 @@ public class SecurityPracticeFindingAnalyzer {
                 continue;
             }
             Integer line = call.getBegin().map(p -> p.line).orElse(null);
-            findings.add(
+            // JHipster and similar setups open the console only under a development profile.
+            boolean developmentOnly = guardedByDevelopmentProfile(call);
+            FindingFactory.Builder builder =
                     FindingFactory.builder(
-                                    FindingRules.SPRING_H2_CONSOLE_PERMITALL,
-                                    FindingConfidence.HIGH)
-                            .shortMessage(
+                            FindingRules.SPRING_H2_CONSOLE_PERMITALL, FindingConfidence.HIGH);
+            if (developmentOnly) {
+                builder.severity(FindingSeverity.INFO);
+            }
+            findings.add(
+                    builder.shortMessage(
                                     "Security configuration permits unauthenticated access to the"
                                             + " H2 console path in "
                                             + relativePath
-                                            + ".")
+                                            + (developmentOnly
+                                                    ? " when a development profile is active."
+                                                    : "."))
                             .whyBadPractice(
                                     "The H2 web console accepts arbitrary SQL through a JDBC"
                                         + " connection and can run Java stored procedures, making"
@@ -2066,8 +2078,13 @@ public class SecurityPracticeFindingAnalyzer {
                                         + " or remove the H2 dependency entirely from production"
                                         + " builds.")
                             .limitations(
-                                    "High confidence — there is essentially no production reason"
-                                            + " to expose the H2 console unauthenticated.")
+                                    developmentOnly
+                                            ? "Reported as INFO because the rule only applies under"
+                                                  + " a development profile; make sure that profile"
+                                                  + " can never be active in production."
+                                            : "High confidence — there is essentially no production"
+                                                    + " reason to expose the H2 console"
+                                                    + " unauthenticated.")
                             .evidence(
                                     scopeName
                                             + "(\".../h2-console...\").permitAll() found in "
@@ -2076,6 +2093,58 @@ public class SecurityPracticeFindingAnalyzer {
                             .source(relativePath, line)
                             .build());
         }
+    }
+
+    private static final java.util.regex.Pattern DEVELOPMENT_PROFILE =
+            java.util.regex.Pattern.compile("(?i)dev|local|test");
+
+    /**
+     * Whether a node only takes effect under a development profile: inside the then-branch of a
+     * profile check such as {@code env.acceptsProfiles(Profiles.of("dev"))}, or in a method or
+     * class annotated {@code @Profile} with development profiles only.
+     */
+    private static boolean guardedByDevelopmentProfile(Node node) {
+        Optional<Node> parent = node.getParentNode();
+        Node child = node;
+        while (parent.isPresent()) {
+            Node current = parent.get();
+            if (current instanceof IfStmt ifStmt && ifStmt.getThenStmt() == child) {
+                String condition = ifStmt.getCondition().toString();
+                if (condition.toLowerCase(java.util.Locale.ROOT).contains("profile")
+                        && !condition.contains("!")
+                        && DEVELOPMENT_PROFILE.matcher(condition).find()) {
+                    return true;
+                }
+            }
+            if (current
+                            instanceof
+                            com.github.javaparser.ast.nodeTypes.NodeWithAnnotations<?> annotated
+                    && developmentProfileAnnotation(annotated.getAnnotations())) {
+                return true;
+            }
+            child = current;
+            parent = current.getParentNode();
+        }
+        return false;
+    }
+
+    private static boolean developmentProfileAnnotation(List<AnnotationExpr> annotations) {
+        for (AnnotationExpr annotation : annotations) {
+            if (!"Profile".equals(simpleName(annotation.getNameAsString()))) {
+                continue;
+            }
+            List<String> profiles =
+                    annotation.findAll(StringLiteralExpr.class).stream()
+                            .map(StringLiteralExpr::asString)
+                            .toList();
+            return !profiles.isEmpty()
+                    && profiles.stream()
+                            .allMatch(
+                                    profile ->
+                                            !profile.startsWith("!")
+                                                    && DEVELOPMENT_PROFILE.matcher(profile).find());
+        }
+        return false;
     }
 
     // ---------------------------------------------------------------------------
@@ -2196,7 +2265,7 @@ public class SecurityPracticeFindingAnalyzer {
                 continue;
             }
             if (creation.getArguments().stream()
-                    .anyMatch(SecurityPracticeFindingAnalyzer::isDynamicConcat)) {
+                    .anyMatch(SecurityPracticeFindingAnalyzer::isConcatWithCallerInput)) {
                 addPathTraversal(
                         relativePath,
                         lineOf(creation),
@@ -2213,7 +2282,7 @@ public class SecurityPracticeFindingAnalyzer {
                 continue;
             }
             if (call.getArguments().stream()
-                    .anyMatch(SecurityPracticeFindingAnalyzer::isDynamicConcat)) {
+                    .anyMatch(SecurityPracticeFindingAnalyzer::isConcatWithCallerInput)) {
                 addPathTraversal(
                         relativePath, lineOf(call), scope + "." + name + "(...)", findings);
             }
@@ -2239,9 +2308,82 @@ public class SecurityPracticeFindingAnalyzer {
                     + " toRealPath()/getCanonicalPath(), and verify the result still starts with"
                     + " the base directory before using it. Reject inputs containing path"
                     + " separators or '..'.",
-                "Medium confidence — flags concatenation into a file path; confirm whether the"
-                        + " value is attacker-controlled.",
+                "Medium confidence — flags concatenation into a file path when part of it can"
+                        + " come from the method's parameters; confirm whether the value is"
+                        + " attacker-controlled. Paths built only from constants, fields and"
+                        + " internal calls are not reported.",
                 shape + " with concatenated argument found in " + relativePath + ".");
+    }
+
+    private static boolean isConcatWithCallerInput(Expression argument) {
+        return isDynamicConcat(argument) && mayCarryCallerInput(argument, new HashSet<>(), 0);
+    }
+
+    /**
+     * Whether part of the expression can come from the caller: a parameter of the enclosing method
+     * or lambda, or a local variable assigned from one (directly, through a call, or as the loop
+     * variable over one). A path computed only from constants, fields and calls without such
+     * inputs (a directory derived from the class location, a configured upload root plus a random
+     * UUID) cannot carry a caller's ../ sequences.
+     */
+    private static boolean mayCarryCallerInput(
+            Expression expression, Set<String> visitedLocals, int depth) {
+        if (depth > 6) {
+            return true;
+        }
+        for (NameExpr name : expression.findAll(NameExpr.class)) {
+            String variable = name.getNameAsString();
+            if (isEnclosingParameter(name, variable)) {
+                return true;
+            }
+            Optional<CallableDeclaration> callable = name.findAncestor(CallableDeclaration.class);
+            if (callable.isEmpty() || !visitedLocals.add(variable)) {
+                continue;
+            }
+            for (VariableDeclarator local : callable.get().findAll(VariableDeclarator.class)) {
+                if (local.getNameAsString().equals(variable)
+                        && local.getInitializer().isPresent()
+                        && mayCarryCallerInput(
+                                local.getInitializer().get(), visitedLocals, depth + 1)) {
+                    return true;
+                }
+            }
+            for (AssignExpr assignment : callable.get().findAll(AssignExpr.class)) {
+                if (assignment.getTarget().isNameExpr()
+                        && assignment.getTarget().asNameExpr().getNameAsString().equals(variable)
+                        && mayCarryCallerInput(assignment.getValue(), visitedLocals, depth + 1)) {
+                    return true;
+                }
+            }
+            for (ForEachStmt loop : callable.get().findAll(ForEachStmt.class)) {
+                boolean loopVariable =
+                        loop.getVariable().getVariables().stream()
+                                .anyMatch(declared -> declared.getNameAsString().equals(variable));
+                if (loopVariable
+                        && mayCarryCallerInput(loop.getIterable(), visitedLocals, depth + 1)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Whether {@code variable} is a parameter of a method, constructor or lambda around node. */
+    private static boolean isEnclosingParameter(Node node, String variable) {
+        for (Node current = node.getParentNode().orElse(null);
+                current != null;
+                current = current.getParentNode().orElse(null)) {
+            if (current instanceof LambdaExpr lambda
+                    && lambda.getParameters().stream()
+                            .anyMatch(parameter -> parameter.getNameAsString().equals(variable))) {
+                return true;
+            }
+            if (current instanceof CallableDeclaration<?> callable) {
+                return callable.getParameters().stream()
+                        .anyMatch(parameter -> parameter.getNameAsString().equals(variable));
+            }
+        }
+        return false;
     }
 
     // ---------------------------------------------------------------------------
@@ -2517,11 +2659,14 @@ public class SecurityPracticeFindingAnalyzer {
             }
         }
         // request.getContextPath() is set by the container ("" or "/app", never user input), so
-        // contextPath + "/login" stays on this site like a plain "/login".
-        if (!viewName
-                && leftmost instanceof MethodCallExpr contextPath
-                && "getContextPath".equals(contextPath.getNameAsString())
-                && contextPath.getArguments().isEmpty()) {
+        // contextPath + "/login" stays on this site like a plain "/login". The same holds for a
+        // constant or a field injected from configuration, such as PetClinic's
+        // @Value("#{servletContext.contextPath}") field.
+        boolean containerContextPath =
+                leftmost instanceof MethodCallExpr contextPath
+                        && "getContextPath".equals(contextPath.getNameAsString())
+                        && contextPath.getArguments().isEmpty();
+        if (!viewName && (containerContextPath || constantOrConfiguredField(leftmost))) {
             return followingOperand instanceof StringLiteralExpr next
                     && FIXED_RELATIVE_TARGET.matcher(next.asString()).find();
         }
@@ -2537,6 +2682,27 @@ public class SecurityPracticeFindingAnalyzer {
         }
         return FIXED_RELATIVE_TARGET.matcher(target).find()
                 || FIXED_ABSOLUTE_TARGET.matcher(target).find();
+    }
+
+    /** A constant, or a field of the enclosing class whose value is injected with @Value. */
+    private static boolean constantOrConfiguredField(Expression expression) {
+        String name;
+        if (expression instanceof NameExpr nameExpr) {
+            name = nameExpr.getNameAsString();
+        } else if (expression instanceof FieldAccessExpr fieldAccess
+                && fieldAccess.getScope().isThisExpr()) {
+            name = fieldAccess.getNameAsString();
+        } else {
+            return false;
+        }
+        if (CONSTANT_NAME.matcher(name).matches()) {
+            return true;
+        }
+        return expression
+                .findAncestor(ClassOrInterfaceDeclaration.class)
+                .flatMap(owner -> owner.getFieldByName(name))
+                .map(field -> field.isAnnotationPresent("Value"))
+                .orElse(false);
     }
 
     private void addOpenRedirect(

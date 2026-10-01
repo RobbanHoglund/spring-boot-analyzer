@@ -1,7 +1,5 @@
 package com.robbanhoglund.springbootanalyzer.analyzer;
 
-import com.github.javaparser.JavaParser;
-import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.Node;
@@ -58,15 +56,11 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.gradle.GradleModelAna
 import com.robbanhoglund.springbootanalyzer.analyzer.model.http.HttpSurfaceAnalysis;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.http.OutboundEndpoint;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.RuntimeStackAnalysis;
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -152,7 +146,47 @@ public class StaticPracticeFindingAnalyzer {
                     "NumberFormatException",
                     "ConcurrentModificationException",
                     "NoSuchElementException",
-                    "DataAccessException");
+                    "UncheckedIOException",
+                    "DateTimeException",
+                    "DateTimeParseException",
+                    // Spring
+                    "DataAccessException",
+                    "NestedRuntimeException",
+                    "DataIntegrityViolationException",
+                    "DuplicateKeyException",
+                    "EmptyResultDataAccessException",
+                    "IncorrectResultSizeDataAccessException",
+                    "InvalidDataAccessApiUsageException",
+                    "OptimisticLockingFailureException",
+                    "ObjectOptimisticLockingFailureException",
+                    "TransactionSystemException",
+                    "ResponseStatusException",
+                    "ErrorResponseException",
+                    "RestClientException",
+                    "HttpClientErrorException",
+                    "HttpServerErrorException",
+                    "WebClientResponseException",
+                    // Spring Security
+                    "AuthenticationException",
+                    "UsernameNotFoundException",
+                    "BadCredentialsException",
+                    "AccessDeniedException",
+                    "AuthenticationCredentialsNotFoundException",
+                    "InsufficientAuthenticationException",
+                    // Jakarta Persistence and Validation
+                    "PersistenceException",
+                    "EntityNotFoundException",
+                    "EntityExistsException",
+                    "OptimisticLockException",
+                    "NoResultException",
+                    "NonUniqueResultException",
+                    "ValidationException",
+                    "ConstraintViolationException");
+
+    /** A comment that marks unfinished handling rather than explaining it. */
+    private static final Pattern UNFINISHED_MARKER =
+            Pattern.compile("(?i)\\b(?:todo|fixme|xxx)\\b");
+
     private static final Set<String> IGNORE_VARIABLE_NAMES =
             Set.of("ignored", "ignore", "expected", "intentionallyignored");
     private static final Set<String> BENIGN_IGNORE_COMMENT_MARKERS =
@@ -206,6 +240,25 @@ public class StaticPracticeFindingAnalyzer {
             RuntimeStackAnalysis runtimeStackAnalysis,
             HttpSurfaceAnalysis httpSurfaceAnalysis,
             List<DetectedClass> detectedClasses) {
+        return analyze(
+                JavaSources.from(repositoryRoot),
+                buildInfo,
+                configurationAnalysis,
+                gradleModelAnalysis,
+                runtimeStackAnalysis,
+                httpSurfaceAnalysis,
+                detectedClasses);
+    }
+
+    /** Runs the source-code practice rules over the tree parsed once for this analysis. */
+    public List<Finding> analyze(
+            JavaSources sources,
+            BuildInfo buildInfo,
+            ConfigurationAnalysis configurationAnalysis,
+            GradleModelAnalysis gradleModelAnalysis,
+            RuntimeStackAnalysis runtimeStackAnalysis,
+            HttpSurfaceAnalysis httpSurfaceAnalysis,
+            List<DetectedClass> detectedClasses) {
         List<Finding> findings = new ArrayList<>();
         // Spring Framework 6.0 (Spring Boot 3) applies transaction advice to protected and
         // package-visible methods on class-based proxies by default, so the non-public
@@ -215,7 +268,7 @@ public class StaticPracticeFindingAnalyzer {
                 bootVersion != null
                         && (bootVersion.startsWith("1.") || bootVersion.startsWith("2."));
         detectSourcePractices(
-                repositoryRoot,
+                sources,
                 httpSurfaceAnalysis,
                 detectedClasses,
                 legacyTransactionalVisibility,
@@ -227,15 +280,14 @@ public class StaticPracticeFindingAnalyzer {
     }
 
     private void detectSourcePractices(
-            Path repositoryRoot,
+            JavaSources sources,
             HttpSurfaceAnalysis httpSurfaceAnalysis,
             List<DetectedClass> detectedClasses,
             boolean legacyTransactionalVisibility,
             String bootVersion,
             ConfigurationAnalysis configurationAnalysis,
             List<Finding> findings) {
-        Path sourceRoot = repositoryRoot.resolve("src/main/java");
-        if (Files.notExists(sourceRoot)) {
+        if (sources.isEmpty()) {
             return;
         }
         Map<String, List<OutboundEndpoint>> outboundByFile =
@@ -260,22 +312,7 @@ public class StaticPracticeFindingAnalyzer {
                                                         == SpringComponentType.CONTROLLER)
                         .map(DetectedClass::fullyQualifiedClassName)
                         .collect(Collectors.toSet());
-        JavaParser javaParser = newJavaParser();
-
-        List<Path> sourceFiles = List.of();
-        try (Stream<Path> files = Files.walk(sourceRoot)) {
-            sourceFiles =
-                    files.filter(Files::isRegularFile)
-                            .filter(path -> path.toString().endsWith(".java"))
-                            .sorted(Comparator.naturalOrder())
-                            .toList();
-        } catch (IOException | UncheckedIOException exception) {
-            LOGGER.warn(
-                    "Failed to fully scan Java sources for static practice findings;"
-                            + " returning partial results",
-                    exception);
-        }
-        SourceIndex sourceIndex = SourceIndex.of(sourceFiles);
+        SourceIndex sourceIndex = SourceIndex.of(sources);
         SourcePracticeContext projectContext =
                 new SourcePracticeContext(
                         legacyTransactionalVisibility,
@@ -283,50 +320,43 @@ public class StaticPracticeFindingAnalyzer {
                         configurationAnalysis,
                         bootVersion,
                         sourceIndex.constrainedTypes(),
-                        sourceIndex.enumTypes());
-        for (Path sourceFile : sourceFiles) {
+                        sourceIndex.enumTypes(),
+                        sourceIndex.cookieReadingTypes(),
+                        sourceIndex.uncheckedExceptionTypes(),
+                        SqlOperandSafety.of(sources, sourceIndex.enumTypes()));
+        for (JavaSources.JavaFile file : sources.files()) {
+            if (file.compilationUnit() == null) {
+                continue;
+            }
             try {
-                parseSourcePractices(
-                        javaParser,
-                        repositoryRoot,
-                        sourceFile,
+                analyzeSourcePractices(
+                        file.compilationUnit(),
+                        file.relativePath(),
+                        file.content(),
                         outboundByFile,
                         controllerClasses,
                         projectContext,
                         findings);
-            } catch (IOException | RuntimeException | StackOverflowError failure) {
+            } catch (RuntimeException | StackOverflowError failure) {
                 LOGGER.warn(
-                        "Failed to read or parse Java source {}; skipping static practice"
-                                + " analysis for this file",
-                        sourceFile,
+                        "Failed to analyze Java source {}; skipping static practice analysis for"
+                                + " this file",
+                        file.path(),
                         failure);
             }
         }
-        detectAsyncWithoutExecutor(repositoryRoot, findings);
-        detectScheduledWithoutExecutor(repositoryRoot, configurationAnalysis, findings);
+        detectAsyncWithoutExecutor(sources, findings);
+        detectScheduledWithoutExecutor(sources, configurationAnalysis, findings);
     }
 
-    private void parseSourcePractices(
-            JavaParser javaParser,
-            Path repositoryRoot,
-            Path sourceFile,
+    private void analyzeSourcePractices(
+            CompilationUnit compilationUnit,
+            String relativePath,
+            String fileContent,
             Map<String, List<OutboundEndpoint>> outboundByFile,
             Set<String> controllerClasses,
             SourcePracticeContext projectContext,
-            List<Finding> findings)
-            throws IOException {
-        var parseResult = javaParser.parse(sourceFile);
-        if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
-            LOGGER.warn(
-                    "Failed to parse Java source {}; skipping static practice analysis for this"
-                            + " file (problems: {})",
-                    sourceFile,
-                    parseResult.getProblems());
-            return;
-        }
-        CompilationUnit compilationUnit = parseResult.getResult().orElseThrow();
-        String relativePath = repositoryRoot.relativize(sourceFile).toString().replace('\\', '/');
-        String fileContent = Files.readString(sourceFile, StandardCharsets.UTF_8);
+            List<Finding> findings) {
         for (ClassOrInterfaceDeclaration declaration :
                 compilationUnit.findAll(ClassOrInterfaceDeclaration.class)) {
             analyzeClassSourceSignals(
@@ -351,6 +381,9 @@ public class StaticPracticeFindingAnalyzer {
      * @param constrainedTypes simple names of types declared in files that use Bean Validation
      *     constraints
      * @param enumTypes simple names of the enums declared in {@code src/main/java}
+     * @param cookieReadingTypes simple names of types declared in files that read request cookies
+     * @param uncheckedExceptionTypes simple names of project exceptions that extend
+     *     RuntimeException
      */
     private record SourcePracticeContext(
             boolean legacyTransactionalVisibility,
@@ -358,7 +391,10 @@ public class StaticPracticeFindingAnalyzer {
             ConfigurationAnalysis configurationAnalysis,
             String bootVersion,
             Set<String> constrainedTypes,
-            Set<String> enumTypes) {}
+            Set<String> enumTypes,
+            Set<String> cookieReadingTypes,
+            Set<String> uncheckedExceptionTypes,
+            SqlOperandSafety sqlOperandSafety) {}
 
     /** Bean Validation constraint annotations, plus {@code @Valid} for cascaded validation. */
     private static final Pattern CONSTRAINT_ANNOTATION =
@@ -373,22 +409,30 @@ public class StaticPracticeFindingAnalyzer {
 
     private static final Pattern ENUM_DECLARATION = Pattern.compile("\\benum\\s+([A-Z]\\w*)");
 
+    /** A class with a superclass: {@code class NotFoundException extends RuntimeException}. */
+    private static final Pattern SUBCLASS_DECLARATION =
+            Pattern.compile("\\bclass\\s+([A-Z]\\w*)(?:\\s*<[^>{]*>)?\\s+extends\\s+([\\w.]+)");
+
+    /** Reading a request cookie: a token filter that does this is sent by the browser. */
+    private static final Pattern READS_COOKIES =
+            Pattern.compile("\\.getCookies\\(\\)|WebUtils\\.getCookie\\(|@CookieValue\\b");
+
     /** Facts gathered with one text pass over the sources before the per-file AST pass. */
     private record SourceIndex(
-            List<String> contents, Set<String> constrainedTypes, Set<String> enumTypes) {
+            List<String> contents,
+            Set<String> constrainedTypes,
+            Set<String> enumTypes,
+            Set<String> cookieReadingTypes,
+            Set<String> uncheckedExceptionTypes) {
 
-        static SourceIndex of(List<Path> sourceFiles) {
+        static SourceIndex of(JavaSources sources) {
             List<String> contents = new ArrayList<>();
             Set<String> constrainedTypes = new LinkedHashSet<>();
             Set<String> enumTypes = new LinkedHashSet<>();
-            for (Path sourceFile : sourceFiles) {
-                String content;
-                try {
-                    content = Files.readString(sourceFile, StandardCharsets.UTF_8);
-                } catch (IOException | UncheckedIOException ignored) {
-                    // An unreadable file is skipped here and reported by the per-file pass.
-                    continue;
-                }
+            Set<String> cookieReadingTypes = new LinkedHashSet<>();
+            Map<String, String> superclasses = new LinkedHashMap<>();
+            for (JavaSources.JavaFile file : sources.files()) {
+                String content = file.content();
                 contents.add(content);
                 boolean validationImported =
                         content.contains("jakarta.validation")
@@ -404,21 +448,57 @@ public class StaticPracticeFindingAnalyzer {
                 while (enums.find()) {
                     enumTypes.add(enums.group(1));
                 }
+                if (READS_COOKIES.matcher(content).find()) {
+                    Matcher types = TYPE_DECLARATION.matcher(content);
+                    while (types.find()) {
+                        cookieReadingTypes.add(types.group(1));
+                    }
+                }
+                Matcher subclasses = SUBCLASS_DECLARATION.matcher(content);
+                while (subclasses.find()) {
+                    superclasses.putIfAbsent(
+                            subclasses.group(1), simpleTypeName(subclasses.group(2)));
+                }
             }
             return new SourceIndex(
-                    List.copyOf(contents), Set.copyOf(constrainedTypes), Set.copyOf(enumTypes));
+                    List.copyOf(contents),
+                    Set.copyOf(constrainedTypes),
+                    Set.copyOf(enumTypes),
+                    Set.copyOf(cookieReadingTypes),
+                    uncheckedExceptionTypes(superclasses));
+        }
+
+        /**
+         * Project classes that extend RuntimeException, directly or through other project or
+         * well-known unchecked exceptions: {@code class OrderNotFoundException extends
+         * ResourceNotFoundException}, where that one extends RuntimeException.
+         */
+        private static Set<String> uncheckedExceptionTypes(Map<String, String> superclasses) {
+            Set<String> unchecked = new LinkedHashSet<>();
+            boolean changed = true;
+            while (changed) {
+                changed = false;
+                for (Map.Entry<String, String> entry : superclasses.entrySet()) {
+                    String parent = entry.getValue();
+                    boolean uncheckedParent =
+                            KNOWN_RUNTIME_EXCEPTIONS.contains(parent)
+                                    || parent.endsWith("RuntimeException")
+                                    || unchecked.contains(parent);
+                    if (uncheckedParent && unchecked.add(entry.getKey())) {
+                        changed = true;
+                    }
+                }
+            }
+            return Set.copyOf(unchecked);
+        }
+
+        private static String simpleTypeName(String name) {
+            return name.substring(name.lastIndexOf('.') + 1);
         }
 
         boolean contains(String marker) {
             return contents.stream().anyMatch(content -> content.contains(marker));
         }
-    }
-
-    private JavaParser newJavaParser() {
-        return new JavaParser(
-                new ParserConfiguration()
-                        .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                        .setCharacterEncoding(StandardCharsets.UTF_8));
     }
 
     private void analyzeClassSourceSignals(
@@ -455,7 +535,7 @@ public class StaticPracticeFindingAnalyzer {
                 hasAnyAnnotation(declaration.getAnnotations(), Set.of("Service", "Component"));
         boolean repositoryLike =
                 hasAnyAnnotation(declaration.getAnnotations(), Set.of("Repository"));
-        boolean entityLike = hasAnnotation(declaration.getAnnotations(), "Entity");
+        boolean entityLike = JpaAnnotations.isJpaEntity(declaration);
         // @SpringBootApplication, @SpringBootConfiguration, @AutoConfiguration and
         // @TestConfiguration are all meta-annotated with @Configuration.
         boolean configurationLike =
@@ -646,6 +726,7 @@ public class StaticPracticeFindingAnalyzer {
                         transactionalMethods,
                         repositoryLike,
                         projectContext.legacyTransactionalVisibility(),
+                        projectContext.uncheckedExceptionTypes(),
                         signals,
                         findings);
             }
@@ -730,7 +811,7 @@ public class StaticPracticeFindingAnalyzer {
             detectConfigPropertiesNotValidated(relativePath, declaration, findings);
         }
 
-        detectCsrfDisabled(relativePath, declaration, findings);
+        detectCsrfDisabled(relativePath, declaration, projectContext, findings);
         detectCorsAllowAll(relativePath, declaration, findings);
         detectCorsCredentialsWildcard(relativePath, declaration, findings);
         detectCrossOriginAnnotation(relativePath, declaration, findings);
@@ -738,7 +819,8 @@ public class StaticPracticeFindingAnalyzer {
                 relativePath, declaration, projectContext.bootVersion(), findings);
         detectFeignClientRisks(
                 relativePath, declaration, projectContext.configurationAnalysis(), findings);
-        detectSqlInjectionInQueries(relativePath, declaration, findings);
+        detectSqlInjectionInQueries(
+                relativePath, declaration, projectContext.sqlOperandSafety(), findings);
         detectLoggingPiiExposure(relativePath, declaration, findings);
         detectSystemOutPrintln(relativePath, declaration, findings);
         if (controllerLike || serviceLike || repositoryLike) {
@@ -844,13 +926,22 @@ public class StaticPracticeFindingAnalyzer {
         SourceLocation catchLocation = catchLocation(context, catchClause);
         boolean broadCatch = caughtTypes.stream().anyMatch(this::isBroadCatchType);
         boolean likelyParserFallback = isLikelyParserFallback(context, caughtTypes, analysis);
+        boolean absenceLookup = isAbsenceLookup(caughtTypes, analysis);
 
         if (analysis.emptyLike()) {
             if (!analysis.intentionalIgnoreSafe()) {
                 boolean testSource = context.relativePath().startsWith("src/test/");
                 boolean commentOnly = analysis.commentOnly();
+                // A comment that explains the ignore ("Devtools not found, ignore") documents a
+                // deliberate decision. A silent block, or one that only says TODO, stays a
+                // warning.
+                boolean explainedIgnore =
+                        commentOnly
+                                && !UNFINISHED_MARKER
+                                        .matcher(allCommentText(catchClause.getBody()))
+                                        .find();
                 FindingSeverity severity =
-                        (testSource || likelyParserFallback)
+                        (testSource || likelyParserFallback || explainedIgnore)
                                 ? FindingSeverity.INFO
                                 : FindingSeverity.WARNING;
                 FindingConfidence confidence =
@@ -948,9 +1039,22 @@ public class StaticPracticeFindingAnalyzer {
         }
 
         if (caughtTypes.stream().anyMatch(this::isFatalCatchType)) {
+            // Rethrowing the caught Throwable itself (an @Around advice that logs and rethrows
+            // what joinPoint.proceed() threw) intercepts nothing permanently.
+            String caughtName = catchClause.getParameter().getNameAsString();
+            boolean rethrowsCaught =
+                    catchClause.getBody().findAll(ThrowStmt.class).stream()
+                            .anyMatch(
+                                    thrown ->
+                                            thrown.getExpression().isNameExpr()
+                                                    && thrown.getExpression()
+                                                            .asNameExpr()
+                                                            .getNameAsString()
+                                                            .equals(caughtName));
             FindingSeverity severity =
                     context.topLevelUncaughtHandler()
                                     || (analysis.hasStrongLogging() && analysis.rethrows())
+                                    || rethrowsCaught
                             ? FindingSeverity.INFO
                             : FindingRules.SPRING_BROAD_FATAL_ERROR_CATCH.defaultSeverity();
             findings.add(
@@ -1047,7 +1151,8 @@ public class StaticPracticeFindingAnalyzer {
 
         if (analysis.usesFallbackWithoutVisibleHandling()
                 && !analysis.hasStrongLogging()
-                && !analysis.rethrows()) {
+                && !analysis.rethrows()
+                && !absenceLookup) {
             boolean warningContext = broadCatch || context.productionLikeBoundary();
             FindingSeverity severity =
                     likelyParserFallback && !warningContext
@@ -2486,6 +2591,43 @@ public class StaticPracticeFindingAnalyzer {
         return false;
     }
 
+    private boolean validatesAnotherParameter(MethodDeclaration method, Parameter parameter) {
+        return method.getParameters().stream()
+                .filter(other -> other != parameter)
+                .anyMatch(
+                        other ->
+                                hasAnnotation(other.getAnnotations(), "Valid")
+                                        || hasAnnotation(other.getAnnotations(), "Validated"));
+    }
+
+    /** Whether the handler accepts only PATCH: {@code @PatchMapping} or a PATCH-only mapping. */
+    private boolean mapsOnlyToPatch(MethodDeclaration method) {
+        for (AnnotationExpr annotation : method.getAnnotations()) {
+            String name = simpleName(annotation.getNameAsString());
+            if ("PatchMapping".equals(name)) {
+                return true;
+            }
+            if ("RequestMapping".equals(name) && annotation.isNormalAnnotationExpr()) {
+                for (var pair : annotation.asNormalAnnotationExpr().getPairs()) {
+                    if (!"method".equals(pair.getNameAsString())) {
+                        continue;
+                    }
+                    java.util.regex.Matcher verbs =
+                            HTTP_METHOD_NAME.matcher(pair.getValue().toString());
+                    boolean anyVerb = false;
+                    while (verbs.find()) {
+                        anyVerb = true;
+                        if (!"PATCH".equals(verbs.group(1))) {
+                            return false;
+                        }
+                    }
+                    return anyVerb;
+                }
+            }
+        }
+        return false;
+    }
+
     private void detectSensitiveRequestParams(
             String relativePath,
             ClassOrInterfaceDeclaration declaration,
@@ -2634,9 +2776,22 @@ public class StaticPracticeFindingAnalyzer {
     }
 
     private void detectCsrfDisabled(
-            String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            SourcePracticeContext projectContext,
+            List<Finding> findings) {
+        String bootVersion = projectContext.bootVersion();
+        // Spring Security 6 (Boot 3) stopped saving the SecurityContext to the session
+        // implicitly, so a token filter no longer turns into a session cookie.
+        boolean contextSavedExplicitly =
+                bootVersion != null
+                        && !bootVersion.startsWith("1.")
+                        && !bootVersion.startsWith("2.");
         for (MethodDeclaration method : declaration.getMethods()) {
-            if (csrfIrrelevantForChain(method)) {
+            if (csrfIrrelevantForChain(method)
+                    || (contextSavedExplicitly
+                            && headerTokenFilterWithoutBrowserLogin(
+                                    declaration, method, projectContext.cookieReadingTypes()))) {
                 continue;
             }
             List<MethodCallExpr> allCalls = method.findAll(MethodCallExpr.class);
@@ -2688,9 +2843,12 @@ public class StaticPracticeFindingAnalyzer {
                                                     + relativePath
                                                     + ".")
                                     .limitations(
-                                            "Static analysis cannot determine whether the"
-                                                + " application uses stateless token authentication"
-                                                + " that makes CSRF irrelevant.")
+                                            "Chains without a browser login that authenticate"
+                                                + " through a token filter are not reported on"
+                                                + " Spring Boot 3+, unless the filter's class reads"
+                                                + " cookies. Static analysis cannot always tell"
+                                                + " whether other token authentication makes CSRF"
+                                                + " irrelevant.")
                                     .source(relativePath, line)
                                     .target(
                                             declaration.getNameAsString()
@@ -2717,6 +2875,73 @@ public class StaticPracticeFindingAnalyzer {
 
     private static final Set<String> BROWSER_LOGIN_METHODS =
             Set.of("httpBasic", "formLogin", "oauth2Login", "saml2Login", "rememberMe");
+
+    private static final Set<String> ADD_FILTER_METHODS =
+            Set.of("addFilterBefore", "addFilterAfter", "addFilterAt", "addFilter");
+
+    private static final Pattern TOKEN_FILTER_NAME = Pattern.compile("(?i).*(jwt|token|bearer).*");
+
+    /**
+     * Whether the chain authenticates through a token filter (a JWT or bearer filter added with
+     * addFilterBefore) and has no browser login. The token travels in a header the browser does
+     * not add by itself, so a forged cross-site request carries no credentials — unless the
+     * filter's class reads the token from a cookie.
+     */
+    private boolean headerTokenFilterWithoutBrowserLogin(
+            ClassOrInterfaceDeclaration declaration,
+            MethodDeclaration method,
+            Set<String> cookieReadingTypes) {
+        List<MethodCallExpr> calls = method.findAll(MethodCallExpr.class);
+        boolean browserLogin =
+                calls.stream()
+                        .filter(call -> BROWSER_LOGIN_METHODS.contains(call.getNameAsString()))
+                        .anyMatch(call -> !call.getArguments().toString().contains("disable"));
+        if (browserLogin) {
+            return false;
+        }
+        return calls.stream()
+                .filter(call -> ADD_FILTER_METHODS.contains(call.getNameAsString()))
+                .filter(call -> !call.getArguments().isEmpty())
+                .map(call -> filterTypeName(declaration, method, call.getArgument(0)))
+                .anyMatch(
+                        name ->
+                                TOKEN_FILTER_NAME.matcher(name).matches()
+                                        && !cookieReadingTypes.contains(name));
+    }
+
+    /**
+     * The simple type name of a filter passed to addFilterBefore: the created class, the declared
+     * type of a parameter or field, or the return type of a bean method in the same class. Falls
+     * back to the expression's text.
+     */
+    private String filterTypeName(
+            ClassOrInterfaceDeclaration declaration, MethodDeclaration method, Expression filter) {
+        if (filter.isObjectCreationExpr()) {
+            return simpleName(filter.asObjectCreationExpr().getType().getNameAsString());
+        }
+        if (filter.isNameExpr()) {
+            String variable = filter.asNameExpr().getNameAsString();
+            for (Parameter parameter : method.getParameters()) {
+                if (parameter.getNameAsString().equals(variable)) {
+                    return simpleName(rawTypeName(parameter.getTypeAsString()));
+                }
+            }
+            for (FieldDeclaration field : declaration.getFields()) {
+                for (var variableDeclarator : field.getVariables()) {
+                    if (variableDeclarator.getNameAsString().equals(variable)) {
+                        return simpleName(rawTypeName(variableDeclarator.getTypeAsString()));
+                    }
+                }
+            }
+        }
+        if (filter.isMethodCallExpr() && filter.asMethodCallExpr().getScope().isEmpty()) {
+            String name = filter.asMethodCallExpr().getNameAsString();
+            for (MethodDeclaration candidate : declaration.getMethodsByName(name)) {
+                return simpleName(rawTypeName(candidate.getTypeAsString()));
+            }
+        }
+        return filter.toString();
+    }
 
     /**
      * CSRF only protects state-changing requests that a browser authenticates automatically with
@@ -3542,7 +3767,14 @@ public class StaticPracticeFindingAnalyzer {
                                                             .build());
                                         }
                                     });
-                            if (signals.hasHttpCalls() || signals.hasDatabaseWrites()) {
+                            // ShedLock's @SchedulerLock runs the job on one instance at a
+                            // time, which is the coordination this rule asks for.
+                            boolean coordinated =
+                                    hasAnnotation(method.getAnnotations(), "SchedulerLock")
+                                            || hasAnnotation(
+                                                    declaration.getAnnotations(), "SchedulerLock");
+                            if (!coordinated
+                                    && (signals.hasHttpCalls() || signals.hasDatabaseWrites())) {
                                 findings.add(
                                         FindingFactory.builder(
                                                         FindingRules.SPRING_SCHEDULED_SIDE_EFFECT,
@@ -3581,8 +3813,11 @@ public class StaticPracticeFindingAnalyzer {
                                                 .limitations(
                                                         "Static analysis infers behavior from"
                                                             + " method calls and cannot prove"
-                                                            + " runtime deployment topology or"
-                                                            + " distributed lock usage elsewhere.")
+                                                            + " runtime deployment topology. Jobs"
+                                                            + " locked with ShedLock's"
+                                                            + " @SchedulerLock are not reported;"
+                                                            + " other distributed locks are not"
+                                                            + " recognized.")
                                                 .source(relativePath, line)
                                                 .target(
                                                         declaration.getNameAsString()
@@ -3701,18 +3936,21 @@ public class StaticPracticeFindingAnalyzer {
                 || lower.equals("jdbcclient");
     }
 
-    private String firstCheckedThrownException(MethodDeclaration method) {
+    private String firstCheckedThrownException(
+            MethodDeclaration method, Set<String> uncheckedExceptionTypes) {
         for (var thrown : method.getThrownExceptions()) {
             String name = simpleName(thrown.asString());
-            if (isCheckedExceptionName(name)) {
+            if (isCheckedExceptionName(name, uncheckedExceptionTypes)) {
                 return name;
             }
         }
         return null;
     }
 
-    private boolean isCheckedExceptionName(String name) {
-        if (KNOWN_RUNTIME_EXCEPTIONS.contains(name) || name.endsWith("RuntimeException")) {
+    private boolean isCheckedExceptionName(String name, Set<String> uncheckedExceptionTypes) {
+        if (KNOWN_RUNTIME_EXCEPTIONS.contains(name)
+                || name.endsWith("RuntimeException")
+                || uncheckedExceptionTypes.contains(name)) {
             return false;
         }
         return name.equals("Throwable") || name.endsWith("Exception");
@@ -3833,18 +4071,66 @@ public class StaticPracticeFindingAnalyzer {
         return annotation != null && annotation.toString().contains("REQUIRES_NEW");
     }
 
-    private static String transactionalAttributes(AnnotationExpr annotation) {
+    /**
+     * Settings a transaction applies only when it starts: a call that joins an existing
+     * transaction ignores them, whether or not it goes through the proxy.
+     */
+    private static final Set<String> NEW_TRANSACTION_ONLY_ATTRIBUTES =
+            Set.of("readOnly", "isolation", "timeout", "timeoutString", "label");
+
+    /** Propagations under which a call made inside a transaction joins it. */
+    private static final Set<String> JOINING_PROPAGATIONS =
+            Set.of("REQUIRED", "SUPPORTS", "MANDATORY");
+
+    private static final Set<String> PROPAGATIONS =
+            Set.of(
+                    "REQUIRED",
+                    "SUPPORTS",
+                    "MANDATORY",
+                    "REQUIRES_NEW",
+                    "NOT_SUPPORTED",
+                    "NEVER",
+                    "NESTED");
+
+    /**
+     * The attributes of a {@code @Transactional} that still matter when the call joins the
+     * caller's transaction: a non-joining propagation, rollback rules and the transaction
+     * manager. Sorted and whitespace-free so two annotations can be compared as text.
+     */
+    private static String joinRelevantTransactionalAttributes(AnnotationExpr annotation) {
         if (annotation == null || annotation.isMarkerAnnotationExpr()) {
             return "";
         }
+        Map<String, Expression> attributes = new LinkedHashMap<>();
         if (annotation.isSingleMemberAnnotationExpr()) {
-            return "value=" + annotation.asSingleMemberAnnotationExpr().getMemberValue();
+            attributes.put("value", annotation.asSingleMemberAnnotationExpr().getMemberValue());
+        } else {
+            annotation
+                    .asNormalAnnotationExpr()
+                    .getPairs()
+                    .forEach(pair -> attributes.put(pair.getNameAsString(), pair.getValue()));
         }
-        return annotation.asNormalAnnotationExpr().getPairs().stream()
-                .map(pair -> pair.getNameAsString() + "=" + pair.getValue())
+        return attributes.entrySet().stream()
+                .filter(attribute -> !NEW_TRANSACTION_ONLY_ATTRIBUTES.contains(attribute.getKey()))
+                .filter(attribute -> !joiningPropagation(attribute.getKey(), attribute.getValue()))
+                .map(attribute -> attribute.getKey() + "=" + attribute.getValue())
                 .map(text -> text.replaceAll("\\s+", ""))
                 .sorted()
                 .collect(Collectors.joining(","));
+    }
+
+    /**
+     * Whether the attribute is a propagation that joins an existing transaction: Spring's {@code
+     * propagation = Propagation.REQUIRED} or the {@code value} of Jakarta's {@code
+     * TxType.REQUIRED}. Spring's {@code value} is otherwise the transaction manager.
+     */
+    private static boolean joiningPropagation(String name, Expression value) {
+        String text = value.toString();
+        String constant = text.substring(text.lastIndexOf('.') + 1);
+        boolean propagation =
+                name.equals("propagation")
+                        || (name.equals("value") && PROPAGATIONS.contains(constant));
+        return propagation && JOINING_PROPAGATIONS.contains(constant);
     }
 
     private static AnnotationExpr effectiveTransactional(
@@ -3855,7 +4141,9 @@ public class StaticPracticeFindingAnalyzer {
 
     /**
      * Whether a self-invoked @Transactional method declares nothing beyond the transaction the
-     * calling method already runs in — then bypassing its proxy changes nothing.
+     * calling method already runs in — then bypassing its proxy changes nothing. Settings that
+     * only a new transaction applies (readOnly, isolation, timeout) do not count: through the
+     * proxy the callee would join the caller's transaction and ignore them as well.
      */
     private static boolean selfCallJoinsCallerTransaction(
             ClassOrInterfaceDeclaration declaration,
@@ -3876,9 +4164,9 @@ public class StaticPracticeFindingAnalyzer {
             return false;
         }
         String calleeAttributes =
-                transactionalAttributes(effectiveTransactional(declaration, callee));
+                joinRelevantTransactionalAttributes(effectiveTransactional(declaration, callee));
         String callerAttributes =
-                transactionalAttributes(effectiveTransactional(declaration, caller));
+                joinRelevantTransactionalAttributes(effectiveTransactional(declaration, caller));
         return calleeAttributes.isEmpty() || calleeAttributes.equals(callerAttributes);
     }
 
@@ -3889,6 +4177,7 @@ public class StaticPracticeFindingAnalyzer {
             Set<String> transactionalMethods,
             boolean repositoryLike,
             boolean legacyTransactionalVisibility,
+            Set<String> uncheckedExceptionTypes,
             MethodSignals signals,
             List<Finding> findings) {
         boolean transactional =
@@ -4008,7 +4297,7 @@ public class StaticPracticeFindingAnalyzer {
                             .build());
         }
         if (transactional) {
-            String checkedException = firstCheckedThrownException(method);
+            String checkedException = firstCheckedThrownException(method, uncheckedExceptionTypes);
             if (checkedException != null && !transactionalRollbackForPresent(method, declaration)) {
                 findings.add(
                         FindingFactory.builder(
@@ -4038,9 +4327,11 @@ public class StaticPracticeFindingAnalyzer {
                                             + " a RuntimeException.")
                                 .limitations(
                                         "Checked vs unchecked is inferred from the declared type"
-                                                + " name without resolution; a custom unchecked"
-                                                + " exception listed in throws would be a false"
-                                                + " positive.")
+                                            + " name: well-known unchecked exceptions (Spring,"
+                                            + " Spring Security, Jakarta Persistence) and project"
+                                            + " exceptions that extend RuntimeException are"
+                                            + " recognized. A library exception outside that list"
+                                            + " can still be a false positive.")
                                 .source(relativePath, line)
                                 .target(
                                         declaration.getNameAsString()
@@ -4067,7 +4358,7 @@ public class StaticPracticeFindingAnalyzer {
                                 }
                                 // Inside a transaction the callee simply joins it; only settings
                                 // the callee declares beyond the caller's (REQUIRES_NEW,
-                                // readOnly, isolation, ...) are silently lost.
+                                // rollback rules, another transaction manager) are lost.
                                 if (transactional
                                         && selfCallJoinsCallerTransaction(
                                                 declaration, method, call)) {
@@ -4243,6 +4534,16 @@ public class StaticPracticeFindingAnalyzer {
             if (!constrainedTypes.contains(typeName)) {
                 continue;
             }
+            // A partial update leaves the fields it does not change null, so validating the whole
+            // entity (@NotNull, @NotBlank) would reject it: PATCH handlers skip @Valid on purpose.
+            if (requestBody && mapsOnlyToPatch(method)) {
+                continue;
+            }
+            // A model attribute next to a validated form object is the context the form belongs
+            // to (PetClinic's Owner for a new Visit), not the form the user submits.
+            if (modelAttribute && validatesAnotherParameter(method, parameter)) {
+                continue;
+            }
             String target = declaration.getNameAsString() + "#" + method.getNameAsString();
             String annotation = requestBody ? "@RequestBody" : "@ModelAttribute";
             String payload = requestBody ? "request body" : "bound form data";
@@ -4291,7 +4592,10 @@ public class StaticPracticeFindingAnalyzer {
                                     "Constraints are detected per source file: a type declared in a"
                                         + " file that uses constraint annotations counts as"
                                         + " constrained. Validation done manually or by a custom"
-                                        + " argument resolver is not visible.")
+                                        + " argument resolver is not visible. PATCH handlers are"
+                                        + " not reported: a partial update would fail the"
+                                        + " constraints of the fields it leaves out. Neither is a"
+                                        + " model attribute next to a validated form object.")
                             .source(
                                     relativePath,
                                     parameter
@@ -4865,6 +5169,31 @@ public class StaticPracticeFindingAnalyzer {
         return BENIGN_IGNORE_COMMENT_MARKERS.stream().anyMatch(comments::contains);
     }
 
+    /** Exceptions that only report a missing element, such as Spring's "no row" exceptions. */
+    private static final Pattern ABSENCE_EXCEPTION =
+            Pattern.compile(
+                    "\\w*(?:NotFound|NoSuch|EmptyResult|NoResult|ObjectRetrievalFailure)\\w*");
+
+    /** A fallback that answers "nothing there": null, Optional.empty() or an empty collection. */
+    private static final Pattern ABSENT_RESULT =
+            Pattern.compile(
+                    "return (?:null|Optional\\.empty\\(\\)|List\\.of\\(\\)|Set\\.of\\(\\)"
+                            + "|Map\\.of\\(\\)|Collections\\.empty\\w*\\(\\))");
+
+    /**
+     * Whether the catch turns a "not found" exception into an empty result, as PetClinic does
+     * with {@code catch (ObjectRetrievalFailureException | EmptyResultDataAccessException e) {
+     * return null; }}. That is a lookup's answer, not a swallowed failure.
+     */
+    private boolean isAbsenceLookup(Set<String> caughtTypes, CatchAnalysis analysis) {
+        return !caughtTypes.isEmpty()
+                && caughtTypes.stream()
+                        .map(this::simpleName)
+                        .allMatch(type -> ABSENCE_EXCEPTION.matcher(type).matches())
+                && analysis.fallbackDescription() != null
+                && ABSENT_RESULT.matcher(analysis.fallbackDescription()).matches();
+    }
+
     private boolean isLikelyParserFallback(
             ExceptionHandlingContext context, Set<String> caughtTypes, CatchAnalysis analysis) {
         if (context.productionLikeBoundary()) {
@@ -5415,16 +5744,24 @@ public class StaticPracticeFindingAnalyzer {
     }
 
     private void detectSqlInjectionInQueries(
-            String relativePath, ClassOrInterfaceDeclaration declaration, List<Finding> findings) {
+            String relativePath,
+            ClassOrInterfaceDeclaration declaration,
+            SqlOperandSafety operandSafety,
+            List<Finding> findings) {
         for (MethodDeclaration method : declaration.getMethods()) {
             for (MethodCallExpr call : method.findAll(MethodCallExpr.class)) {
                 String callName = call.getNameAsString();
                 if (!"createNativeQuery".equals(callName) && !"createQuery".equals(callName)) {
                     continue;
                 }
+                // A numeric id or an enum constant concatenated into the query cannot inject.
                 boolean hasConcat =
                         call.getArguments().stream()
-                                .anyMatch(this::containsNonLiteralStringConcatenation);
+                                .anyMatch(
+                                        argument ->
+                                                containsNonLiteralStringConcatenation(argument)
+                                                        && !operandSafety.onlySafeOperands(
+                                                                argument));
                 if (hasConcat) {
                     Integer line = call.getBegin().map(p -> p.line).orElse(null);
                     String target = declaration.getNameAsString() + "#" + method.getNameAsString();
@@ -5456,7 +5793,9 @@ public class StaticPracticeFindingAnalyzer {
                                                     + relativePath
                                                     + ".")
                                     .limitations(
-                                            "Static analysis cannot prove whether the concatenated"
+                                            "Values whose declared type is numeric, boolean, a"
+                                                + " UUID, a date or an enum are not reported."
+                                                + " Static analysis cannot prove whether other"
                                                 + " values are sanitized or come only from trusted"
                                                 + " sources.")
                                     .source(relativePath, line)
@@ -5982,32 +6321,31 @@ public class StaticPracticeFindingAnalyzer {
                                 "@Transactional on "
                                         + (classLevel ? "controller class " : "controller method ")
                                         + target
-                                        + " — database connection held open during HTTP"
-                                        + " processing.")
+                                        + " — the handler method is the transaction boundary.")
                         .whyBadPractice(
-                                "Placing @Transactional on a controller means the database"
-                                    + " transaction is open for the entire duration of request"
-                                    + " handling, including request body parsing, business logic,"
-                                    + " and — critically — response serialisation by Jackson."
-                                    + " Jackson serialisation can trigger lazy-loading of JPA"
-                                    + " associations, creating unintended queries inside the HTTP"
-                                    + " layer. This violates the layered architecture: transaction"
-                                    + " boundaries belong in the service layer.")
+                                "The transaction spans the whole handler method, so the database"
+                                    + " connection is held while it runs, including any work that"
+                                    + " does not need the database (remote calls, file I/O,"
+                                    + " validation). Transaction boundaries spread across"
+                                    + " controllers instead of a service layer that every caller"
+                                    + " (controllers, listeners, schedulers) shares.")
                         .possibleImpact(
-                                "Database connections held for longer than necessary, increasing"
-                                    + " connection pool pressure under load. Lazy-loading queries"
-                                    + " triggered by Jackson during serialisation produce N+1 query"
-                                    + " patterns. Deadlock risk if multiple controller methods"
-                                    + " acquire locks in different orders.")
+                                "Connections held longer than the database work needs, which adds"
+                                    + " pool pressure when a handler also calls slow services. The"
+                                    + " same operation invoked from a listener or a scheduled job"
+                                    + " runs without the transaction the controller adds.")
                         .recommendation(
-                                "Move the @Transactional annotation to the service-layer method"
-                                    + " that actually performs the database work. The controller"
-                                    + " should call the service and serialize only the returned"
-                                    + " DTO, which must not contain JPA proxy references.")
+                                "Move @Transactional to a service method that performs the database"
+                                        + " work and have the controller call it. For a thin CRUD"
+                                        + " controller that only delegates to repositories, the"
+                                        + " annotation is acceptable as it is.")
                         .limitations(
-                                "High confidence when @Transactional appears directly on a class or"
-                                        + " method that is also annotated with @RestController or"
-                                        + " @Controller. Meta-annotated aliases are not detected.")
+                                "A design hint, reported as INFO: thin CRUD controllers without a"
+                                    + " service layer use it deliberately (JHipster generates it)."
+                                    + " Request body parsing and response serialisation run outside"
+                                    + " the transaction; with open-in-view enabled, lazy loading"
+                                    + " during serialisation is reported by SPRING_JPA_OPEN_IN_VIEW"
+                                    + " instead. Meta-annotated aliases are not detected.")
                         .evidence(
                                 "@Transactional found on "
                                         + (classLevel ? "controller class " : "controller method ")
@@ -6089,9 +6427,11 @@ public class StaticPracticeFindingAnalyzer {
                                 + " each layer focused: web layer handles HTTP, service layer owns"
                                 + " the domain, repository layer handles persistence.")
                 .limitations(
-                        "Detects injection of types whose name ends in Repository, Dao, or DAO."
-                                + " A legitimately named class that is not actually a repository"
-                                + " would produce a false positive.")
+                        "A design hint, reported as INFO: thin CRUD controllers that call a"
+                                + " repository directly are a deliberate, common choice (Spring's"
+                                + " own guides and PetClinic do it). Detects injection of types"
+                                + " whose name ends in Repository, Dao, or DAO; a class with such a"
+                                + " name that is not a repository would be a false positive.")
                 .evidence(
                         "Controller "
                                 + target
@@ -6543,37 +6883,24 @@ public class StaticPracticeFindingAnalyzer {
                         });
     }
 
-    private void detectAsyncWithoutExecutor(Path repositoryRoot, List<Finding> findings) {
-        Path sourceRoot = repositoryRoot.resolve("src/main/java");
-        if (Files.notExists(sourceRoot)) {
-            return;
-        }
+    private void detectAsyncWithoutExecutor(JavaSources sources, List<Finding> findings) {
         boolean hasAsyncAnnotation = false;
         boolean hasExecutorBean = false;
         boolean hasEnableAsync = false;
-        try (Stream<Path> files = Files.walk(sourceRoot)) {
-            for (Path file :
-                    files.filter(Files::isRegularFile)
-                            .filter(path -> path.toString().endsWith(".java"))
-                            .toList()) {
-                try {
-                    String content = Files.readString(file, StandardCharsets.UTF_8);
-                    if (content.contains("@Async")) {
-                        hasAsyncAnnotation = true;
-                    }
-                    if (content.contains("@EnableAsync")) {
-                        hasEnableAsync = true;
-                    }
-                    if (content.contains("@Bean")
-                            && (content.contains("ThreadPoolTaskExecutor")
-                                    || content.contains("AsyncTaskExecutor")
-                                    || content.contains("TaskExecutor"))) {
-                        hasExecutorBean = true;
-                    }
-                } catch (IOException ignored) {
-                }
+        for (JavaSources.JavaFile file : sources.files()) {
+            String content = file.content();
+            if (content.contains("@Async")) {
+                hasAsyncAnnotation = true;
             }
-        } catch (IOException ignored) {
+            if (content.contains("@EnableAsync")) {
+                hasEnableAsync = true;
+            }
+            if (content.contains("@Bean")
+                    && (content.contains("ThreadPoolTaskExecutor")
+                            || content.contains("AsyncTaskExecutor")
+                            || content.contains("TaskExecutor"))) {
+                hasExecutorBean = true;
+            }
         }
         // Without @EnableAsync the methods run synchronously and no executor is ever used, so
         // the executor advice would be moot — SPRING_ASYNC_WITHOUT_ENABLE_ASYNC covers that case.
@@ -6639,36 +6966,26 @@ public class StaticPracticeFindingAnalyzer {
     }
 
     private void detectScheduledWithoutExecutor(
-            Path repositoryRoot,
+            JavaSources sources,
             ConfigurationAnalysis configurationAnalysis,
             List<Finding> findings) {
-        Path sourceRoot = repositoryRoot.resolve("src/main/java");
-        if (Files.notExists(sourceRoot) || schedulerNotSingleThreaded(configurationAnalysis)) {
+        if (sources.isEmpty() || schedulerNotSingleThreaded(configurationAnalysis)) {
             return;
         }
         int scheduledCount = 0;
         boolean hasTaskScheduler = false;
         boolean hasEnableScheduling = false;
-        try (Stream<Path> files = Files.walk(sourceRoot)) {
-            for (Path file :
-                    files.filter(Files::isRegularFile)
-                            .filter(path -> path.toString().endsWith(".java"))
-                            .toList()) {
-                try {
-                    String content = Files.readString(file, StandardCharsets.UTF_8);
-                    scheduledCount += countOccurrences(content, "@Scheduled");
-                    if (content.contains("@EnableScheduling")) {
-                        hasEnableScheduling = true;
-                    }
-                    if (content.contains("@Bean")
-                            && (content.contains("TaskScheduler")
-                                    || content.contains("SchedulingConfigurer"))) {
-                        hasTaskScheduler = true;
-                    }
-                } catch (IOException ignored) {
-                }
+        for (JavaSources.JavaFile file : sources.files()) {
+            String content = file.content();
+            scheduledCount += countOccurrences(content, "@Scheduled");
+            if (content.contains("@EnableScheduling")) {
+                hasEnableScheduling = true;
             }
-        } catch (IOException ignored) {
+            if (content.contains("@Bean")
+                    && (content.contains("TaskScheduler")
+                            || content.contains("SchedulingConfigurer"))) {
+                hasTaskScheduler = true;
+            }
         }
         // Without @EnableScheduling no trigger is registered at all, so warning about the
         // single-threaded scheduler would be moot — SPRING_SCHEDULED_WITHOUT_ENABLE_SCHEDULING

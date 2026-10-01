@@ -2,9 +2,6 @@ package com.robbanhoglund.springbootanalyzer.analyzer;
 
 import static java.util.Map.entry;
 
-import com.github.javaparser.JavaParser;
-import com.github.javaparser.ParseResult;
-import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.TypeDeclaration;
@@ -15,20 +12,16 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingConfidence;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingFactory;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.FindingRules;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.SpringComponentType;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.Deque;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -87,69 +80,41 @@ public class JavaSourceAnalyzer {
      *     walked due to an I/O error, the partial results gathered so far are returned.
      */
     public SourceAnalysis analyze(Path repositoryRoot) {
-        Path sourceRoot = repositoryRoot.resolve("src/main/java");
-        if (Files.notExists(sourceRoot)) {
-            return new SourceAnalysis(List.of(), List.of());
-        }
+        return analyze(JavaSources.from(repositoryRoot));
+    }
 
+    /**
+     * Analyzes the {@code src/main/java} sources parsed once and shared across the pipeline.
+     * Files that failed to parse were already logged by {@link JavaSources} and are skipped.
+     *
+     * @param sources the source tree parsed once for this analysis
+     * @return the combined source analysis result; never null
+     */
+    public SourceAnalysis analyze(JavaSources sources) {
         List<DetectedClass> detectedClasses = new ArrayList<>();
         List<Finding> findings = new ArrayList<>();
-        JavaParser javaParser = newJavaParser();
-
-        try (Stream<Path> files = Files.walk(sourceRoot)) {
-            files.filter(Files::isRegularFile)
-                    .filter(path -> path.toString().endsWith(".java"))
-                    .sorted(Comparator.naturalOrder())
-                    .forEach(
-                            path -> {
-                                try {
-                                    analyzeSourceFile(
-                                            javaParser,
-                                            repositoryRoot,
-                                            path,
-                                            detectedClasses,
-                                            findings);
-                                } catch (RuntimeException | StackOverflowError failure) {
-                                    LOGGER.warn(
-                                            "Failed to analyze Java source {}; skipping this file",
-                                            path,
-                                            failure);
-                                }
-                            });
-        } catch (IOException exception) {
-            LOGGER.warn(
-                    "Failed to fully scan Java sources under {}; returning partial results",
-                    sourceRoot,
-                    exception);
+        for (JavaSources.JavaFile file : sources.files()) {
+            if (file.compilationUnit() == null) {
+                continue;
+            }
+            try {
+                analyzeSourceFile(
+                        file.compilationUnit(), file.relativePath(), detectedClasses, findings);
+            } catch (RuntimeException | StackOverflowError failure) {
+                LOGGER.warn(
+                        "Failed to analyze Java source {}; skipping this file",
+                        file.path(),
+                        failure);
+            }
         }
-
         return new SourceAnalysis(List.copyOf(detectedClasses), List.copyOf(findings));
     }
 
     private void analyzeSourceFile(
-            JavaParser javaParser,
-            Path repositoryRoot,
-            Path sourceFile,
+            CompilationUnit compilationUnit,
+            String relativePath,
             List<DetectedClass> detectedClasses,
             List<Finding> findings) {
-        ParseResult<CompilationUnit> parseResult;
-        try {
-            parseResult = javaParser.parse(sourceFile);
-        } catch (IOException exception) {
-            LOGGER.warn("Failed to read Java source {}; skipping", sourceFile, exception);
-            return;
-        }
-
-        if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
-            LOGGER.warn(
-                    "Failed to parse Java source {}; skipping source analysis for this file"
-                            + " (problems: {})",
-                    sourceFile,
-                    parseResult.getProblems());
-            return;
-        }
-
-        CompilationUnit compilationUnit = parseResult.getResult().orElseThrow();
         String packageName =
                 compilationUnit
                         .getPackageDeclaration()
@@ -178,33 +143,20 @@ public class JavaSourceAnalyzer {
                                     "Move the class into a named package that reflects the"
                                             + " application's group id, e.g."
                                             + " com.example.myapp.")
-                            .evidence(
-                                    "No package declaration in "
-                                            + normalizePath(repositoryRoot, sourceFile)
-                                            + ".")
-                            .location(normalizePath(repositoryRoot, sourceFile))
+                            .evidence("No package declaration in " + relativePath + ".")
+                            .location(relativePath)
                             .target("default package")
                             .build());
         }
 
         for (TypeDeclaration<?> typeDeclaration : compilationUnit.findAll(TypeDeclaration.class)) {
-            createDetectedClass(repositoryRoot, sourceFile, packageName, typeDeclaration)
+            createDetectedClass(relativePath, packageName, typeDeclaration)
                     .ifPresent(detectedClasses::add);
         }
     }
 
-    private JavaParser newJavaParser() {
-        return new JavaParser(
-                new ParserConfiguration()
-                        .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                        .setCharacterEncoding(StandardCharsets.UTF_8));
-    }
-
     private Optional<DetectedClass> createDetectedClass(
-            Path repositoryRoot,
-            Path sourceFile,
-            String packageName,
-            TypeDeclaration<?> typeDeclaration) {
+            String relativePath, String packageName, TypeDeclaration<?> typeDeclaration) {
         Set<String> annotationNames = new LinkedHashSet<>();
         SpringComponentType componentType = null;
 
@@ -225,7 +177,7 @@ public class JavaSourceAnalyzer {
                         qualifiedClassName,
                         typeDeclaration.getNameAsString(),
                         packageName,
-                        normalizePath(repositoryRoot, sourceFile),
+                        relativePath,
                         componentType,
                         List.copyOf(annotationNames)));
     }
@@ -256,10 +208,6 @@ public class JavaSourceAnalyzer {
             return typeName;
         }
         return packageName + "." + typeName;
-    }
-
-    private String normalizePath(Path repositoryRoot, Path sourceFile) {
-        return repositoryRoot.relativize(sourceFile).toString().replace('\\', '/');
     }
 
     private String simpleName(String name) {

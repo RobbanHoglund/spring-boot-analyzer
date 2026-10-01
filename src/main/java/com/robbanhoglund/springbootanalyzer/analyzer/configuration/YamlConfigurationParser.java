@@ -1,5 +1,8 @@
 package com.robbanhoglund.springbootanalyzer.analyzer.configuration;
 
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonStreamContext;
+import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.databind.MappingIterator;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
@@ -8,6 +11,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,6 +33,7 @@ public class YamlConfigurationParser {
     private final ObjectMapper objectMapper = new ObjectMapper(new YAMLFactory());
 
     public List<ParsedConfigurationProperty> parse(Path path, String relativePath, String profile) {
+        List<Map<String, Integer>> lineNumbers = lineNumbers(path);
         try (InputStream inputStream = Files.newInputStream(path);
                 MappingIterator<Object> documents =
                         objectMapper.readValues(
@@ -37,8 +42,14 @@ public class YamlConfigurationParser {
             // A single YAML file may contain multiple "---"-separated documents (Spring Boot's
             // multi-profile pattern). Read every document, not just the first, and tag each one
             // with its in-file activation profile when present.
+            int documentIndex = 0;
             while (documents.hasNext()) {
                 Object root = documents.next();
+                Map<String, Integer> documentLines =
+                        documentIndex < lineNumbers.size()
+                                ? lineNumbers.get(documentIndex)
+                                : Map.of();
+                documentIndex++;
                 if (root == null) {
                     continue;
                 }
@@ -51,7 +62,7 @@ public class YamlConfigurationParser {
                                     entry.getKey(),
                                     entry.getValue(),
                                     relativePath,
-                                    null,
+                                    documentLines.get(entry.getKey()),
                                     documentProfile));
                 }
             }
@@ -61,6 +72,72 @@ public class YamlConfigurationParser {
             LOGGER.debug("Failed to parse yaml file {}; skipping", path, exception);
             return List.of();
         }
+    }
+
+    /**
+     * The 1-based line of every scalar in the file, one map per YAML document, keyed like {@link
+     * #flatten}. A mapping value is attributed to the line of its key, so a block scalar points
+     * at the key that introduces it. The documents are the root values of the same token stream
+     * that {@link #parse} reads, so the n-th map belongs to the n-th document. Line numbers are
+     * best effort: a file that cannot be tokenized yields what was read before the error.
+     */
+    private List<Map<String, Integer>> lineNumbers(Path path) {
+        List<Map<String, Integer>> documents = new ArrayList<>();
+        try (InputStream inputStream = Files.newInputStream(path);
+                JsonParser parser = objectMapper.createParser(inputStream)) {
+            Map<String, Integer> lines = new HashMap<>();
+            int depth = 0;
+            int keyLine = 0;
+            for (JsonToken token = parser.nextToken(); token != null; token = parser.nextToken()) {
+                if (token == JsonToken.FIELD_NAME) {
+                    keyLine = parser.currentTokenLocation().getLineNr();
+                } else if (token.isStructStart()) {
+                    if (depth++ == 0) {
+                        lines = new HashMap<>();
+                        documents.add(lines);
+                    }
+                } else if (token.isStructEnd()) {
+                    depth--;
+                } else if (depth == 0) {
+                    // A document whose root is a scalar (or empty) has no properties.
+                    documents.add(Map.of());
+                } else {
+                    JsonStreamContext context = parser.getParsingContext();
+                    // Duplicate keys keep the last value, so they keep the last line too.
+                    lines.put(
+                            flattenedKey(context),
+                            context.inObject()
+                                    ? keyLine
+                                    : parser.currentTokenLocation().getLineNr());
+                }
+            }
+        } catch (IOException exception) {
+            LOGGER.debug("Failed to read line numbers of yaml file {}", path, exception);
+        }
+        return documents;
+    }
+
+    /** The key {@link #flatten} gives the value at {@code context}. */
+    private static String flattenedKey(JsonStreamContext context) {
+        List<JsonStreamContext> chain = new ArrayList<>();
+        for (JsonStreamContext current = context;
+                current != null && !current.inRoot();
+                current = current.getParent()) {
+            chain.add(current);
+        }
+        StringBuilder key = new StringBuilder();
+        for (int index = chain.size() - 1; index >= 0; index--) {
+            JsonStreamContext segment = chain.get(index);
+            if (segment.inArray()) {
+                key.append('[').append(segment.getCurrentIndex()).append(']');
+            } else {
+                if (!key.isEmpty()) {
+                    key.append('.');
+                }
+                key.append(segment.getCurrentName());
+            }
+        }
+        return key.toString();
     }
 
     /**

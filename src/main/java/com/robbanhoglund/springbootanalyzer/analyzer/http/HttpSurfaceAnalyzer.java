@@ -1,7 +1,5 @@
 package com.robbanhoglund.springbootanalyzer.analyzer.http;
 
-import com.github.javaparser.JavaParser;
-import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
@@ -31,14 +29,11 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.http.InboundEndpoint;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.http.OutboundEndpoint;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.http.UrlKind;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.WebStack;
-import java.io.IOException;
+import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -93,11 +88,21 @@ public class HttpSurfaceAnalyzer {
             ConfigurationAnalysis configurationAnalysis,
             BuildInfo buildInfo,
             WebStack webStack) {
+        return analyze(
+                JavaSources.from(repositoryRoot), configurationAnalysis, buildInfo, webStack);
+    }
+
+    /** Maps the HTTP surface of the source tree parsed once and shared across the pipeline. */
+    public Result analyze(
+            JavaSources sources,
+            ConfigurationAnalysis configurationAnalysis,
+            BuildInfo buildInfo,
+            WebStack webStack) {
         BaseUrlCatalog baseUrlCatalog = new BaseUrlCatalog(configurationAnalysis);
         List<ConfiguredUrl> configuredUrls = detectConfiguredUrls(configurationAnalysis);
         List<ActuatorEndpointExposure> actuatorExposures =
                 detectActuatorExposures(configurationAnalysis);
-        SourceSurface sourceSurface = scanJavaSources(repositoryRoot, baseUrlCatalog);
+        SourceSurface sourceSurface = scanJavaSources(sources, baseUrlCatalog);
 
         HttpSurfaceSummary summary =
                 new HttpSurfaceSummary(
@@ -211,109 +216,66 @@ public class HttpSurfaceAnalyzer {
         return List.copyOf(exposures);
     }
 
-    private SourceSurface scanJavaSources(Path repositoryRoot, BaseUrlCatalog baseUrlCatalog) {
-        Path sourceRoot = repositoryRoot.resolve("src/main/java");
-        if (Files.notExists(sourceRoot)) {
-            return new SourceSurface(List.of(), List.of());
-        }
-
+    private SourceSurface scanJavaSources(JavaSources sources, BaseUrlCatalog baseUrlCatalog) {
         List<InboundEndpoint> inboundEndpoints = new ArrayList<>();
         List<OutboundEndpoint> outboundEndpoints = new ArrayList<>();
-        JavaParser javaParser = newJavaParser();
-
-        try (Stream<Path> files = Files.walk(sourceRoot)) {
-            for (Path file :
-                    files.filter(Files::isRegularFile)
-                            .filter(path -> path.toString().endsWith(".java"))
-                            .sorted(Comparator.naturalOrder())
-                            .toList()) {
-                try {
-                    parseSourceFile(
-                            javaParser,
-                            repositoryRoot,
-                            file,
-                            inboundEndpoints,
-                            outboundEndpoints,
-                            baseUrlCatalog);
-                } catch (RuntimeException | StackOverflowError failure) {
-                    LOGGER.warn(
-                            "Failed to analyze Java source {} for HTTP surface analysis; skipping"
-                                    + " this file",
-                            file,
-                            failure);
-                }
+        for (JavaSources.JavaFile file : sources.files()) {
+            if (file.compilationUnit() == null) {
+                continue;
             }
-        } catch (IOException exception) {
-            LOGGER.warn(
-                    "Failed to fully scan Java sources for HTTP surface analysis;"
-                            + " returning partial results",
-                    exception);
+            try {
+                scanSourceFile(
+                        file.compilationUnit(),
+                        file.relativePath(),
+                        inboundEndpoints,
+                        outboundEndpoints,
+                        baseUrlCatalog);
+            } catch (RuntimeException | StackOverflowError failure) {
+                LOGGER.warn(
+                        "Failed to analyze Java source {} for HTTP surface analysis; skipping"
+                                + " this file",
+                        file.path(),
+                        failure);
+            }
         }
         return new SourceSurface(List.copyOf(inboundEndpoints), List.copyOf(outboundEndpoints));
     }
 
-    private void parseSourceFile(
-            JavaParser javaParser,
-            Path repositoryRoot,
-            Path sourceFile,
+    private void scanSourceFile(
+            CompilationUnit compilationUnit,
+            String relativePath,
             List<InboundEndpoint> inboundEndpoints,
             List<OutboundEndpoint> outboundEndpoints,
             BaseUrlCatalog baseUrlCatalog) {
-        try {
-            var parseResult = javaParser.parse(sourceFile);
-            if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
-                LOGGER.warn(
-                        "Failed to parse Java source {}; skipping HTTP surface analysis for this"
-                                + " file (problems: {})",
-                        sourceFile,
-                        parseResult.getProblems());
-                return;
-            }
-            CompilationUnit compilationUnit = parseResult.getResult().orElseThrow();
-            String packageName =
-                    compilationUnit
-                            .getPackageDeclaration()
-                            .map(declaration -> declaration.getNameAsString())
-                            .orElse("");
-            String relativePath =
-                    repositoryRoot.relativize(sourceFile).toString().replace('\\', '/');
+        String packageName =
+                compilationUnit
+                        .getPackageDeclaration()
+                        .map(declaration -> declaration.getNameAsString())
+                        .orElse("");
 
-            Map<String, String> valueFieldIndex = buildValueFieldIndex(compilationUnit);
+        Map<String, String> valueFieldIndex = buildValueFieldIndex(compilationUnit);
 
-            for (ClassOrInterfaceDeclaration type :
-                    compilationUnit.findAll(ClassOrInterfaceDeclaration.class)) {
-                String className =
-                        packageName.isBlank()
-                                ? type.getNameAsString()
-                                : packageName + "." + type.getNameAsString();
-                collectInboundEndpoints(type, className, relativePath, inboundEndpoints);
-                collectFeignEndpoints(
-                        type, className, relativePath, outboundEndpoints, baseUrlCatalog);
-            }
-
-            for (MethodCallExpr callExpr : compilationUnit.findAll(MethodCallExpr.class)) {
-                collectOutboundEndpoint(callExpr, relativePath, baseUrlCatalog, valueFieldIndex)
-                        .ifPresent(outboundEndpoints::add);
-                collectFunctionalRoute(callExpr, relativePath, packageName)
-                        .ifPresent(inboundEndpoints::add);
-            }
-
-            for (ObjectCreationExpr newExpr : compilationUnit.findAll(ObjectCreationExpr.class)) {
-                collectSocketEndpoint(newExpr, relativePath, valueFieldIndex)
-                        .ifPresent(outboundEndpoints::add);
-            }
-        } catch (IOException exception) {
-            // Skip an individual unreadable file rather than aborting HTTP surface analysis.
-            LOGGER.warn(
-                    "Failed to read {} for HTTP surface analysis; skipping", sourceFile, exception);
+        for (ClassOrInterfaceDeclaration type :
+                compilationUnit.findAll(ClassOrInterfaceDeclaration.class)) {
+            String className =
+                    packageName.isBlank()
+                            ? type.getNameAsString()
+                            : packageName + "." + type.getNameAsString();
+            collectInboundEndpoints(type, className, relativePath, inboundEndpoints);
+            collectFeignEndpoints(type, className, relativePath, outboundEndpoints, baseUrlCatalog);
         }
-    }
 
-    private JavaParser newJavaParser() {
-        return new JavaParser(
-                new ParserConfiguration()
-                        .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25)
-                        .setCharacterEncoding(StandardCharsets.UTF_8));
+        for (MethodCallExpr callExpr : compilationUnit.findAll(MethodCallExpr.class)) {
+            collectOutboundEndpoint(callExpr, relativePath, baseUrlCatalog, valueFieldIndex)
+                    .ifPresent(outboundEndpoints::add);
+            collectFunctionalRoute(callExpr, relativePath, packageName)
+                    .ifPresent(inboundEndpoints::add);
+        }
+
+        for (ObjectCreationExpr newExpr : compilationUnit.findAll(ObjectCreationExpr.class)) {
+            collectSocketEndpoint(newExpr, relativePath, valueFieldIndex)
+                    .ifPresent(outboundEndpoints::add);
+        }
     }
 
     private void collectInboundEndpoints(

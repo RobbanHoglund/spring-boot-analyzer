@@ -471,6 +471,36 @@ class SecurityPracticeFindingAnalyzerTest {
     }
 
     @Test
+    void doesNotFlagRedirectBehindAConfiguredContextPath() throws IOException {
+        // PetClinic REST: the context path is injected once from the servlet context.
+        writeSourceFile(
+                "src/main/java/com/example/RootController.java",
+                """
+                package com.example;
+                import jakarta.servlet.http.HttpServletResponse;
+                import org.springframework.beans.factory.annotation.Value;
+                public class RootController {
+                    private static final String DOCS = "/docs";
+                    @Value("#{servletContext.contextPath}")
+                    private String servletContextPath;
+                    private String lastTarget;
+                    public void root(HttpServletResponse response) throws Exception {
+                        response.sendRedirect(this.servletContextPath + "/swagger-ui/index.html");
+                        response.sendRedirect(DOCS + "/index.html");
+                    }
+                    public void last(HttpServletResponse response) throws Exception {
+                        response.sendRedirect(lastTarget + "/next");
+                    }
+                }
+                """);
+
+        assertThat(findings())
+                .filteredOn(finding -> "SPRING_OPEN_REDIRECT".equals(finding.ruleId()))
+                .extracting(Finding::line)
+                .containsExactly(14);
+    }
+
+    @Test
     void flagsRedirectWhosePrefixDoesNotFixTheHost() throws IOException {
         // "/" + "/evil.com" becomes a protocol-relative URL to another host.
         writeSourceFile(
@@ -1071,6 +1101,45 @@ class SecurityPracticeFindingAnalyzerTest {
         assertThat(byRule(findings(), "SPRING_H2_CONSOLE_PERMITALL")).isNull();
     }
 
+    @Test
+    void reportsH2ConsolePermitAllBehindADevelopmentProfileAsInfo() throws IOException {
+        // JHipster opens the console only when the dev profile is active.
+        writeSourceFile(
+                "src/main/java/com/example/SecurityConfig.java",
+                """
+                package com.example;
+                import org.springframework.context.annotation.Profile;
+                import org.springframework.core.env.Environment;
+                import org.springframework.core.env.Profiles;
+                import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+                public class SecurityConfig {
+                    private final Environment env = null;
+                    public void configure(HttpSecurity http) throws Exception {
+                        if (env.acceptsProfiles(Profiles.of("dev"))) {
+                            http.authorizeHttpRequests(a -> a.requestMatchers("/h2-console/**").permitAll());
+                        }
+                    }
+                }
+                @Profile("local")
+                class LocalSecurityConfig {
+                    public void configure(HttpSecurity http) throws Exception {
+                        http.authorizeHttpRequests(a -> a.requestMatchers("/h2-console/**").permitAll());
+                    }
+                }
+                @Profile("!prod")
+                class NonProdSecurityConfig {
+                    public void configure(HttpSecurity http) throws Exception {
+                        http.authorizeHttpRequests(a -> a.requestMatchers("/h2-console/**").permitAll());
+                    }
+                }
+                """);
+
+        assertThat(findings())
+                .filteredOn(finding -> "SPRING_H2_CONSOLE_PERMITALL".equals(finding.ruleId()))
+                .extracting(finding -> finding.line() + ":" + finding.severity().name())
+                .containsExactlyInAnyOrder("10:INFO", "17:INFO", "23:ERROR");
+    }
+
     // ── SPRING_COMMAND_INJECTION ──────────────────────────────────────────────
 
     @Test
@@ -1209,6 +1278,68 @@ class SecurityPracticeFindingAnalyzerTest {
                 """);
 
         assertThat(byRule(findings(), "SPRING_PATH_TRAVERSAL")).isNull();
+    }
+
+    @Test
+    void doesNotFlagPathsBuiltOnlyFromInternalValues() throws IOException {
+        // JHipster's WebConfigurer: the prefix comes from the class location, not a caller.
+        writeSourceFile(
+                "src/main/java/com/example/WebConfigurer.java",
+                """
+                package com.example;
+                import java.io.File;
+                import java.nio.file.Path;
+                import java.util.UUID;
+                public class WebConfigurer {
+                    private final String uploadRoot = "/uploads";
+                    public void customize(Object server) {
+                        String prefixPath = resolvePathPrefix();
+                        File root = Path.of(prefixPath + "target/classes/static/").toFile();
+                        File upload = new File(uploadRoot + "/" + UUID.randomUUID() + ".png");
+                        String path = uploadRoot;
+                        for (int i = 0; i < 3; i++) {
+                            path = path + "/level" + i;
+                        }
+                        File nested = new File(path + "/x");
+                    }
+                    private String resolvePathPrefix() {
+                        return getClass().getResource("").getPath();
+                    }
+                }
+                """);
+
+        assertThat(byRule(findings(), "SPRING_PATH_TRAVERSAL")).isNull();
+    }
+
+    @Test
+    void flagsCallerInputThatReachesThePathThroughLocalsLoopsAndLambdas() throws IOException {
+        writeSourceFile(
+                "src/main/java/com/example/FileService.java",
+                """
+                package com.example;
+                import java.io.File;
+                import java.nio.file.Path;
+                import java.util.List;
+                public class FileService {
+                    public File viaLocal(String name) {
+                        String trimmed = name.trim();
+                        return new File("/data/" + trimmed);
+                    }
+                    public void viaLoop(List<String> names) {
+                        for (String name : names) {
+                            Path.of("/data/" + name);
+                        }
+                    }
+                    public void viaLambda(List<String> names) {
+                        names.forEach(name -> new File("/data/" + name));
+                    }
+                }
+                """);
+
+        assertThat(findings())
+                .filteredOn(finding -> "SPRING_PATH_TRAVERSAL".equals(finding.ruleId()))
+                .extracting(Finding::line)
+                .containsExactlyInAnyOrder(8, 12, 16);
     }
 
     // ── SPRING_SSRF_USER_URL ──────────────────────────────────────────────────

@@ -2,6 +2,7 @@ package com.robbanhoglund.springbootanalyzer.analyzer;
 
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.ImportDeclaration;
+import com.github.javaparser.ast.body.CallableDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.robbanhoglund.springbootanalyzer.analyzer.model.BuildInfo;
@@ -15,8 +16,12 @@ import com.robbanhoglund.springbootanalyzer.analyzer.model.runtime.RuntimeStackA
 import com.robbanhoglund.springbootanalyzer.analyzer.source.JavaSources;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 import org.springframework.stereotype.Component;
 
 /**
@@ -191,12 +196,35 @@ public class MigrationPracticeFindingAnalyzer {
 
     private void detectRemovedMatchers(
             CompilationUnit cu, String relativePath, List<Finding> findings) {
+        // One finding per removed method and enclosing method: a security chain usually calls
+        // antMatchers(...) several times, and every call needs the same one-line migration.
+        Map<String, List<MethodCallExpr>> groups = new LinkedHashMap<>();
         for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
             String name = call.getNameAsString();
             if (!REMOVED_MATCHER_METHODS.contains(name)) {
                 continue;
             }
-            Integer line = call.getBegin().map(p -> p.line).orElse(null);
+            String owner =
+                    call.findAncestor(CallableDeclaration.class)
+                            .map(callable -> callable.getDeclarationAsString(false, false, false))
+                            .orElse("");
+            groups.computeIfAbsent(name + "@" + owner, key -> new ArrayList<>()).add(call);
+        }
+        for (List<MethodCallExpr> calls : groups.values()) {
+            String name = calls.get(0).getNameAsString();
+            // The name's own position: a chained call begins where the whole chain begins.
+            List<Integer> lines =
+                    calls.stream()
+                            .map(call -> call.getName().getBegin().map(p -> p.line).orElse(null))
+                            .filter(Objects::nonNull)
+                            .distinct()
+                            .sorted()
+                            .toList();
+            Integer line = lines.isEmpty() ? null : lines.get(0);
+            String where =
+                    calls.size() == 1
+                            ? ""
+                            : " (" + calls.size() + " calls, lines " + joinLines(lines) + ")";
             add(
                     findings,
                     FindingRules.SPRING_SECURITY_ANTMATCHERS_REMOVED,
@@ -221,9 +249,13 @@ public class MigrationPracticeFindingAnalyzer {
                             + name
                             + " could in principle belong to a non-Spring-Security DSL; review the"
                             + " surrounding configuration.",
-                    name + "(...) call found in " + relativePath + ".",
+                    name + "(...) call found in " + relativePath + where + ".",
                     null);
         }
+    }
+
+    private static String joinLines(List<Integer> lines) {
+        return lines.stream().map(String::valueOf).collect(Collectors.joining(", "));
     }
 
     // ---------------------------------------------------------------------------

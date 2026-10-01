@@ -174,12 +174,12 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
     public AnalysisResult analyze(
             GitRepositoryReference repositoryReference, Path repositoryRoot, String workspaceId) {
         BuildInfo buildInfo = buildFileAnalyzer.analyze(repositoryRoot);
-        // Parse the Java source tree once and share it across the finding analyzers below, instead
-        // of each analyzer walking and re-parsing src/main/java independently.
+        // Parse the Java source tree once and share it with every analyzer below, instead of each
+        // one walking and re-parsing src/main/java independently.
         JavaSources javaSources = JavaSources.from(repositoryRoot);
-        SourceAnalysis sourceAnalysis = javaSourceAnalyzer.analyze(repositoryRoot);
+        SourceAnalysis sourceAnalysis = javaSourceAnalyzer.analyze(javaSources);
         ConfigurationAnalyzer.Result configurationResult =
-                configurationAnalyzer.analyze(repositoryRoot, buildInfo);
+                configurationAnalyzer.analyze(javaSources, buildInfo);
         GradleModelAnalyzer.Result gradleResult =
                 gradleModelAnalyzer.analyze(
                         repositoryReference, repositoryRoot, buildInfo, analyzerProperties);
@@ -202,7 +202,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
                 javaSources, detectedClasses, mainApplicationClasses, findings);
         RuntimeStackAnalyzer.Result runtimeResult =
                 runtimeStackAnalyzer.analyze(
-                        repositoryRoot,
+                        javaSources,
                         buildInfo,
                         gradleResult.gradleModelAnalysis(),
                         configurationResult.configurationAnalysis(),
@@ -212,7 +212,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
 
         HttpSurfaceAnalyzer.Result httpResult =
                 httpSurfaceAnalyzer.analyze(
-                        repositoryRoot,
+                        javaSources,
                         configurationResult.configurationAnalysis(),
                         buildInfo,
                         runtimeResult.runtimeStackAnalysis().webStack());
@@ -222,7 +222,7 @@ public class SpringBootProjectAnalyzer implements StaticAnalyzer {
                 findings,
                 () ->
                         staticPracticeFindingAnalyzer.analyze(
-                                repositoryRoot,
+                                javaSources,
                                 buildInfo,
                                 configurationResult.configurationAnalysis(),
                                 gradleResult.gradleModelAnalysis(),
